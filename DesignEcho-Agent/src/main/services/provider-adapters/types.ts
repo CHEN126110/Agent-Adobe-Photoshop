@@ -5,6 +5,7 @@ import type {
 } from '../../../shared/provider-native-tools';
 import type { ProviderStreamStopReason } from '../../../shared/provider-stream-completion';
 import type { ModelVisualPresentationReceipt } from '../../../shared/model-visual-presentation-receipt';
+import type { ProviderReportedTokenUsage } from '../../../shared/provider-reported-token-usage';
 
 /**
  * Provider Adapter 类型定义
@@ -52,10 +53,7 @@ export interface ProviderResponse {
     /** 思维过程 */
     thinking?: string;
     /** token 用量 */
-    usage?: {
-        inputTokens: number;
-        outputTokens: number;
-    };
+    usage?: ProviderReportedTokenUsage;
     /** provider-native 工具引用来源，例如 Xiaomi MiMo web_search annotations */
     citations?: ProviderNativeToolCitation[];
     /** provider-native 工具用量，例如 web_search_usage */

@@ -64,15 +64,16 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
     performance_profile: {
         version: 'skill-runtime-performance-profile/v0',
         budget: {
-            // 2026-08-17 真机 run [471]（agentic 主图）：看产品图 + 建档 + 铺图 + 文字 + 调整用了 28 轮、
-            // 33 次工具、5 次视觉回合，仍在预算耗尽前没做完。预算是安全网不是终止器——抬到设计师工作量级。
+            // 2026-08-28 正式可靠性 Attempt：GPT-5.6 的 7 次真实模型回合约用 15 分钟，
+            // 旧软时限与外层调试 timeout 同值，导致终态结算与外部取消竞态。质量优先阶段给
+            // Agent 30 分钟设计预算；外层采集另留 5 分钟只用于终态与收据闭合。
             max_model_calls: 36,
             max_tool_calls: 120,
             max_iterations: 60,
             max_vision_candidates: 16,
             max_visual_analyses: 6,
             max_full_resolution_image_reads: 0,
-            soft_time_budget_ms: 900_000
+            soft_time_budget_ms: 1_800_000
         },
         verification_tier: 'screenshot',
         cost_profile: {

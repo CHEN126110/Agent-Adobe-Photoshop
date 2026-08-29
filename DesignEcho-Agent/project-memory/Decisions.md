@@ -2,6 +2,172 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-114 首写对象 revision 不变事实由 baseline owner 计算并贯穿 v2 收据
+
+- 状态：已采用；r35 真实失败与官方 reconciliation 完成，代码、producer/consumer 集成攻击、Design Reliability、相邻边界、Main /Renderer 类型、Agent /UXP production build 与提交前唯一完整核心 65/65 通过；独立提交、clean identities 与 r36 待完成。
+- 触发事实：r35 的 D-113 生命周期、同 revision PSD/JPG、内部 Completion 与 6 个用户文档保护均真实通过，但外层 Reliability 报“首次 Photoshop 写入隔离基线收据与对象级文档归属或 Runtime Build 事实不一致”。源码对账证明 assessment 已计算 `preexistingDocumentRevisionsUnchanged`，receipt producer 没有序列化，而 consumer 强制要求 passed 值为 true。
+- 决定：在现有 `GuardedPhotoshopExecutionBaseline` 中保存 assessment 的布尔事实，并由 `readGuardedPhotoshopExecutionBaselineReceipt()` 原样投影。错误首写工具在 Host dispatch 前可恢复时清空该值并重新观察；真实对象 revision 漂移投影 false 并保持 blocked。v2 版本不升级，因为 consumer 与既有手写 v2 fixture 已把该字段视为 intended contract；本修复是在 producer 补齐既有契约，不改变语义。
+- 测试裁决：不能再只分别测试 producer 和 consumer。Design Reliability 必须用 producer 实际生成且完成对账的 receipt 直接调用 consumer validator，并保留 true /false 攻击断言。手写 receipt 只覆盖其它协议组合，不得作为本字段唯一绿色证据。
+- 不做：不删除或放宽 consumer 断言，不用默认 true，不从请求 /模型 /文件名补值，不新增第二基线账本，也不把 r35 视觉问题混进 Harness 收据修复。
+- 回滚点：若字段导致非正式路径行为变化，可回退 D-114；回退后正式采集 passed 首写会再次恒失败，因此不能把回退版本用于 Reliability 发布结论。
+
+## D-113 本 TaskRun 新建文档按对象逐个结算，Harness 不替 Agent 关闭或改稿
+
+- 状态：已采用并完成代码与提交前验证阶段；D-112 提交、clean identities、65/65 与 r34 真实归因已完成，D-113 运行事实 /业务 /Runtime /作者权 /工具 /Executor /Capability /简化棘轮、类型、Agent production build 与唯一完整核心 65/65 通过；独立提交、clean identities 与 r35 待验证。
+- 触发事实：r34 的 DeepSeek Agent 创建 v1 后发现对比度问题，又调用 `composeDesign(document.mode=new)` 创建 v2；v2 的同 revision PSD/JPG 与 Profile Completion 均通过，但 v1 仍未保存、dirty，使外层 Attempt 正确失败。D-112 paired delivery 没有失效，缺口是 Completion 只看最终目标，没有核对本 TaskRun 创建集合。
+- 决定：同一 TaskRun 的每个受信任 `document_creation` 对象必须在再次新建或完成前进入终态：按当前交付范围取得与最新内容 revision 对应的真实保存 /导出收据，或由 Agent 显式 `closeDocument(documentId)` 成功关闭。前一对象未结算时，通用执行 preflight 拒绝下一次 `createDocument` /`composeDesign(new)`；`composeDesign(active)` 与结算后的后续新建不受阻。
+- 作者权与安全：Harness 只报告对象未结算事实，不自动调用关闭、不从文件名 /品类 /助手文字选择弃稿、不把 `new` 改成 `active`。破坏性关闭继续使用既有 HITL；模型决定原地修订、交付当前候选或请求关闭。多文档任务按顺序逐个结算，不被全局单文档上限误伤。
+- Owner：现有 TaskRun 创建证据负责跨 Reflexion 保存 document/revision 与部分交付 /关闭终态；`agent-tool-execution-preflight` 负责第二次新建前的执行事实；现有 creative /Profile Completion 负责最终集合核对。Photoshop Provider、TransactionRunner、Safety Policy、E2 和 Evaluation owner 均不复制。
+- 回滚点：D-113 只扩展通用创建证据、执行 preflight、Completion 投影与可复用测试；若 r35 证明模型无法从 blocker 回到当前文档修订，先回滚写前阻断而保留 Completion 终态核对，再依据真实 Tool 选择调整模型可见说明，禁止改成自动 close 或静默参数重写。
+- 验证边界：r34 已证明问题形态和外层拒绝；尚未证明新 preflight 会让真实 DeepSeek 选择 `active`，也未证明跨 Reflexion、显式单格式和顺序多文档的全部结果形态。r35 技术通过仍不代表商业质量通过。
+
+## D-097 固定 JSON 的终局视觉 Judge 不消费 Provider 原生思考预算
+
+- 状态：已采用并形成独立可回滚提交；专项 `audit:runtime-declaration`、Main /Renderer 类型检查、Agent production build 与完整核心闸门 58/58 已通过。r33 DeepSeek 真机待完成。
+- 触发事实：r32 普通重发的最后一次 Final Judge 是 3 图、0 Tool，输出恰好 4,320 tokens；代码对 12 项断言也只分配 4,320 tokens。Provider accounting 没有调用失败，但 Final Judge 因非完整终态变成 `judge_unavailable`。RunRecord 未保存原始 `finish_reason`，因此 `max_tokens` 仍是待 r33 证实的最强解释，不写成已验证真机事实。
+- 排除项：DeepSeek 的视觉出站回执在当前运行线是 `optional`，只有 Codex 订阅通道是 `required`；在没有证据时扩展回执协议会改错 owner。简单抬高 token 上限也会把隐藏思考成本永久化，不能解决同类结构化辅助调用的预算竞争。
+- 决定：`FinalQualityModelRequest.thinkingEnabled` 固定为 literal `false`，首次 Judge 与 diagnosis-only repair 都显式关闭 Provider 原生思考。主 Agent 的思考偏好保持不变；没有按 DeepSeek 型号新增 Runtime 分支，未实现关闭语义的 Provider 继续按既有适配能力处理。
+- 不变量：仍只采信 `end_turn`；`max_tokens`、残缺 JSON、部分评分、Tool Call、历史漂移和 Codex 回执缺失 /错位继续失败关闭。4,320 token 上限、一次 Judge、最多一次 diagnosis repair、ReviewSet 与同 Photoshop revision 校验均未放宽。
+- 回滚点：生产改动只在 `final-quality-model-protocol.ts` 的辅助请求契约和两处请求构造；若 r33 证明关闭思考显著降低评审质量或仍不能取得完整终态，可独立回滚 D-097，再依据持久化运行事实调整结构化输出契约，而不是修改主 Agent 或 Photoshop 链。
+- 验证边界：现有审计已证明 r32 形态仍为 12 项 /4,320 token，Judge 与 repair 均传 `thinkingEnabled=false`，DeepSeek adapter 实际生成 `thinking:{type:'disabled'}` 且不残留 `reasoning_effort=high`。这不等于真实 DeepSeek 已返回 `end_turn`，也不等于设计质量通过。
+
+## D-096 正式 Design Reliability 采集与官方 UXP loader 必须竞争同一开发期 Runtime 租约
+
+- 状态：已采用并在独立 D-096 worktree 形成可回滚提交；专项纯逻辑、loader self-test、真实双进程拒绝 canary、相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整核心闸门 58/58 与提交后 clean identity 已通过。r32 reconciliation 和 r33 真机待完成。
+- 触发事实：r32 提交时 Photoshop UXP 是 D-094 clean build，正式 DeepSeek Run 期间却被另一开发会话替换为旧 dirty build。现有三处 Runtime binding 能安全拒绝漂移，但只能在昂贵运行已经发生后报告失败；官方 loader 没有跨 worktree 互斥。
+- 反证结论：r32 在失败 Attempt 后出现的第二 Run 不是自动 Reflexion 逃逸。它在 Attempt 终止约 25 秒后从同一 conversationId 的新 branchId 启动；生产代码只有“编辑已发送消息并重发”会更换 branchId。它属于新的显式顶层交互，不允许用代际 guard 或延长旧 Debug lease 阻断正常用户重发。
+- 决定：仓库外 canonical Design Reliability data root 只保留一个版本化 Photoshop Runtime lease。`run-live` 以 `formal_capture` 取得后再次核对完整 UXP binding，并在任何 Attempt Event、模型提交或 Photoshop 写入前失败关闭；官方 UXP loader 以 `uxp_loader` 在连接 UDT 和任何 load /unload 前取得同一租约。二者都在 `finally` 精确释放。
+- 陈旧与所有权：租约绑定随机 leaseId、有限 owner、PID、进程起始 /取得 /预期到期时间。只要 owner 进程仍存活就不得因 TTL 到点删除；owner 已退出时后继者可回收。释放必须匹配当前 leaseId，旧 owner 不得删除新 owner。没有 force 参数。
+- Owner 与边界：该租约只拥有开发评测期间的合作式 loader 互斥，不拥有 Photoshop 权限、TaskRun、Runtime binding、事务、完成判断或设计答案。用户手动 UDT reload 与第三方直连仍可能绕过，因此既有提交 /首次写 /完成 binding 必须保留为安全权威。
+- 回滚点：D-096 只新增一个 `scripts/lib` 租约模块，并接入 `design-reliability.cjs` 与官方 loader；若出现开发 loader 无法恢复的误阻断，可独立回滚本切片，D-095 /D-094 与三处完整 Runtime binding 不受影响。
+- 验证边界：双进程 canary 已证明持有正式采集租约时 loader 在 UDT 连接前返回 `runtime_capture_lease_active`，随后原 owner 成功释放且全局无残留。尚未完成真实 `run-live` 全窗口、持有进程崩溃后的真实 loader 回收和 r33，不能宣称环境漂移已完全消失。
+
+## D-095 写前已拒绝且无 Host 副作用的错误首选可恢复，事实风险继续永久锁死
+
+- 状态：已采用并形成独立提交 `d8ce40ef`；纯逻辑攻击测试、相邻审计、Main /Renderer 类型检查、Agent /UXP production build 和完整核心闸门 58/58 已通过，r33 真机待完成。
+- 触发事实：r32 的首个写尝试 `placeImage` 被 D-094 在 dispatch 前正确拒绝，RunRecord 明确 `mutationObserved=false`。模型下一轮已经改用正确 `createDocument`，但 `blockBaseline()` 把整个 TaskRun 永久置为 blocked，导致 5 次 `createDocument`、2 次 `composeDesign` 继续撞墙，最终 24 次模型调用累计 1,764,991 input tokens 且成功 mutation 为 0。
+- 决定：`first_mutation_must_create_task_document` 只表达当前工具选择错误，不表达 Photoshop 环境已经不安全。该调用仍返回失败且不派发；baseline 清除本次首写候选并回到 pending。下一次受保护写调用必须重新读取完整 Runtime identity 与文档 inventory，只有 `createDocument` 且所有前置对象 identity /revision 仍匹配时才可进入 passed。
+- 永久阻断边界：Runtime 身份缺失 /漂移、文档 inventory 缺失、fixture 文档已打开、前置对象缺失 /身份 /revision 变化、新外部文档出现等仍调用唯一 `blockBaseline()`；一旦 blocked，同一 TaskRun 不因后续状态看似恢复而解锁。被拒绝的原工具本身不可自动重试，也不会取得权限。
+- Owner：仍是现有 `guarded-photoshop-execution-baseline` 与唯一低层 Photoshop dispatch gate。Tool 结果只增加结构化 `retryableWithinTaskRun / nextRequiredTool=createDocument`，不新增恢复 Runtime、第二 Gate、Task Store、事务 owner 或设计决策逻辑。
+- 回滚点：D-095 是建立在 `eb40a93c` 上的独立提交；若真实行为证明恢复会导致非 `createDocument` 派发或放宽 Runtime /revision 风险，可单独回滚 D-095，D-094 的对象保护和永久失败关闭仍保留。
+- 验证边界：纯逻辑已覆盖错误首选拒绝、正确首写重新观察并通过、两次之间 revision 漂移永久阻断以及 blocked 后不得恢复。类型检查通过不等于 r33 真机完成；共享 UXP session 漂移另列风险，不由本决定掩盖。
+
+## D-094 正式从零创作按 TaskRun 前置对象 revision 隔离，不要求文档先有磁盘路径
+
+- 状态：已采用为 D-093 的收敛切片；专项攻击测试、Main /Renderer 与 UXP 类型检查、工具注册、设计作者权、UXP 行为、唯一事务 owner 审计、Agent /UXP production build 和完整核心闸门 58/58 通过。独立提交、提交后双 Runtime identity 与 r32 真机待完成。
+- 触发事实：真实 Photoshop 中存在未保存的 `800` 用户工作稿。D-093 因它没有路径而阻断 r32，但缺路径只说明无法计算项目目录亲和性，不等于该对象必须成为本轮写目标。执行链已经能从 `createDocument` mutation commit 取得新文档 ID，并为后续写入签发私有 target /revision guard。
+- 决定：正式从零创作请求在提交时冻结所有已打开文档的 `documentId/historyStateId`。提交前已存在且 revision 可读的非 fixture 对象，无论 saved /unsaved /path unavailable，都属于受保护 TaskRun 前置对象；它们不获得写入、保存、关闭或素材选定权。首个 Photoshop mutation 必须是 `createDocument`，首次写前不得已有后来打开的 fixture 文档。任务完成前再次读取同一集合，要求每个前置对象仍打开且名称、pathState、editState、projectAffinity 和 revision 均未变化；新增外部对象、缺 revision 或任何漂移均失败关闭。
+- Owner：仍由 `guarded-photoshop-execution-baseline` 拥有提交、首次 mutation 与完成对账；`listDocuments` 只提供 Host 文档 /历史事实；既有 Agent preflight、私有 target guard 与唯一 PhotoshopTransactionRunner 继续拥有每次真实写入。完成对账进入同一 baseline receipt，不新增 Runtime、Task Store、事务日志或 Release owner。
+- 禁止反例：不得把所有 unsaved 文档一律放行；没有稳定 revision 仍阻断。不得允许先打开 fixture 输入图再把它当首次写目标；不得只检查首次 mutation 而省略完成对账；不得通过保存 /关闭用户文档、移除 dirty 检查或相信模型自报“没有碰外部文档”来让 r32 变绿。
+- 回滚点：本切片升级 `guarded-photoshop-execution-baseline` /receipt 到 v2、Debug submit receipt 到 v4、文档 inventory 到 v1，并给 `listDocuments` 增加 revision 事实。若真实 Photoshop 不能稳定读取非活动文档的 history，可独立回滚 D-094；回滚后保留 D-093 对路径明确外部文档的支持，不退回全局 `none_open`。
+- 验证边界：纯逻辑已覆盖未保存 +revision 放行、无 revision 阻断、前置对象缺失 /身份变化 /revision 变化、完成时新增外部对象和首写目标污染；Adobe UXP 官方契约支持文档 ID 在打开生命周期内有效、HistoryState ID 与文档 ID 共同表示历史状态。真机 `listDocuments` revision 读回、完整闸门和 r32 尚未完成，因此当前只声明代码与专项边界。
+
+## D-093 Photoshop 隔离按对象身份与写入目标判断，禁止 `none_open` 全局锁
+
+- 状态：已采用并形成独立 Git 提交；Design Reliability 专项行为验证、完整核心闸门 58/58、Agent /UXP production build 均已通过，带外部 dirty 文档的正式真机 Attempt 待完成；远端发布状态由 Git 记录，不进入产品运行状态。
+- 触发事实：D-092 已让产品 Runtime 区分 `pathState`、`editState`、`projectAffinity` 和 TaskRun mutation 所有权，reconciliation 也允许路径明确且位于原 fixture 外的 dirty 文档继续打开；但正式 Attempt 与首次 mutation baseline 仍要求 `none_open`，导致开发 Harness 继续要求用户关闭无关 `SKU.psb`，与产品事实模型和低人工介入目标矛盾。
+- 决定：正式受控请求在提交时冻结完整文档清单。已有文档只有在路径状态已解析且属于 fixture 外部时才可保留，`dirty` 事实照实记录但不产生保存、关闭或写入授权；提交时已有 fixture 文档、路径未知 /未保存文档继续失败关闭。首次 Photoshop mutation 前重新读取清单：新出现的外部文档阻断；外部活动文档不能承接普通写入；`createDocument` 可以在外部文档仍打开时建立新的 TaskRun 目标；同一请求随后打开并激活的 fixture 文档可以承接精确写入。后续 mutation 继续经过现有 TaskRun、target /revision 与 Provider preflight，不由该基线取得额外权限。
+- Owner：`guarded-photoshop-execution-baseline` 只拥有正式 Debug 请求的两次对象级隔离事实和收据；`photoshop-document-inventory` 继续拥有路径 /项目归属投影；TaskRun 与 Photoshop execution preflight 继续拥有真实写目标，Agent 继续决定复用、切换或新建哪个合法对象。
+- 正面经验：环境安全应比较“哪个对象、属于谁、哪项动作会碰它”，而不是把应用全局状态压成一个布尔值。这样既能保护用户未保存工作，也不会让无关文档拖慢或阻塞新任务。
+- 禁止反例：不得恢复“有任意文档打开就阻断”、不得因 `dirty` 自动保存 /关闭、不得把 fixture 外部文档设为当前写目标、不得用文件名或活动标签猜所有权，也不得把 benchmark 洁净条件写回普通产品 Harness。
+- 回滚点：协议版本分别升级为 `guarded-photoshop-execution-baseline/v1`、`guarded-photoshop-execution-baseline-receipt/v1` 和 `debug-bridge-chat-submit-receipt/v3`；若真机发现目标归属误判，可独立回滚 D-093，但不得退回全局 `none_open`，应保留 D-092 的四类事实并收紧具体对象条件。
+- 验证边界：纯逻辑已覆盖外部 dirty 文档 + `createDocument` 通过、直接写外部活动文档阻断、提交后新外部文档阻断、同请求打开 fixture 文档后写入通过、未知文档和提交时已有 fixture 文档阻断；完整核心闸门 58/58 与 Agent /UXP production build 已通过。尚未用提交后新构建在真实 Photoshop 中完成 r32，因此不能宣称真机低介入率已提高。
+
+## D-091 文件交付 revision 只能由拥有该 revision 的 Host 协议闭合
+
+- 状态：已采用；受控前后对照真机探针、定向回归、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 已通过，提交推送和 r26 正式 Attempt 尚待完成。
+- 触发事实：r25 已完成同 history PSD/JPG、7/7 结构化完成和正确 full-canvas Judge，但 `runtimeDeliveryResultRefs` 仍为空。真实 renderer 探针显示 PSD `saveDocument` 带 UXP `sourceHistoryStateRef`，而 `quickExport` → `saveDocument` 重定向写出的 JPG 只有路径和成功状态，没有源 revision。
+- 根因：JSX 桥在 `saveAs` 后读取 ExtendScript history；该值真机会丢失。把读取提前后又证实 ExtendScript history id 与 UXP history id 不是同一身份空间，不能直接比较或包装成 UXP `PhotoshopHistoryStateRef`。宽松 `production-delivery` 只按格式统计文件，严格 E2 则正确拒绝无同版本来源的 JPG。
+- 决定：JSX 只负责在文件写入前核对自己实际选中的 `sourceDocumentId`，防止同名文档导错；UXP 是 Photoshop revision 的唯一 owner，在派发前冻结 source history，导出后重新读取并要求同文档 /同 history，再把该 UXP ref 写入 `saveDocument`、`quickExport` 与 `batchExport` 收据。任何一环缺失或变化都返回失败，不将文件路径、成功文案或跨协议数字补成可靠交付。
+- Owner：`core/jsx-bridge.saveDocumentViaJsx` 拥有 JSX 文档身份前置核对；`tools/canvas/save-document` 的 revision helper 拥有 UXP 写前 /写后源版本闭合；Agent `agentic-final-delivery-evidence` 继续只消费完整收据，不扫描文件、不推断来源。
+- 替代项：不采用放宽 E2、目录扫描、按扩展名补 ref、相信 `redirectedTo=saveDocument`、把 ExtendScript history id 视为 UXP history，或只给 r25 /主图加兼容分支。这些方案都会重新制造双重真相或错误文件归属。
+- 回滚点：D-091 只改变 JSX 保存返回身份、三个 raster 导出工具的源 revision 收据和既有回归；若旧 Photoshop 兼容性受影响，可独立回滚本切片，但不得保留伪造 UXP history 的旧转换。
+- 验证边界：前置探针已复现 JPG 成功但缺 ref；错误的跨协议 history 比较在写前失败且未生成文件；最终探针返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。这证明 Provider 收据链修复，不替代 r26 从 Agent Final Judge 到非空 `finalArtifactRefs` 的正式端到端验证。
+
+## D-090 ReviewSet 类型是终局证据身份，禁止单画布与 Bundle 相互降级
+
+- 状态：已采用并以 `1521c504` 推送；提交后 Agent /UXP identity 已验证。r25 证明自动 full-canvas 与 Judge 对象正确；后续空 `finalArtifactRefs` 已定位为独立的 D-091 raster revision 收据缺口。
+- 触发事实：r24 最终 Photoshop 画面包含完整主体、标题和四色陈列，但 Final Judge 却描述无文字、大片留白和偏小商品群；同一 Run 又同时记录 `finalArtifactObserved=true`、生产交付检查通过与安全 `finalArtifactRefs` 为空。Tool trace 没有 Harness 全画布调用，证明 D-089 的自动采集被已有候选短路。
+- 根因：`selectFinalQualityReviewSet` 在单画布路径使用 `single || bundle`。document/history 只证明时间一致，不能证明 Bundle 里的像素就是完整成品；素材候选、局部裁切和声明多屏即使同版本、数量完整，也不能替代 `single_surface`。
+- 决定：Evaluation Profile 的 `requireMultiSurface` 同时决定 ReviewSet source。单画布只能选择 `single_surface`，缺失 /陈旧时由 D-089 的 Host evidence 采集一次无 region 全画布；多画面只能选择完整 `visual_observation_bundle`，不得降级成单图。Final Judge、E2 reviewed-source binding 与运行结果中的可信视觉 Artifact 必须调用同一选择 Owner，不能各自偏好不同证据。
+- Owner：`final-quality-host-evidence.selectFinalQualityReviewSet` 是类型选择的唯一纯逻辑 Owner；`Agent.findLatestDesignVisualJudgeReviewSet` 负责注入当前单图 /Bundle 候选；Host evidence 只补缺失事实，模型继续拥有视觉评价与修订决定。
+- 替代项：不采用“Bundle 优先”“同 history 就可用”“让 Prompt 提醒 Judge 哪张是成品”或 E2 扫描文件兜底。这些路线不能消除对象身份歧义，还会制造 Judge、交付与恢复三套真相。
+- 回滚点：代码改动仅涉及 ReviewSet 选择和可信 Artifact 投影；若多画面回归受影响，可独立回滚 D-090，不撤销 D-089 的只读全画布采集、Provider 逐图收据或交付同 revision 约束。
+- 验证边界：现有核心行为回归注入合法、同 document/history、结构完整的误导素材 Bundle；旧实现会直接选择它，新实现必须返回无单画布候选、触发自动 full-canvas、让 Judge 第一张图为该 Host 结果、排除误导图，并把可信运行 Artifact 写成 `single_surface`。代码验证不替代 r25 真实 Debug Bridge `finalArtifactRefs` 和视觉盲评。
+
+## D-089 局部观察与完整终审分权：Harness 可补只读证据，模型继续拥有审美判断
+
+- 状态：已采用并以 `329a650e` 推送；完整 58 阶段核心闸门、Agent /UXP production build 与提交后身份均已验证。r24 证明 Host 全画布采集能力本身可用，但同时发现 selector 会让同 history Bundle 短路该采集；该后续根因由 D-090 收口，因此仍不能宣称正式成功率已提高。
+- Agent 在设计过程中自主决定看全图还是局部、如何裁切和如何修订；局部 `region` 观察可以支持对应局部判断，但不能冒充完整交付面的终审 ReviewSet。Harness 不应要求 Agent 用固定工具顺序设计，也不能因局部图看起来正常就自签质量通过。
+- 当 Agent 已进入自然终稿、当前任务需要视觉质量结算、结构读回确认了精确 Photoshop revision，而单画布完整 ReviewSet 缺失或过期时，Harness 可以执行一次有界的全画布只读观察。该动作只补事实：优先使用带 `expectedDocumentId` 且不带 `region` 的 `getCanvasSnapshot`，无该能力时才使用完整文档快照；结果必须与结构读回同 revision，否则丢弃。
+- 多画面任务不适用单画布替代：详情页等声明式多画面 Profile 必须继续提供完整 Bundle、目标覆盖和同 history 证明，不能为了提高成功率退化为一张缩略全图。
+- 审美断言仍由当前唯一多模态 Agent 模型的 Final Judge 产生。只有 Provider 逐图出站收据与实际 ReviewSet 完全匹配、Judge 完成且 Host revision 未变化时，Runtime 才记录“该精确像素结果已被终审”。这项绑定可以供 E2 验证同版本交付，但不伪造普通主模型的 `reviewDecision`，不执行修订，也不授予写权限。
+- E2 只消费上述终审绑定与真实 save/export 收据；不能扫描目录猜最终文件，也不能因为磁盘上存在 PSD /JPG 就补造 `finalArtifactRefs`。用户可见过程只说明“核对最终画面 /交付文件是否一致”，具体缺口和协议诊断留在 Run Record。
+
+### 正面经验
+
+1. “Agent 是否需要看哪里”与“系统能否证明最终交付被完整看过”是两种所有权。前者属于设计判断，后者属于 Harness 完成验真；把它们混成一句“请再看画面”既降低自主性，也不能保证取得正确证据。
+2. 结构读回、完整像素、Provider 出站收据和保存 /导出源 revision 串成一条链后，Final Judge 可以既不替 Agent 设计，又可靠证明它实际评价了哪一版。
+3. 用 Profile 的 `single surface / multi surface` 语义决定证据形状，比按“主图 /详情页 /SKU”关键词分支更通用，也不会把业务流程写回 Agent 核心。
+4. 先让真实 Attempt 失败，再从首个偏差修 owner，比扫描到文件后补绿更能提高成功率；r23 的文件存在但正式失败是有效证据，不是评测器应隐藏的噪声。
+
+### 负面教训与禁止反例
+
+1. **把局部 `region` 截图当完整成品**：它只能证明局部像素，不能评价全局层级、平衡、留白或列表缩略效果。
+2. **同一缺口只重复提示“检查当前画面”**：模型可以再次选择同一局部区域，形成 `same_gap`；Harness 应补自己拥有的只读终审事实，而不是把协议知识转嫁给模型猜。
+3. **给自动快照伪造 `reviewed=true`**：读取像素不等于模型已看过。必须由真实 Final Judge 请求和逐图出站收据建立精确绑定。
+4. **看到 PSD /JPG 后扫描目录补 `finalArtifactRefs`**：这会绕过同 revision、最终版本与 Agent 交付声明，制造假成功。
+5. **用单画布快照替代详情页完整 Bundle**：这会把多屏覆盖缺失隐藏成通过，属于降低证据要求，不是通用化。
+
+## D-088 完成态可选 generation 必须在启动前证明能够独立闭合
+
+- 状态：已采用并以 `f148d512` 推送；提交后 Agent /UXP identity 与 r23 写前环境已核实。r23 没有再创建 0 调用空子代，说明该故障形态已消失；但 r23 因 D-089 所述终审证据缺口仍未取得正式技术成功，不能把单一故障消失外推为整体成功率或商业视觉质量改善。
+- `stopReason` 只描述上一 generation 为什么结束，不代表下一 generation 的资源状态。完成态可选审美改进必须读取同一 TaskRun 的真实累计 `RuntimePerformanceUsage`，并与本次请求实际生效的预算比较；不能从 `final_response`、质量分数、文件存在或助手措辞推断还有余量。
+- 可选下一代必须至少容纳三次主模型回合（定向修订、同版本读回 /交付、终态结算）、四次 Tool Call（mutation、结构 /画面读回、保存、导出）、三次迭代、一个视觉候选、一次视觉分析和三个主模型 inactivity window 的活动时间。任一维度不足或调用方无法提供容量证明时 fail closed 为 `resource_budget_exhausted`，保留当前完成结果。
+- 模型请求 timeout、收尾回合数和完成态重入最小容量由共享 `agent-performance-policy` 单点定义；`reflexion-reentry-policy` 是是否重入的唯一决策 owner，Executor 只传同一份只读累计快照和有效预算。容量检查不消费额度、不延长 deadline、不选择修法、不执行 Tool、不授予 Photoshop 权限。
+- 迭代余量必须使用请求当前实际生效的 `maxIterations`，不能用 Manifest 或全局 ceiling 的较宽值冒充可用额度。plan-neutral 重入继续以同一快照播种下一 Agent；不得为可选改进创建第二性能账本或新 TaskRun。
+- 容量不足的决定必须发生在父代 Run Record 中间提交、Debug 交付 sidecar 清空和新 Agent 构造之前。因此“注定 0 调用的空子代覆盖已完成父代”不能再作为正常失败路径出现。
+
+### 正面经验
+
+1. generation 本身是一段需要完整供给的生命周期事务；启动条件应证明它有机会闭合，而不是启动后再让普通预算器立即杀死。
+2. 同一累计账本同时用于准入判断和下一代恢复，能避免检查一份、执行另一份造成新的 TOCTOU。
+3. 用模型、Tool、迭代、视觉和时间的多维最小包表达“能做完一段返工”，比只看时间或只看 stopReason 更接近真实执行条件，也不涉及任何审美答案。
+4. 在代际切换前停止，可以自然保留父代的结构化完成事实和交付引用，无需事后用 fallback 拼回成功结果。
+
+### 负面教训与禁止反例
+
+1. **把 `final_response` 当剩余预算证明**：r22 父代在终局质量预留内完成，活动时长已超过普通软预算；外层仍启动子代，导致它 0 模型 /0 Tool 即停止。
+2. **先清空交付引用再判断子代能否运行**：这让一个没有执行任何工作的空代覆盖真实 PSD /JPG，是 Harness 自己破坏完成真相。
+3. **只增加 retry / timeout**：它不能证明模型、Tool、迭代和视觉额度同时足够，只会把相同代际错误推迟或转移到另一维度。
+4. **按主图、83 分或某个模型增加例外**：根因属于所有完成态可选 generation；业务词、质量阈值和样例文件不得进入容量策略。
+5. **让 Harness 根据容量不足选择“最小修法”**：容量策略只能停或允许 Agent 判断，不能借节省预算之名接管设计作者权。
+
+## D-087 模型回合、交付能力、终局预算与完成事实必须按同一生命周期闭合
+
+- 状态：已采用；通用实现、定向回归、Agent production build 与完整核心闸门 58/58 已通过并以 `4549a846` 推送。r22 已证明父代交付链能够闭合，同时暴露的下一 generation 容量缺口由 D-088 继续治理；正式 Attempt 仍未通过，因此不代表真实成功率或视觉质量已经达标。
+- 模型回合在预算允许时取得一次性结算租约。该回合返回的 Tool Call 不再被已经流逝的普通软时钟二次否决；硬 Tool 上限、Capability deny、执行权限、目标 /revision、事务、preflight 与 unknown-write 安全边界全部继续生效。软预算仍可拒绝下一次模型调用。
+- 通用交付能力以“当前 TaskRun 已形成可看设计内容”为生命周期信号，在同一个 Capability Session 中幂等开放已声明的 `delivery.*` schema。空白建档不触发；此动作不执行 Tool、不选择路径 /格式、不绑定 Stage，也不扩张原有 deny ceiling，设计与交付决定继续归模型。
+- 质量优先任务在普通软预算内预留有限的终局模型回合；Final Judge 与 diagnosis 共享同一个绝对终局质量截止时间。预留用于闭合既有任务，不允许开始新的设计方向，也不是无限延长 timeout。
+- 停止原因与任务终态分轴：`performance_budget` 先走统一 Terminal Closure，再由结构化产物、目标、写后读回、质量与交付收据结算 completed / unfinished。预算到点不能把已经完成的同 revision 事实改写成失败。
+- agentic 最终交付证据是同一最后内容 mutation 之后、同一 document /history、通过 `production-delivery` 验证的完整回执集合；必须按输出契约同时满足可编辑稿和光栅预览，不能用最后一次 save/export Tool Call 代表全部产物。
+- 以上规则是任务生命周期基础设施，不属于主图、详情页、SKU 或任何 Skill。禁止按品类关键词激活、写进固定工作流、自动调用保存 Tool，或为单个事故增加第二套 completion /delivery 状态。
+
+### 正面经验
+
+1. 把模型回合视为“准入后可结算的工作单元”，能消除预算边界上的 TOCTOU，同时保留下一回合的硬停止能力。
+2. 用已发生的结构化产物事实驱动 Capability 渐进披露，比用意图关键词或品类流程更通用，也不会替模型做设计选择。
+3. 将停止原因、产物完成、视觉质量和用户可见回复分轴后，系统可以诚实停止而不伪造失败或成功。
+4. 把交付视为同 revision 的集合，才能可靠绑定 PSD /PSB、预览图和最终视觉复核，避免“最后一张回执覆盖前一张”。
+
+### 负面教训与禁止反例
+
+1. **回合前允许、回合后按软时钟拒绝动作**：这是 Harness 自己制造的无进展，不得归因给模型慢或 Agent 不执行。
+2. **成稿后仍要求模型搜索通用保存能力**：这浪费终局上下文与时间；应开放 schema，但不能替模型发出调用。
+3. **把 timeout 延长当修复**：没有终局预留和统一结算，只会把同一失败推迟发生。
+4. **`performance_budget` 无条件映射 failed**：停止原因不能覆盖结构化完成事实，也不能隐藏真实未完成义务。
+5. **只取最后一次交付调用**：会让 PSD 与预览图无法共同证明同一版本，正式成功判定必然失真。
+
 ## D-086 设计可靠性只保留一条 Attempt → Run → Review → Attribution 证据链
 
 - 状态：已采用；统一契约、固定 Fixture / workspace 语义身份、质量优先 timeout、Attempt 归因、可信参考像素提交与 cohort 比较已完成代码和纯逻辑验证；首条真实跨商品参考复刻 Case 与隔离 Fixture已建立，但 SKU 私有交互 actor、Photoshop 重复样本和严格盲评仍待后续里程碑，不能由本裁决补造成已完成。

@@ -5,6 +5,14 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import {
+    observePhotoshopDocumentEditState,
+    type PhotoshopDocumentEditState
+} from '../../core/photoshop-document-state';
+import {
+    readActiveHistoryStateRef,
+    type PhotoshopHistoryStateRef
+} from '../../core/photoshop-history-state-ref';
 
 const app = require('photoshop').app;
 const action = require('photoshop').action;
@@ -22,7 +30,7 @@ export class ListDocumentsTool implements Tool {
 
     schema: ToolSchema = {
         name: 'listDocuments',
-        description: '列出 Photoshop 中所有打开的文档，包括当前活动文档的标识',
+        description: '列出 Photoshop 中所有打开的文档，包括活动标识、真实路径状态和保存后的修改状态',
         parameters: {
             type: 'object',
             properties: {
@@ -42,9 +50,9 @@ export class ListDocumentsTool implements Tool {
                     type: 'boolean',
                     description: '是否递归统计图层数；默认仅在 includeDetails=true 时启用'
                 },
-                includeHistory: {
+                includeHistoryState: {
                     type: 'boolean',
-                    description: '是否读取每个文档的历史状态身份（activeHistoryStateId、historyStateCount、saved）。纯 DOM 只读，不激活、不切换文档；用于“文档未被触碰”的版本证明'
+                    description: '是否读取每个打开文档的 documentId/historyStateId；默认 true，用于对象级隔离与变更检测'
                 }
             }
         }
@@ -55,7 +63,7 @@ export class ListDocumentsTool implements Tool {
         includePaths?: boolean;
         includeDimensions?: boolean;
         includeLayerCount?: boolean;
-        includeHistory?: boolean;
+        includeHistoryState?: boolean;
     }): Promise<{
         success: boolean;
         activeDocumentId?: number;
@@ -66,13 +74,13 @@ export class ListDocumentsTool implements Tool {
             path?: string;
             pathState: DocumentPathState;
             pathStatusReason?: string;
+            editState: PhotoshopDocumentEditState;
+            editStateReason?: string;
+            historyStateRef?: PhotoshopHistoryStateRef;
+            historyStateReason?: string;
             width?: number;
             height?: number;
             layerCount?: number;
-            activeHistoryStateId?: number;
-            historyStateCount?: number;
-            saved?: boolean;
-            historyStatusReason?: string;
         }[];
         count?: number;
         error?: string;
@@ -100,15 +108,15 @@ export class ListDocumentsTool implements Tool {
                 path?: string;
                 pathState: DocumentPathState;
                 pathStatusReason?: string;
+                editState: PhotoshopDocumentEditState;
+                editStateReason?: string;
+                historyStateRef?: PhotoshopHistoryStateRef;
+                historyStateReason?: string;
                 width?: number;
                 height?: number;
                 layerCount?: number;
-                activeHistoryStateId?: number;
-                historyStateCount?: number;
-                saved?: boolean;
-                historyStatusReason?: string;
             }[] = [];
-
+            
             for (const doc of documents) {
                 const docInfo: {
                     id: number;
@@ -117,54 +125,39 @@ export class ListDocumentsTool implements Tool {
                     path?: string;
                     pathState: DocumentPathState;
                     pathStatusReason?: string;
+                    editState: PhotoshopDocumentEditState;
+                    editStateReason?: string;
+                    historyStateRef?: PhotoshopHistoryStateRef;
+                    historyStateReason?: string;
                     width?: number;
                     height?: number;
                     layerCount?: number;
-                    activeHistoryStateId?: number;
-                    historyStateCount?: number;
-                    saved?: boolean;
-                    historyStatusReason?: string;
                 } = {
                     id: doc.id,
                     name: doc.name,
                     isActive: doc.id === activeDocId,
-                    pathState: 'not_requested'
+                    pathState: 'not_requested',
+                    editState: 'unknown'
                 };
+
+                const editState = observePhotoshopDocumentEditState(doc);
+                docInfo.editState = editState.editState;
+                if (editState.editStateReason) {
+                    docInfo.editStateReason = editState.editStateReason;
+                }
+
+                if (params.includeHistoryState !== false) {
+                    const historyStateRef = readActiveHistoryStateRef(doc);
+                    if (historyStateRef) {
+                        docInfo.historyStateRef = historyStateRef;
+                    } else {
+                        docInfo.historyStateReason = 'Photoshop 未返回该打开文档的当前历史版本，不能形成对象级变更基线。';
+                    }
+                }
 
                 if (params.includeDetails || params.includeDimensions) {
                     docInfo.width = doc.width;
                     docInfo.height = doc.height;
-                }
-                if (params.includeHistory) {
-                    // 逐文档 DOM 读取，不激活目标文档：history 身份用于"未被触碰"证明，
-                    // 读取动作本身绝不能制造历史状态。读不到时保留字段缺失并说明原因，
-                    // 由调用方 fail closed，不用 0 或 -1 冒充真实观察。
-                    try {
-                        const historyStateId = Number(doc.activeHistoryState?.id);
-                        const historyStates = doc.historyStates;
-                        const historyStateCount = Number(historyStates?.length);
-                        if (Number.isSafeInteger(historyStateId) && historyStateId > 0) {
-                            docInfo.activeHistoryStateId = historyStateId;
-                        }
-                        if (Number.isSafeInteger(historyStateCount) && historyStateCount >= 0) {
-                            docInfo.historyStateCount = historyStateCount;
-                        }
-                        // UXP 类型定义缺少 Document.saved，但运行时存在（save-document.ts 同款读法）
-                        const savedFlag = (doc as any).saved;
-                        if (typeof savedFlag === 'boolean') {
-                            docInfo.saved = savedFlag;
-                        }
-                        if (docInfo.activeHistoryStateId === undefined
-                            || docInfo.historyStateCount === undefined
-                            || docInfo.saved === undefined) {
-                            docInfo.historyStatusReason =
-                                'Photoshop 未返回完整历史身份（activeHistoryState/historyStates/saved 部分缺失）。';
-                        }
-                    } catch (historyError) {
-                        docInfo.historyStatusReason = `读取文档历史身份失败：${
-                            historyError instanceof Error ? historyError.message : String(historyError)
-                        }`;
-                    }
                 }
                 if (params.includeDetails || params.includeLayerCount) {
                     docInfo.layerCount = this.countLayers(doc);

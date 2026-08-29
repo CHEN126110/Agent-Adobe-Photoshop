@@ -56,6 +56,12 @@ const {
 } = require(
     path.resolve(__dirname, '..', 'src', 'shared', 'config', 'persisted-model-runtime.ts')
 );
+const {
+    buildCodexSubscriptionModelId,
+    isCodexSubscriptionModelId
+} = require(
+    path.resolve(__dirname, '..', 'src', 'shared', 'codex-subscription-contract.ts')
+);
 const { TaskOrchestrator } = require(
     path.resolve(__dirname, '..', 'src', 'main', 'services', 'task-orchestrator.ts')
 );
@@ -344,6 +350,21 @@ expectEqual(
     coldSubscriptionWithKnownLegacy.primaryModel,
     'codex-subscription-gpt-5-6-sol-cold-start'
 );
+expectEqual(
+    'Codex 动态模型构造器与启动识别共享同一身份前缀',
+    isCodexSubscriptionModelId(buildCodexSubscriptionModelId('gpt-5.6-sol')),
+    true
+);
+expectEqual(
+    'DeepSeek 正式模型不会触发 Codex 启动恢复',
+    isCodexSubscriptionModelId('deepseek-v4-flash-vision-exp'),
+    false
+);
+expectEqual(
+    'Codex 前缀本身不是有效模型身份',
+    isCodexSubscriptionModelId('codex-subscription-'),
+    false
+);
 
 const explicitKnownText = normalizeModelPreferences({
     ...DEFAULT_MODEL_PREFERENCES,
@@ -569,6 +590,21 @@ expectEqual(
 expectEqual(
     '订阅目录暂时失败会重试且不会按空目录覆盖',
     /if \(!modelResult\.success\) \{[\s\S]*?scheduleHydration\([\s\S]*?return;[\s\S]*?\}[\s\S]*?upsertDynamicModels\('openai-codex', modelResult\.models\)/.test(appStartupSource),
+    true
+);
+expectEqual(
+    '主进程只为持久化 Codex 主模型执行启动目录恢复',
+    /const restoredModelPreferences = normalizeModelPreferences\([\s\S]*?if \(isCodexSubscriptionModelId\(restoredModelPreferences\.primaryModel\)\) \{[\s\S]*?await hydrateCodexSubscriptionModels\(\);[\s\S]*?\} else \{/.test(mainStartupSource),
+    true
+);
+expectEqual(
+    'TaskOrchestrator 与 Codex 启动判断消费同一份归一化主模型',
+    /new TaskOrchestrator\([\s\S]*?modelService,[\s\S]*?restoredModelPreferences[\s\S]*?\)/.test(mainStartupSource),
+    true
+);
+expectEqual(
+    'renderer 只为当前 Codex 主模型执行启动目录恢复',
+    /if \(!isCodexSubscriptionModelId\(modelPreferences\.primaryModel\)\) return undefined;[\s\S]*?scheduleHydration\(0\);/.test(appStartupSource),
     true
 );
 

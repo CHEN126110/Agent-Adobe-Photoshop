@@ -7,7 +7,8 @@
   ],
   "main": "dist/main/main/index.js",
   "scripts": {
-    "postinstall": "node scripts/fix-onnxruntime-vcruntime.cjs",
+    "postinstall": "npm run install:electron-runtime && node scripts/fix-onnxruntime-vcruntime.cjs",
+    "install:electron-runtime": "node node_modules/electron/install.js",
     "dev": "chcp 65001>nul && npm run build && electron .",
     "dev:chat-ui:debug-window": "node scripts/launch-chat-ui-debug-window.cjs --port 9223 --isolated-user-data --log-file tmp/chat-ui-debug-window.log",
     "dev:chat-ui:debug-window:default-mcp": "node scripts/launch-chat-ui-debug-window.cjs --port auto --use-default-runtime-ports --seed-user-state --project \"D:\\A1 neveralone旗舰店\\C-1163\" --log-file tmp/chat-ui-debug-window-default-mcp.log",
@@ -24,6 +25,7 @@
     "start": "chcp 65001>nul && npm run build && electron .",
     "test:morphing": "node scripts/run-morphing-tests.js",
     "audit:handlers": "node scripts/check-handler-aliases.js",
+    "audit:main-runtime-dependencies": "node scripts/audit-main-runtime-dependencies.cjs",
     "audit:tools": "node scripts/audit-tool-registry.cjs",
     "audit:skill-standard": "node scripts/audit-skill-standard.cjs",
     "audit:executor-generic": "node scripts/audit-autonomous-executor-generic.cjs",
@@ -70,7 +72,7 @@
     "maintenance:photoshop-bridge-health:check": "node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready",
     "maintenance:photoshop-bridge-health:check:runtime": "node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready --required-runtime-feature getSubjectBounds.smartLayerKindGuard --required-runtime-feature selectionRead.noDialogSynchronousBatchPlay --required-runtime-feature createDocument.readbackCandidateValidation --required-runtime-feature toolErrorNormalizer.fontUnavailableCategory --required-runtime-feature saveDocument.rasterExportUsesJsx",
     "maintenance:photoshop-uxp-plugin:load": "node scripts/load-photoshop-uxp-plugin.cjs",
-    "maintenance:photoshop-uxp-plugin:load:check": "node scripts/load-photoshop-uxp-plugin.cjs --wait-for-bridge && node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready",
+    "maintenance:photoshop-uxp-plugin:load:check": "node scripts/load-photoshop-uxp-plugin.cjs --replace-loaded-plugin --wait-for-bridge && node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready",
     "maintenance:planning-check": "node scripts/check-planning-alignment.cjs",
     "maintenance:project-cockpit": "node scripts/report-project-cockpit.cjs",
     "maintenance:project-cleanup-candidates": "node scripts/report-project-cleanup-candidates.cjs",
@@ -100,8 +102,14 @@
     "test:agent-context-manager": "node scripts/verify-agent-context-manager.cjs",
     "test:agent-final-outcome-signals": "node scripts/verify-agent-final-outcome-signals.cjs",
     "test:runtime-build-identity": "node scripts/verify-runtime-build-identity.cjs",
+    "test:electron-runtime-compatibility": "node scripts/verify-electron-runtime-compatibility.cjs",
+    "test:openai-compatible-sdk": "npm run build:main && node scripts/verify-openai-compatible-sdk.cjs",
+    "test:volcengine-sdk-security": "node scripts/verify-volcengine-sdk-security.cjs",
+    "test:sharp-runtime-compatibility": "node scripts/verify-sharp-runtime-compatibility.cjs",
     "test:preload-sandbox-boundary": "node scripts/verify-preload-sandbox-boundary.cjs",
     "test:openrouter-image-request": "node scripts/test-openrouter-image-request.cjs",
+    "test:smile-image-provider": "node scripts/test-smile-image-provider.cjs",
+    "test:image-provider-request": "npm run test:openrouter-image-request && npm run test:smile-image-provider",
     "audit:inpainting-model-registry": "node scripts/audit-inpainting-model-registry.cjs",
     "test:semantic-target-vocabulary": "node scripts/verify-semantic-target-vocabulary.cjs",
     "test:bert-wordpiece-tokenizer": "node scripts/verify-bert-wordpiece-tokenizer.cjs",
@@ -110,6 +118,8 @@
     "test:sam-postprocessing": "node scripts/verify-sam-postprocessing.cjs",
     "test:guided-filter": "node scripts/verify-guided-filter.cjs",
     "test:semantic-region-contract": "node scripts/verify-semantic-region-contract.cjs",
+    "test:photoshop-workflow-dispatch": "node scripts/verify-photoshop-workflow-dispatch.cjs",
+    "test:sku-pose-alignment": "node scripts/verify-sku-pose-alignment.cjs",
     "test:design-authorship-boundary": "node scripts/verify-design-authorship-boundary.cjs",
     "test:compose-design-spec": "node scripts/verify-compose-design-spec.cjs",
     "test:design-task-card": "node scripts/verify-design-task-card.cjs",
@@ -135,16 +145,20 @@
     "@anthropic-ai/sdk": "^0.122.0",
     "@google/generative-ai": "^0.21.0",
     "@openai/codex": "0.149.0",
-    "@volcengine/openapi": "^1.36.0",
+    "@volcengine/openapi": "^1.36.2",
     "@volcengine/tos-sdk": "^2.9.1",
     "ag-psd": "^29.1.0",
     "ajv": "^8.20.0",
-    "axios": "^1.13.2",
+    "axios": "^1.20.0",
+    "http-proxy-agent": "^5.0.0",
+    "https-proxy-agent": "^5.0.1",
+    "iconv-lite": "^0.6.3",
     "onnxruntime-node": "^1.23.2",
-    "openai": "^4.70.0",
+    "openai": "^7.8.0",
     "playwright": "^1.52.0",
-    "sharp": "^0.34.5",
-    "ws": "^8.18.0",
+    "sharp": "^0.35.4",
+    "undici": "^7.29.0",
+    "ws": "^8.21.0",
     "zod": "^4.4.3",
     "zustand": "^4.5.0"
   },
@@ -158,7 +172,7 @@
     "autoprefixer": "^10.4.16",
     "concurrently": "^8.2.0",
     "cross-env": "^10.1.0",
-    "electron": "^28.0.0",
+    "electron": "^44.0.0",
     "electron-builder": "^24.9.0",
     "lucide-react": "^1.21.0",
     "postcss": "^8.4.32",
@@ -170,8 +184,22 @@
     "vite": "^5.0.0"
   },
   "overrides": {
-    "openai": {
-      "zod": "$zod"
+    "@volcengine/openapi": {
+      "axios": {
+        ".": "0.33.0",
+        "form-data": "4.0.6"
+      },
+      "form-data": "3.0.5",
+      "protobufjs": "7.6.6",
+      "uuid": "11.1.1"
+    },
+    "@volcengine/tos-sdk": {
+      "axios": "0.33.0",
+      "axios-adapter-uniapp": {
+        "axios": "0.33.0"
+      },
+      "http-proxy-middleware": "2.0.10",
+      "lodash": "4.18.1"
     }
   },
   "build": {

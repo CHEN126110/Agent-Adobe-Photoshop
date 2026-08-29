@@ -14,14 +14,24 @@ import type {
     ToolCall, ToolResult, ImageAttachment,
     CallModelFn, ExecuteToolFn, ContentBlock,
     AgentExecutionSummary, AgentStopReason, AgentToolCallLogEntry, AgentStepEvent,
-    AgentThinkingEventMeta, ToolSchema, TaskCompletionContract, TaskCompletionContext, TaskCompletionReferenceObservation
+    AgentThinkingEventMeta, ToolSchema, TaskCompletionContract, TaskCompletionContext, TaskCompletionReferenceObservation, ModelTransportAttemptAccounting
 } from './types';
 import { bindCanvasSnapshotExpectedDocumentId } from './canvas-snapshot-target-binding';
 import {
-    buildAgentUserResultProjection,
+    buildAgentUserResultProjectionFromToolLog,
+    deriveAgentUserResultFacts,
     type UserResultProjection
 } from './agent-user-result-projection';
 import { buildAgentActionEventProjection } from './agent-action-event-projection';
+import {
+    ensureFinalQualityCurrentReviewSet,
+    isFinalQualityReviewedVisualSource,
+    readFinalQualityCurrentHistoryStateRef,
+    selectFinalQualityFullSurfaceToolName,
+    selectFinalQualityReviewSet,
+    type FinalQualityHostEvidenceContext,
+    type FinalQualityReviewedVisualBinding
+} from './final-quality-host-evidence';
 import { resolveLatestClosedDesignQualityHistoryStateRef } from './quality-history-closure';
 import {
     buildTerminalClosureQualityCache,
@@ -98,6 +108,7 @@ import {
     resolveDeclaredCapabilityVerdict
 } from '../../../shared/model-capability-verdict';
 import {
+    AGENT_MODEL_REQUEST_TIMEOUT_MS,
     AGENT_GLOBAL_SKILL_BUDGET_LIMITS,
     buildDesignTeamChildExecutionReservation,
     buildDesignTeamSingleRoleExecutionReservation,
@@ -388,6 +399,7 @@ import {
     runFinalQualityReviewRuntime,
     type PendingTrustedFinalComparisonWrite
 } from './final-quality-review-runtime';
+import { FINAL_QUALITY_TERMINAL_RESERVE_MS } from './final-quality-model-protocol';
 import {
     AGENT_REPLY_OUTPUT_DISCIPLINE_PROMPT,
     AGENT_RUNTIME_MESSAGE_BOUNDARY_PROMPT,
@@ -398,7 +410,8 @@ import {
     prepareAgentMessagesForModel,
     retireDeliveredAgentMessageImages
 } from './message-context';
-import { buildTaskCompletionContract } from './task-completion-contract';
+import { buildTaskCompletionContract, buildTaskRunCreatedDocumentPreflightInput } from './task-completion-contract';
+import { projectAgenticFinalDeliveryStageEvidence } from './agentic-final-delivery-evidence';
 import {
     buildSummaryFromStatefulWrites as buildSummaryFromStatefulWritesFromModule,
     buildToolResultFallbackMessage as buildToolResultFallbackMessageFromModule,
@@ -428,6 +441,7 @@ import {
     type PerformanceLedgerState,
     type PerformanceModelBudgetClass
 } from './performance-ledger';
+import { describeIncompletePerformanceBudgetStop, settlePerformanceBudgetTerminal } from './performance-budget-terminal-settlement';
 import {
     resolvePerformanceVisionBudgetSnapshot,
     resolvePerformanceVisionCallCapacity as resolvePerformanceVisionCallCapacityFromPolicy,
@@ -462,6 +476,7 @@ import {
     resolveRuntimePlanningContextSeedState
 } from './runtime-planning-context-adapter';
 import { partitionToolCallsForParallelExecution } from '../../../shared/agent-parallel-execution-policy';
+import { buildTaskClosureCapabilityDirective, TaskClosureCapabilityRuntime } from './task-closure-capability-runtime';
 import {
     attachRuntimeTaskRunBindingToPendingContinuation,
     findPendingInteractiveContinuation,
@@ -530,7 +545,6 @@ import {
 import { getToolDisplayInfo } from '../tool-display-info';
 import { isAgentCapabilityControlTool, isAgentCapabilityLoadTool } from './capability-session';
 import {
-    buildDesignQualityVerificationToolRequests,
     projectFinalSupportingSourceCarryover, reconcileDesignFinalReviewStructureVerificationRecords,
 } from './design-final-review-evidence';
 import {
@@ -699,7 +713,6 @@ function buildRuntimeNovelFactFingerprint(result: unknown): string | undefined {
 }
 
 type RuntimeActionPlanModule = typeof import('../../../shared/agent-runtime-v5/runtime-action-plan-declaration');
-const AGENT_MODEL_REQUEST_TIMEOUT_MS = 180_000; // Inactivity window; the run budget remains the hard boundary.
 const AGENT_AUXILIARY_MODEL_TIMEOUT_MS = 90_000;
 const AGENT_FINAL_SUMMARY_TIMEOUT_MS = 90_000;
 // Six related screens per visual call keeps a 30-screen detail page to five review calls
@@ -1284,6 +1297,7 @@ export class Agent {
      */
     private latestDesignVisualJudgeBundleReviewSet: DesignVisualJudgeReviewSet | undefined;
     private latestDesignVisualJudgeSingleReviewSet: DesignVisualJudgeReviewSet | undefined;
+    private finalQualityReviewedVisualBinding?: FinalQualityReviewedVisualBinding;
     /** 只保留与真实 Photoshop mutation 同回合的公开设计判断，供最终同一 Judge 对照。 */
     private mutationBoundDesignIntents: MutationBoundDesignIntent[] = [];
     /** 已送入主模型下一次请求、等待该请求真正读取的视觉观察。 */
@@ -1294,6 +1308,7 @@ export class Agent {
     private lastUserSnapshotSignature = '';
     /** 自然终稿后的同实例闭合次数；只覆盖终态审计新发现的可恢复事实缺口。 */
     private terminalClosureRecoveryAttempts = 0;
+    private readonly taskClosureCapabilityRuntime: TaskClosureCapabilityRuntime;
     /** 上一次未闭合事实；同指纹再次出现即视为没有真实进展，异常早退也保留精确事实。 */
     private lastTerminalClosureGap: AgentTerminalClosureGap | undefined;
     /** E2 补交付期间复用的同 history 质量结论；任何新 mutation / Host 版本变化都会使其失效。 */
@@ -1802,6 +1817,7 @@ export class Agent {
         this.config = config;
         this.callModel = callModel;
         this.executeTool = executeTool;
+        this.taskClosureCapabilityRuntime = new TaskClosureCapabilityRuntime(config);
         const contextCapacity = buildAgentContextCapacityPlan({
             windowTokens: config.contextWindowTokens,
             requestedOutputTokens: config.performanceBudget?.maxPrimaryOutputTokens
@@ -1834,7 +1850,7 @@ export class Agent {
         used: number
     ): string {
         return buildPerformanceBudgetExhaustionMessageFromLedger(
-            this.hasObservedTaskMutation(),
+            deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange,
             dimension,
             limit,
             used
@@ -1852,7 +1868,7 @@ export class Agent {
             budget,
             elapsedMs: this.readPerformanceActiveElapsedMs(),
             scope,
-            hasObservedTaskMutation: this.hasObservedTaskMutation()
+            hasViewableDesignChange: deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange
         });
         return applyPerformanceModelBudgetClassAllowance(
             this.performanceLedger,
@@ -2086,9 +2102,11 @@ export class Agent {
             requestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
         })) return;
         this.performanceLedger.budgetDisciplineDirectiveIssued = true;
+        const activeTaskClosureTools = this.taskClosureCapabilityRuntime.ensureVisible(this.toolCallLog);
         this.messages.push(createHarnessControlMessage([
             '这次制作已经进入收尾区。不要再启动新的独立评审、广泛检索或多版本探索；使用已经确认的信息完成当前版本。',
             '如仍需改动，只做现有画面证据支持的最小可逆调整，然后完成最后一次写后读回，并保存当前版本。',
+            ...buildTaskClosureCapabilityDirective(activeTaskClosureTools),
             '如果无法做出版本，就如实说明还缺什么，不要向用户解释内部限制。'
         ].join('\n'), 'budget-discipline', 'performance-budget'));
     }
@@ -2103,7 +2121,8 @@ export class Agent {
             reserveContext: {
                 authorizedMutationExpectation: this.hasAuthorizedMutationExpectation(),
                 attemptedDeliveryAction: this.hasAttemptedTaskDeliveryAction(),
-                hasObservedTaskMutation: this.hasObservedTaskMutation()
+                hasObservedTaskMutation: this.hasObservedTaskMutation(),
+                hasViewableDesignChange: deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange
             },
             toolName,
             toolArguments
@@ -2126,33 +2145,17 @@ export class Agent {
         exhaustion: NonNullable<ReturnType<Agent['readPerformanceBudgetExhaustion']>>,
         iterations: number
     ): Promise<AgentRunResult> {
-        this.emitStep({
-            kind: 'stopped',
-            title: '任务尚未完成',
-            detail: exhaustion.message,
-            status: 'error',
-            iteration: iterations,
-            maxIterations: this.config.maxIterations,
-            issue: exhaustion.code,
-            audience: 'user',
-            visibility: 'user_process'
-        });
-        this.config.callbacks.onProgress?.('当前制作暂时停下，已保留现有进度', 100);
-        return this.buildRunResult({
-            success: false,
-            message: exhaustion.message,
+        return settlePerformanceBudgetTerminal({
+            exhaustion,
             iterations,
-            error: exhaustion.code,
-            // 预算耗尽（模型调用/工具调用/时间）用独立停机原因，别再冒充「迭代耗尽」。
-            stopReason: 'performance_budget',
-            data: {
-                performanceBudget: {
-                    ...exhaustion,
-                    modelCalls: this.performanceLedger.modelCallCount,
-                    toolCalls: this.performanceLedger.toolCallCount,
-                    elapsedMs: this.readPerformanceActiveElapsedMs()
-                }
-            }
+            maxIterations: this.config.maxIterations,
+            modelCalls: this.performanceLedger.modelCallCount,
+            toolCalls: this.performanceLedger.toolCallCount,
+            elapsedMs: this.readPerformanceActiveElapsedMs(),
+            prepareClosure: (resultInput) => this.prepareAgentTerminalClosure(resultInput),
+            buildRunResult: (resultInput, closure) => this.buildRunResult(resultInput, closure),
+            emitStep: (step) => this.emitStep(step),
+            onProgress: this.config.callbacks.onProgress
         });
     }
 
@@ -2455,7 +2458,7 @@ export class Agent {
     private recordModelAccounting(input: {
         startedAtMs: number;
         succeeded: boolean;
-        usage?: { inputTokens: number; outputTokens: number };
+        usage?: ModelTransportAttemptAccounting['usage'];
         promptShape?: ReturnType<typeof measureRuntimePromptShape>;
         outcome?: unknown;
     }): void {
@@ -5155,8 +5158,7 @@ export class Agent {
                 const previewEntry = this.toolCallLog[previewIndex];
                 if (!previewEntry
                     || previewEntry.result?.success === false
-                    || !isFullSurfaceVisualJudgeObservationEntry(previewEntry)
-                    || readAgentVisualObservation(previewEntry.result)?.reviewed !== true) {
+                    || !isFullSurfaceVisualJudgeObservationEntry(previewEntry)) {
                     continue;
                 }
                 const candidateTarget = resolveRuntimeExecutionTarget({
@@ -5164,8 +5166,15 @@ export class Agent {
                     result: previewEntry.result
                 });
                 const candidateHistoryStateRef = readPhotoshopHistoryStateRef(previewEntry.result);
+                const finalJudgeReviewed = isFinalQualityReviewedVisualSource({
+                    binding: this.finalQualityReviewedVisualBinding,
+                    sourceOutput: previewEntry.result,
+                    historyStateRef: candidateHistoryStateRef
+                });
                 if (!candidateTarget
                     || !candidateHistoryStateRef
+                    || (readAgentVisualObservation(previewEntry.result)?.reviewed !== true
+                        && !finalJudgeReviewed)
                     || (target && !sameRuntimeExecutionDocument(target, candidateTarget))
                     || (sourceHistoryStateRef
                         && !samePhotoshopHistoryStateRef(
@@ -5181,6 +5190,10 @@ export class Agent {
             }
             return undefined;
         };
+        const agenticEvidence = projectAgenticFinalDeliveryStageEvidence({ contract: this.config.agenticArtifactContract, summary,
+            toolCallLog: this.toolCallLog, reviewedPreview: findReviewedPreview(), iteration: this.iteration + 1
+        });
+        if (agenticEvidence) return agenticEvidence;
         if (requiredOutputs.length === 0) {
             const savedDelivery = [...this.toolCallLog].reverse().find((entry) => (
                 entry.result?.success !== false
@@ -5590,6 +5603,7 @@ export class Agent {
         this.toolImageObservationCount = 0;
         this.latestDesignVisualJudgeBundleReviewSet = undefined;
         this.latestDesignVisualJudgeSingleReviewSet = undefined;
+        this.finalQualityReviewedVisualBinding = undefined;
         this.mutationBoundDesignIntents = [];
         this.pendingPrimaryVisualObservations = [];
         this.userSnapshotEmitCount = 0;
@@ -6051,6 +6065,7 @@ export class Agent {
         this.resetGuardState();
         if (interactiveReentryState) Object.assign(this, interactiveReentryState.runtime);
         this.finalizationNudgeSent = false;
+        this.taskClosureCapabilityRuntime.reset();
         this.visibleReasoningSent = false;
         this.latestVisiblePreActionRationale = '';
         this.emitStep({
@@ -6088,6 +6103,7 @@ export class Agent {
                     stopReason: 'cancelled'
                 });
             }
+            this.taskClosureCapabilityRuntime.ensureVisible(this.toolCallLog);
             const providerTruncationRecoveryRequest = this.providerOutputRecovery.hasPendingRequest;
             let performanceBudgetExhaustion = this.readPerformanceBudgetExhaustion();
             // Provider 截断恢复是同一个模型回合的传输补偿，不再占用任务模型调用配额；
@@ -6834,7 +6850,7 @@ export class Agent {
                             toolCalls: [call],
                             verificationToolCalls: toolCallsForCurrentControlTurn,
                             requiresUserVisiblePreActionRationale: requireUserVisiblePreActionRationale,
-                            completedToolCalls: this.toolCallLog
+                            ...buildTaskRunCreatedDocumentPreflightInput(this.currentTask, this.buildTaskCompletionContext(), this.toolCallLog)
                         });
                         executionPreflightByCallId.set(call.id, toolExecutionPreflight);
                         if (!toolExecutionPreflight.ready && toolExecutionPreflight.status === 'blocked') {
@@ -7959,10 +7975,10 @@ export class Agent {
      * 质量通过结论。
      */
     private writeTrustedVisualReviewArtifactForRunResult(owner: AgentRunResult): void {
-        const bundleCandidate = this.latestDesignVisualJudgeBundleReviewSet;
-        const candidate = bundleCandidate?.reviewSet.coverageBasis === 'declared_targets'
-            ? bundleCandidate
-            : this.latestDesignVisualJudgeSingleReviewSet || bundleCandidate;
+        const evaluationProfile = this.resolveRuntimeEvaluationProfile();
+        const candidate = this.findLatestDesignVisualJudgeReviewSet(
+            this.resolveFinalReviewSetRequirements(evaluationProfile).requireMultiSurface
+        );
         if (!candidate) return;
         const observations = readAgentVisualObservations(candidate.sourceOutput);
         const reviewedKeys = new Set(observations
@@ -11330,9 +11346,7 @@ export class Agent {
 
     private buildToolResultFallbackMessage(): string {
         return buildToolResultFallbackMessageFromModule({
-            toolCallLog: this.toolCallLog,
-            hasObservedTaskMutation: this.hasObservedTaskMutation(),
-            hasSuccessfulSaveExport: this.hasSuccessfulToolActivity('save_export')
+            toolCallLog: this.toolCallLog
         });
     }
 
@@ -11997,6 +12011,7 @@ export class Agent {
         // 最终质量裁决和当前证据已经把任务闭合，最终说明生成失败不能把真实交付降成
         // false negative；正文可由现有收据生成中性摘要。其它非终态错误仍不得升级。
         const verifiedForcedFinalCompletion = (input.stopReason === 'tool_budget_final_response'
+            || input.stopReason === 'performance_budget'
             || input.stopReason === 'empty_final_response')
             && executionSummary.status === 'completed';
         const success = (input.success || verifiedForcedFinalCompletion)
@@ -12013,13 +12028,9 @@ export class Agent {
 
         // 正文里混着的自我分析在验收结论之前搬到过程区，保证过程区的时间顺序仍然是「先想后收尾」。
         // 只搬不删：切分失败或会掏空正文时原样交付（见 assistant-reply-reasoning-split 的红线）。
-        const userResultProjection = buildAgentUserResultProjection({
+        const userResultProjection = buildAgentUserResultProjectionFromToolLog({
             summary: executionSummary,
-            hasPhotoshopChange: this.hasObservedTaskMutation(),
-            hasSavedOrExportedFile: this.hasSuccessfulToolActivity('save_export'),
-            hasGeneratedAsset: this.hasSuccessfulToolActivity('external_generation'),
-            hasViewedLatestVersion: Number(executionSummary.successfulObservationCalls || 0) > 0,
-            hasObservedContext: Number(executionSummary.observedToolCallCount || 0) > 0
+            toolCallLog: this.toolCallLog
         });
         executionSummary.userVisibleSummary = userResultProjection.summary;
         if (userResultProjection.nextStep) {
@@ -12029,7 +12040,8 @@ export class Agent {
         //（「本轮已经在 Photoshop 中做出实际画面…当前版本…下一步…」）替换或垫底。
         // 投影只进 executionSummary（诊断用）；模型没说话时仅补中性短句，避免空回复和状态口播。
         let rawVisibleMessage = String(input.message || '').trim()
-            || (this.hasObservedTaskMutation() ? '这一版做好了，画面在 Photoshop 里，你先看看。' : userResultProjection.summary || '这一轮没有新的画面改动。');
+            || userResultProjection.message
+            || '这一轮没有新的画面改动。';
         const replySplit = splitAssistantReplyReasoningPrefix(rawVisibleMessage);
         if (replySplit.split) {
             this.emitVisibleReasoning(replySplit.reasoning, { source: 'model_reply_reasoning_prefix' });
@@ -12110,67 +12122,40 @@ export class Agent {
         return { recovered, unresolved };
     }
 
-    /**
-     * 读取本次 run 在日志压缩前复制的最新完整视觉证据。它不从已删像素的 Tool log
-     * 重新拼图，也不把 later single-screen observation 覆盖成详情页完整终审集合。
-     */
     private findLatestDesignVisualJudgeReviewSet(
         requireMultiSurface = false
     ): DesignVisualJudgeReviewSet | null {
-        const candidate = requireMultiSurface
-            ? this.latestDesignVisualJudgeBundleReviewSet
-            : this.latestDesignVisualJudgeSingleReviewSet
-                || this.latestDesignVisualJudgeBundleReviewSet;
-        if (!candidate
-            || candidate.images.length !== candidate.reviewSet.expectedObservationCount
-            || candidate.reviewSet.items.length !== candidate.reviewSet.expectedObservationCount) {
-            return null;
-        }
-        return candidate;
+        return selectFinalQualityReviewSet({
+            bundle: this.latestDesignVisualJudgeBundleReviewSet,
+            single: this.latestDesignVisualJudgeSingleReviewSet,
+            requireMultiSurface
+        });
     }
-
-    /**
-     * Judge 的 Host 版本复核属于 Harness 真实只读调用：进入既有 Tool 日志与运行会计，
-     * 但不冒充模型主动工具调用，也不建立新的版本账本。
-     */
+    private buildFinalQualityHostEvidenceContext(): FinalQualityHostEvidenceContext {
+        return {
+            executeTool: (name, args) => this.executeToolWithDiagnostics(name, args, {
+                budgetClass: 'harness_quality_verification'
+            }),
+            recordToolCall: (durationMs, succeeded) => {
+                this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
+                    durationMs, succeeded
+                });
+            },
+            appendToolCall: (entry) => this.toolCallLog.push(entry),
+            readElapsedMs: () => this.readRunElapsedMsOrUndefined()
+        };
+    }
     private async readCurrentPhotoshopHistoryStateRefForQualityVerification(
         phase: 'pre_judge' | 'post_judge' | 'final_summary'
     ): Promise<PhotoshopHistoryStateRef | undefined> {
-        const toolRequests = buildDesignQualityVerificationToolRequests(phase);
-        let verifiedHistoryStateRef: PhotoshopHistoryStateRef | undefined;
-        for (const request of toolRequests) {
-            const startedAtMs = Date.now();
-            const result = await this.executeToolWithDiagnostics(request.name, request.arguments, {
-                budgetClass: 'harness_quality_verification'
-            });
-            this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
-                durationMs: Date.now() - startedAtMs,
-                succeeded: result?.success !== false
-            });
-            const qualityCheckElapsedMs = this.readRunElapsedMsOrUndefined();
-            this.toolCallLog.push({
-                name: request.name,
-                arguments: request.arguments,
-                result,
-                origin: 'harness_quality_verification',
-                qualityVerificationPhase: phase,
-                ...(qualityCheckElapsedMs !== undefined ? { elapsedMs: qualityCheckElapsedMs } : {})
-            });
-            if (!result || result.success === false) return undefined;
-            const historyStateRef = readPhotoshopHistoryStateRef(result);
-            if (!historyStateRef) return undefined;
-            if (verifiedHistoryStateRef
-                && !samePhotoshopHistoryStateRef(verifiedHistoryStateRef, historyStateRef)) {
-                return undefined;
-            }
-            verifiedHistoryStateRef = historyStateRef;
-        }
-        return verifiedHistoryStateRef;
+        return readFinalQualityCurrentHistoryStateRef({
+            context: this.buildFinalQualityHostEvidenceContext(),
+            phase
+        });
     }
     private readLatestClosedQualityHistoryStateRef(): PhotoshopHistoryStateRef | undefined {
         return resolveLatestClosedDesignQualityHistoryStateRef(this.toolCallLog);
     }
-
     private canRunDesignQualityVerification(): boolean {
         return this.hasTaskProgressToolCalls()
             && isAgentToolVisibleForIntentDecision(
@@ -12208,17 +12193,9 @@ export class Agent {
         });
     }
 
-    /**
-     * 视觉判官断言评估（A1：让"设计好不好"的真主观维度真被看图判定，而非永远 uneval 空转）。
-     * 仅对创意设计任务、且能拿到真实画面截图 + 有视觉能力（主模型支持读图或配了视觉槽模型）时运行；
-     * 否则返回 null——诚实退回纯确定性裁决，绝不伪造视觉分。批量一次调用省 token；
-     * 解析失败由 parseVlmJudgeResponse 转 needs_review（不阻断、不伪造）。结果并入 buildExecutionSummary
-     * 的同一 scorecard/裁决口径；只有可靠三层诊断可提出一次有界改进，VLM finding 不取得硬门禁权限。
-     */
     private async evaluateDesignQualityVlmAssertions(
         stopReason: AgentStopReason
     ): Promise<DesignAssertionResult[] | null> {
-        // 尊重取消/中止：已中止则不再发起视觉模型调用
         if (this.config.signal?.aborted) return null;
         // 用户明确禁用全部工具，或本轮根本没有真实业务动作时，不得为了“设计质量收尾”
         // 额外读取 Photoshop。任务文本像设计请求不等于已经产生了可评价的设计结果。
@@ -12238,13 +12215,6 @@ export class Agent {
             if (taskCompletion?.kind !== 'creative_design') return null;
         }
 
-        // 没拿到真实成品画面集合 → 没真看过，不打视觉分（接“真看过才打分”纪律）。
-        // 多画面 Profile 必须取得声明的完整 ReviewSet；单张缩略总览或局部画面不能冒充终审集合。
-        const reviewCandidate = this.findLatestDesignVisualJudgeReviewSet(
-            this.resolveFinalReviewSetRequirements(evaluationProfile).requireMultiSurface
-        );
-        if (!reviewCandidate) return null;
-
         // 最终视觉裁决继续使用同一个 Agent 模型；目录未明确 supportsVision=true 时诚实跳过。
         const judgeModelId = resolveFinalQualityJudgeModelId(this.config.modelId);
         if (!judgeModelId) return null;
@@ -12261,10 +12231,29 @@ export class Agent {
         const preJudgeHistoryStateRef = await this.readCurrentPhotoshopHistoryStateRefForQualityVerification(
             'pre_judge'
         );
-        if (!preJudgeHistoryStateRef
-            || !samePhotoshopHistoryStateRef(reviewCandidate.historyStateRef, preJudgeHistoryStateRef)) {
+        if (!preJudgeHistoryStateRef) return null;
+        const finalReviewRequirements = this.resolveFinalReviewSetRequirements(evaluationProfile);
+        const readReviewSet = () => this.findLatestDesignVisualJudgeReviewSet(
+            finalReviewRequirements.requireMultiSurface
+        );
+        const reviewCandidate = await ensureFinalQualityCurrentReviewSet({
+            context: this.buildFinalQualityHostEvidenceContext(),
+            currentReviewSet: readReviewSet(),
+            currentHistoryStateRef: preJudgeHistoryStateRef,
+            requireMultiSurface: finalReviewRequirements.requireMultiSurface,
+            fullSurfaceToolName: selectFinalQualityFullSurfaceToolName({
+                availableToolNames: this.config.tools.map((tool) => tool.name),
+                isVisible: (name) => isAgentToolVisibleForIntentDecision(
+                    name,
+                    this.runIntentControlPlaneDecision
+                )
+            }),
+            captureReviewSet: (results) => this.captureLatestDesignVisualJudgeReviewSet(results),
+            readReviewSet
+        });
+        if (!reviewCandidate) {
             this.emitStaleDesignQualityObservation(
-                '终审画面集合与视觉评审前的 Photoshop 当前版本不一致，已停止本次判定；需要重新观察当前画面。'
+                '终审画面集合不完整或与 Photoshop 当前版本不一致，已停止本次判定。'
             );
             return null;
         }
@@ -12294,6 +12283,7 @@ export class Agent {
             taskRunId: String(this.config.runtimeSessionIdentity?.sessionId || '').trim(),
             reflexionHandoff: this.config.reflexionHandoff,
             configuredSoftTimeBudgetMs: this.config.performanceBudget?.softTimeBudgetMs,
+            terminalQualityReserveMs: FINAL_QUALITY_TERMINAL_RESERVE_MS,
             maxRequestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS,
             readActiveElapsedMs: () => this.readPerformanceActiveElapsedMs(),
             callModel: async (budgetClass, { messages, ...requestOptions }, presentation) => {
@@ -12327,6 +12317,13 @@ export class Agent {
         });
         if (reviewOutcome.protocolDigest) {
             this.finalQualityModelProtocolDigest = reviewOutcome.protocolDigest;
+        }
+        if (reviewOutcome.protocolDigest?.judgeStatus === 'completed'
+            && reviewOutcome.protocolDigest.evidenceScope.finalArtifactObserved) {
+            this.finalQualityReviewedVisualBinding = {
+                historyStateRef: { ...reviewCandidate.historyStateRef },
+                sourceOutput: reviewCandidate.sourceOutput
+            };
         }
         if (reviewOutcome.pendingTrustedComparisonWrite) {
             this.pendingTrustedFinalComparisonWrite =
@@ -12444,6 +12441,8 @@ export class Agent {
                 succeeded: typeof entry.succeeded === 'boolean' ? entry.succeeded : (entry.result as any)?.success !== false
             }))
         );
+        const hasViewableDesignChange = deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange;
+        const performanceBudgetIncompleteMessage = describeIncompletePerformanceBudgetStop(hasViewableDesignChange);
         const taskPlanObligationGap = this.resolveTaskPlanObligationGap();
         const taskProgressMissing = Boolean(taskPlanObligationGap);
         const blockers: string[] = [];
@@ -12456,21 +12455,17 @@ export class Agent {
         if (stopReason === 'max_iterations') {
             blockers.push('这稿这次没做完，可以让我接着做。');
         } else if (stopReason === 'provider_output_truncated') {
-            blockers.push(completionObservationGate.mutationCount > 0
+            blockers.push(hasViewableDesignChange
                 ? '这次没有拿到完整结果；前面的真实改动已保留，但还没完成。'
                 : '这次没有拿到完整结果，这次还没开始动手。');
         } else if (stopReason === 'provider_output_blocked') {
-            blockers.push(completionObservationGate.mutationCount > 0
+            blockers.push(hasViewableDesignChange
                 ? '模型服务没有返回可用结果；前面的真实改动已保留，但还没完成。'
                 : '模型服务没有返回可用结果，这次还没开始动手。');
-        } else if (stopReason === 'performance_budget') {
-            blockers.push(completionObservationGate.mutationCount > 0
-                ? '这稿先做到这里、还没做完，你可以先看看现在的效果，或让我接着做。'
-                : '这次我还没真正开始动手做设计就停下了，你可以让我继续。');
         } else if (stopReason === 'no_progress') {
             blockers.push('这次卡住了、没能往前推进，先停下来。');
         } else if (stopReason === 'tool_preflight_blocked') {
-            blockers.push(completionObservationGate.mutationCount > 0
+            blockers.push(hasViewableDesignChange
                 ? '这稿已经改了一部分，但后面暂时做不下去了，你先看看现在的。'
                 : PUBLIC_TOOL_PRECHECK_BLOCKED_MESSAGE);
         } else if (stopReason === 'error') {
@@ -12697,11 +12692,13 @@ export class Agent {
 
         if (stopReason !== 'tool_preflight_blocked' && !isAwaitingConfirmationSummary) {
             if (taskCompletion?.status === 'failed' && blockers.length === 0) {
-                blockers.push(completionObservationGate.mutationCount > 0
+                blockers.push(hasViewableDesignChange
                     ? '当前版本还有内容没完成，我先不把它当成成品交付。'
                     : '这次还没有形成可以看的设计版本。');
             } else if (taskCompletion?.status === 'needs_review' && warnings.length === 0) {
-                warnings.push('当前版本已经形成，整体画面还需要再看一眼。');
+                warnings.push(hasViewableDesignChange
+                    ? '当前版本已经形成，整体画面还需要再看一眼。'
+                    : '这次还没有形成可以看的设计版本。');
             }
         }
 
@@ -12759,6 +12756,9 @@ export class Agent {
         });
         const downgradedByObservationGate = baseStatus === 'completed' && completionObservationGate.downgrade;
         const status: AgentExecutionSummary['status'] = downgradedByObservationGate ? 'needs_review' : baseStatus;
+        if (stopReason === 'performance_budget' && status !== 'completed') {
+            blockers.push(performanceBudgetIncompleteMessage);
+        }
         if (stopReason === 'tool_budget_final_response' && status !== 'completed') {
             warnings.push('这稿先做到这里，你看看。');
         }
@@ -12810,7 +12810,7 @@ export class Agent {
             ...(designVerdict ? { designVerdict } : {}),
             ...(this.finalQualityModelProtocolDigest ? { finalQualityModelProtocolDigest: this.finalQualityModelProtocolDigest } : {}),
             summaryText: stopReason === 'tool_preflight_blocked'
-                ? (completionObservationGate.mutationCount > 0
+                ? (hasViewableDesignChange
                     ? '这稿已经改了一部分，但后面暂时做不下去了，你先看看现在的。'
                     : `这稿还没做完：${PUBLIC_TOOL_PRECHECK_BLOCKED_MESSAGE}`)
                 : isAwaitingConfirmationSummary
@@ -12820,16 +12820,6 @@ export class Agent {
                     warnings
                 })
         };
-    }
-
-    private hasSuccessfulToolActivity(kind: 'save_export' | 'external_generation'): boolean {
-        return this.toolCallLog.some((entry) => (
-            !isAgentHarnessControlTool(entry.name)
-            && entry.origin !== 'harness_opening_observation'
-            && entry.origin !== 'harness_quality_verification'
-            && entry.result?.success !== false
-            && classifyAgentToolExecution(entry.name, entry.arguments) === kind
-        ));
     }
 
 }

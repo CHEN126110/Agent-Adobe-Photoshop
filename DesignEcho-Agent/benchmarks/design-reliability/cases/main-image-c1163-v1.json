@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "main-image-c1163-v1",
-  "revision": 4,
-  "caseDigest": "sha256:88449921a5b0d3d98f3a00b98008fe3c6c642de1115e2400382cf49c0324a330",
+  "revision": 5,
+  "caseDigest": "sha256:34fc869e6a2dfaf7560f6e14037ea6e555972c1e7f7e8edb706a8f0afdb19223",
   "status": "active",
   "taskFamily": "main_image",
   "executionModel": "agentic",
@@ -60,8 +60,9 @@
   "oracle": {
     "rubricId": "main-image-commercial-v1",
     "outputContract": {
-      "version": "design-reliability-output-contract/v1",
+      "version": "design-reliability-output-contract/v2",
       "canvas": { "width": 800, "height": 800 },
+      "canvasAuthority": "user_instruction",
       "exactRasterExports": 1,
       "exactEditableDocuments": 1
     },

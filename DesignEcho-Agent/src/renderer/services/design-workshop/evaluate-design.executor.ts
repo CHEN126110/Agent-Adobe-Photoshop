@@ -15,7 +15,6 @@ import {
     type DesignEvaluationResult
 } from '../../../shared/design-workshop/design-evaluator';
 import {
-    listProvisionalExperienceNotes,
     listPublishedEvaluationCalibrationSamples,
     normalizeDesignLearningLedger
 } from '../../../shared/design-learning-candidates';
@@ -79,19 +78,6 @@ async function buildThumbnailBase64(imageData: string, mediaType: string): Promi
     return { data: dataUrl.replace(/^data:image\/jpeg;base64,/, ''), mediaType: 'image/jpeg' };
 }
 
-/** 用户校准样本：先从参数读；没有就空（评审器仍可跑，只是没有你的口味）。 */
-function readCalibration(params: any): DesignEvaluationCalibrationSample[] {
-    const raw = Array.isArray(params?.calibration) ? params.calibration : [];
-    return raw
-        .map((item: any) => ({
-            kind: item?.kind === 'bad' ? 'bad' as const : 'good' as const,
-            why: String(item?.why || '').trim(),
-            ref: item?.ref ? String(item.ref) : undefined
-        }))
-        .filter((item: DesignEvaluationCalibrationSample) => item.why.length > 0)
-        .slice(0, 10);
-}
-
 export async function executeEvaluateDesign(params: any, deps: EvaluateDesignDeps): Promise<any> {
     const startedAt = Date.now();
     let image: { data: string; mediaType: string } | null = null;
@@ -133,25 +119,20 @@ export async function executeEvaluateDesign(params: any, deps: EvaluateDesignDep
         : params?.rationale && typeof params.rationale === 'object'
             ? Object.entries(params.rationale).map(([key, value]) => `${key}：${String(value)}`).join('\n')
             : undefined;
-    // 校准样本：参数没给时，只读取正式发布到 evaluation_calibration 的结构化样本。
-    // candidate / 旧版 promoted / 参考学习的自动结论都不能反过来教评审器。
-    let calibration = readCalibration(params);
-    // 自主沉淀 P2：行为验证晋升的试用经验进评审上下文（独立段落、标注非用户拍板、上限 3 条，
-    // 不与用户校准样本混淆——它是观察线索不是口味权威）。
-    let provisionalNotes: string[] = [];
+    // 生产校准只有一个入口：当前项目正式发布到 evaluation_calibration 的结构化样本。
+    // Tool 参数由模型产生，不能冒充用户发布；candidate / provisional / 旧版 promoted /
+    // 参考学习的自动结论也不能反过来教评审器。
+    let calibration: DesignEvaluationCalibrationSample[] = [];
     if (deps.projectPath) {
         try {
             const read = await deps.invokeMain('designWorkshop:readLearningLedger', { projectPath: deps.projectPath });
             if (read?.success && read.ledger) {
                 const ledger = normalizeDesignLearningLedger(read.ledger);
-                if (calibration.length === 0) {
-                    calibration = listPublishedEvaluationCalibrationSamples(ledger, 10);
-                }
-                provisionalNotes = listProvisionalExperienceNotes(ledger, 3);
+                calibration = listPublishedEvaluationCalibrationSamples(ledger, 10);
             }
         } catch (error: any) {
             console.warn('[DesignEvaluation] 读取学习候选区失败：', error?.message || String(error));
-            calibration = calibration.length > 0 ? calibration : [];
+            calibration = [];
         }
     }
     const sameness: string[] = Array.isArray(params?.sameness)
@@ -224,7 +205,6 @@ export async function executeEvaluateDesign(params: any, deps: EvaluateDesignDep
         hardFindings,
         sameness,
         calibration,
-        provisionalNotes,
         ...(referenceImage
             ? {
                 reference: {

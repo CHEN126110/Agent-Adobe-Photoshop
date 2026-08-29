@@ -4,7 +4,6 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
-const os = require("os");
 const path = require("path");
 const { readPsd } = require("ag-psd");
 const sharp = require("sharp");
@@ -15,6 +14,11 @@ const {
   validatePhotoshopRuntimeBinding,
   verifyPhotoshopRuntimeBuildIdentity
 } = require("./lib/photoshop-runtime-build-identity.cjs");
+const {
+  acquirePhotoshopRuntimeLease,
+  releasePhotoshopRuntimeLease,
+  resolveDesignReliabilityDataRoot
+} = require("./lib/design-reliability-photoshop-runtime-lease.cjs");
 const {
   createDesignReliabilityReviewPacket,
   verifyDesignReliabilityReviewerResponse
@@ -66,6 +70,7 @@ const REVIEW_VERIFICATION_BUNDLE_VERSION = "design-reliability-review-verificati
 const DEFAULT_DEBUG_BRIDGE = "http://127.0.0.1:8767";
 const DEFAULT_PHOTOSHOP_MCP_HEALTH = "http://127.0.0.1:8768/health";
 const DEFAULT_PHOTOSHOP_MCP_ENDPOINT = "http://127.0.0.1:8768/mcp";
+const LIVE_ENVIRONMENT_PHOTOSHOP_READ_TIMEOUT_MS = 15000;
 const CONTROLLED_PROJECT_METADATA_REF = ".designecho/project.json";
 const PROJECT_METADATA_VERSION = "1.0";
 const PROJECT_METADATA_KEYS = new Set([
@@ -94,17 +99,17 @@ const PROJECT_IMAGE_TYPES = new Set([
 const PROJECT_DESIGN_PLAN_KEYS = new Set(["mainImage", "sku", "detail"]);
 const PROJECT_DESIGN_STATUSES = new Set(["pending", "in_progress", "done"]);
 const MIN_LIVE_RUN_TIMEOUT_MS = 1000;
-const MAX_LIVE_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const MAX_LIVE_RUN_TIMEOUT_MS = 40 * 60 * 1000;
 const LIVE_ATTEMPT_EVENT_VERSION = "design-reliability-attempt-event/v1";
 const LIVE_RUN_ACTOR_CAPABILITIES = new Map([
   ["autonomous_zero_correction", Object.freeze({
     capabilityId: "guarded-natural-chat-submit/v1",
     protocolKind: "autonomous_zero_correction",
-    receiptVersion: "debug-bridge-chat-submit-receipt/v1",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v4",
     dispatchProtocol: dispatchAutonomousZeroCorrectionProtocol
   })]
 ]);
-const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = "debug-bridge-chat-preflight/v1";
+const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = "debug-bridge-chat-preflight/v2";
 const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = "debug-bridge-chat-execution-failure/v1";
 const SAFE_PRE_SUBMIT_STAGES = new Set([
   "bridge_preflight",
@@ -158,23 +163,7 @@ function validateActiveCaseLiveRunActor(caseSpec) {
 }
 
 function resolvePersistentDataRoot() {
-  if (process.platform === "win32") {
-    const appData = cleanString(process.env.APPDATA);
-    const base = appData || path.join(os.homedir(), "AppData", "Roaming");
-    return path.resolve(base, "designecho-agent", "design-reliability");
-  }
-  if (process.platform === "darwin") {
-    return path.resolve(
-      os.homedir(),
-      "Library",
-      "Application Support",
-      "designecho-agent",
-      "design-reliability"
-    );
-  }
-  const xdgConfigHome = cleanString(process.env.XDG_CONFIG_HOME);
-  const base = xdgConfigHome || path.join(os.homedir(), ".config");
-  return path.resolve(base, "designecho-agent", "design-reliability");
+  return resolveDesignReliabilityDataRoot();
 }
 
 function cleanString(value) {
@@ -769,7 +758,7 @@ function loadSuite() {
         );
       }
     }
-    cases.push({ ...caseSpec, __file: absolutePath });
+    cases.push(caseSpec);
   }
   const rubrics = [];
   for (const relativePath of manifest.rubrics || []) {
@@ -781,7 +770,7 @@ function loadSuite() {
     const rubric = readJson(absolutePath);
     const validation = validateRubric(rubric);
     if (!validation.ok) validation.errors.forEach((error) => errors.push(`${relativePath}: ${error}`));
-    rubrics.push({ ...rubric, __file: absolutePath });
+    rubrics.push(rubric);
   }
   const caseIds = cases.map((item) => item.caseId);
   if (new Set(caseIds).size !== caseIds.length) errors.push("Case id 重复。");
@@ -840,6 +829,7 @@ function deriveLiveCohortFingerprint(input) {
     photoshopRuntimeArtifactDigest: cleanString(environment.photoshopRuntimeArtifactDigest),
     photoshopRuntimeManifestDigest: cleanString(environment.photoshopRuntimeManifestDigest),
     photoshopRuntimeBindingDigest: cleanString(environment.photoshopRuntimeBindingDigest),
+    mainImageCanvasDigest: cleanString(environment.mainImageCanvasDigest),
     provider: cleanString(input?.provider),
     modelId: cleanString(input?.modelId),
     timeoutMs: Number(input?.timeoutMs)
@@ -3641,9 +3631,6 @@ function httpPostJson(url, payload, timeoutMs, extraHeaders = {}) {
 }
 
 async function executeGuardedNaturalChatActor(input) {
-  const photoshopDocumentPolicy = input.photoshopDocumentPolicy === "external_dirty_document_open"
-    ? "external_dirty_document_open"
-    : "none_open";
   return httpPostJson(`${input.debugBridge}/chat/submit`, {
     text: input.caseSpec.task.instruction,
     timeoutMs: input.timeoutMs,
@@ -3659,76 +3646,10 @@ async function executeGuardedNaturalChatActor(input) {
     expectedModelId: input.modelId,
     expectedWorkspaceSemanticDigest: input.workspaceSemanticDigest,
     requireCleanRuntimeGitState: true,
-    requireNoOpenPhotoshopDocuments: photoshopDocumentPolicy === "none_open",
-    requireExternalDirtyDocumentUntouched: photoshopDocumentPolicy === "external_dirty_document_open"
+    requireNoOpenFixtureDocuments: true
   }, input.timeoutMs + 5000, {
     "x-designecho-debug-token": input.debugToken
   });
-}
-
-/**
- * 外部脏文档布景：在零文档基线上创建一个不属于本任务的文档并让它带上未保存修改，
- * 然后冻结它的 history 身份。只在 external_dirty_document_open Case 使用。
- *
- * 边界：已有任何打开文档时直接失败——那可能是别人的现场，布景器绝不代为关闭。
- * 布景动作发生在 Attempt 提交之前，属于环境准备，不计入被测任务的任何行为。
- */
-async function armExternalDirtyDocument(args) {
-  const endpoint = args.get("--photoshop-mcp", DEFAULT_PHOTOSHOP_MCP_ENDPOINT);
-  const callPhotoshop = async (name, toolArguments, timeoutMs) => {
-    const result = await callMcpTool(endpoint, "photoshop.tools.call", {
-      name,
-      arguments: toolArguments
-    }, timeoutMs);
-    if (!isRecord(result) || result.success !== true) {
-      throw new Error(`外部脏文档布景在 ${name} 失败：${cleanString(result?.error) || "未知原因"}`);
-    }
-    return result;
-  };
-  const before = await callPhotoshop("listDocuments", { includeDetails: false, includePaths: false }, 15000);
-  const beforeDocuments = Array.isArray(before.documents) ? before.documents : null;
-  if (!beforeDocuments) throw new Error("外部脏文档布景无法读取当前文档列表。");
-  if (beforeDocuments.length !== 0) {
-    throw new Error(
-      `外部脏文档布景要求从零文档开始（当前 ${beforeDocuments.length} 个打开文档）；不会自动关闭已有现场。`
-    );
-  }
-  await callPhotoshop("createDocument", {
-    width: 800,
-    height: 800,
-    name: "外部占用文档-请勿触碰"
-  }, 30000);
-  await callPhotoshop("createTextLayer", {
-    content: "外部文档基线标记：本文档不属于当前任务",
-    x: 60,
-    y: 60,
-    fontSize: 24
-  }, 30000);
-  const after = await callPhotoshop("listDocuments", {
-    includeDetails: false,
-    includePaths: false,
-    includeHistory: true
-  }, 15000);
-  const afterDocuments = Array.isArray(after.documents) ? after.documents : [];
-  if (afterDocuments.length !== 1) {
-    throw new Error(`外部脏文档布景后应恰好有 1 个文档，实际 ${afterDocuments.length} 个。`);
-  }
-  const [externalDocument] = afterDocuments;
-  const frozen = readReceiptExternalDocumentIdentity({
-    documentId: externalDocument?.id,
-    name: externalDocument?.name,
-    activeHistoryStateId: externalDocument?.activeHistoryStateId,
-    historyStateCount: externalDocument?.historyStateCount
-  });
-  if (!frozen) {
-    throw new Error(
-      `外部脏文档布景无法冻结 history 身份${cleanString(externalDocument?.historyStatusReason) ? `（${cleanString(externalDocument.historyStatusReason)}）` : "（当前 Photoshop 插件可能不支持 listDocuments.includeHistory）"}。`
-    );
-  }
-  if (externalDocument?.saved !== false) {
-    throw new Error("外部脏文档布景后文档没有未保存修改标记，不能作为 dirty 基线。");
-  }
-  return frozen;
 }
 
 function parseMcpToolResult(response) {
@@ -3770,56 +3691,107 @@ async function safeCallMcpTool(endpoint, name, args = {}, timeoutMs = 5000) {
   }
 }
 
-function normalizeOpenDocumentState(documentList) {
+function buildLiveEnvironmentPhotoshopReadBatch() {
+  return {
+    allowWrites: false,
+    delayMs: 50,
+    calls: [
+      { name: "diagnoseState", arguments: { verbose: false } },
+      { name: "listDocuments", arguments: { includeDetails: true, includeHistoryState: true } }
+    ]
+  };
+}
+
+function extractLiveEnvironmentPhotoshopRead(batchStatus, toolName) {
+  if (!batchStatus?.ok) {
+    return {
+      ok: false,
+      error: `photoshop_read_batch_unavailable: ${cleanString(batchStatus?.error) || "unknown error"}`
+    };
+  }
+  const results = Array.isArray(batchStatus.result?.results)
+    ? batchStatus.result.results
+    : [];
+  const toolResult = results.find((item) => cleanString(item?.name) === toolName);
+  if (!toolResult) {
+    return { ok: false, error: `photoshop_read_batch_missing_result: ${toolName}` };
+  }
+  if (toolResult.success !== true) {
+    return {
+      ok: false,
+      error: `photoshop_read_batch_tool_failed: ${toolName}: ${cleanString(toolResult.error) || "unknown error"}`
+    };
+  }
+  return { ok: true, result: toolResult.result };
+}
+
+function normalizeDocumentPathForSafety(value) {
+  const raw = cleanString(value);
+  if (!raw) return "";
+  const withoutFileScheme = raw.replace(/^file:\/{2,3}/i, "");
+  try {
+    return normalizePathIdentity(decodeURI(withoutFileScheme));
+  } catch {
+    return normalizePathIdentity(withoutFileScheme);
+  }
+}
+
+function normalizeOpenDocumentState(documentList, expectedProjectPath) {
   const result = documentList?.ok ? documentList.result : undefined;
   const documents = Array.isArray(result?.documents) ? result.documents : undefined;
   if (!documents || result?.success === false) {
     return {
       verified: false,
       count: null,
-      hasUnsavedDocument: null
+      hasUnsavedDocument: null,
+      hasDirtyDocument: null,
+      fixtureDocumentCount: null,
+      outsideFixtureDocumentCount: null,
+      unresolvedOwnershipDocumentCount: null
     };
+  }
+  const expectedProjectIdentity = normalizePathIdentity(expectedProjectPath);
+  let fixtureDocumentCount = 0;
+  let outsideFixtureDocumentCount = 0;
+  let unresolvedOwnershipDocumentCount = 0;
+  for (const document of documents) {
+    const documentId = Number(document?.id);
+    const historyDocumentId = Number(document?.historyStateRef?.documentId);
+    const historyStateId = Number(document?.historyStateRef?.historyStateId);
+    const hasStableSessionRevision = Number.isSafeInteger(documentId)
+      && documentId > 0
+      && historyDocumentId === documentId
+      && Number.isSafeInteger(historyStateId)
+      && historyStateId > 0;
+    const pathState = cleanString(document?.pathState);
+    const documentPath = normalizeDocumentPathForSafety(document?.path);
+    if (!hasStableSessionRevision || !expectedProjectIdentity) {
+      unresolvedOwnershipDocumentCount += 1;
+      continue;
+    }
+    if (pathState === "saved"
+      && documentPath
+      && isSameOrNestedRealPath(expectedProjectIdentity, documentPath)) {
+      fixtureDocumentCount += 1;
+    } else {
+      // 提交前已存在且 documentId/historyStateId 可读的未保存或路径不可用文档，
+      // 按 TaskRun 会话对象保护，不因缺少磁盘路径获得写入资格。
+      outsideFixtureDocumentCount += 1;
+    }
   }
   return {
     verified: true,
     count: documents.length,
-    hasUnsavedDocument: documents.some((document) => document?.pathState === "unsaved")
+    hasUnsavedDocument: documents.some((document) => document?.pathState === "unsaved"),
+    hasDirtyDocument: documents.some((document) => document?.editState === "dirty"),
+    fixtureDocumentCount,
+    outsideFixtureDocumentCount,
+    unresolvedOwnershipDocumentCount
   };
-}
-
-/**
- * Case 的 Photoshop 文档基线策略。
- *
- * 缺省 none_open：提交前必须零打开文档（既有隔离基线）。
- * boundaries.externalDirtyDocumentRemainsOpenAndUntouched === true 时为
- * external_dirty_document_open：提交前恰好打开 1 个带未保存修改的外部文档，
- * 完成时以 history 身份逐项复核它未被触碰。策略随 caseDigest 冻结。
- */
-function resolveCasePhotoshopDocumentPolicy(caseSpec) {
-  return caseSpec?.boundaries?.externalDirtyDocumentRemainsOpenAndUntouched === true
-    ? "external_dirty_document_open"
-    : "none_open";
-}
-
-/** 收据中的外部文档身份必须完整可信；缺一项都不能当成真实观察。 */
-function readReceiptExternalDocumentIdentity(value) {
-  if (!isRecord(value)) return null;
-  const documentId = Number(value.documentId);
-  const name = cleanString(value.name);
-  const activeHistoryStateId = Number(value.activeHistoryStateId);
-  const historyStateCount = Number(value.historyStateCount);
-  if (!Number.isSafeInteger(documentId) || documentId <= 0) return null;
-  if (!name) return null;
-  if (!Number.isSafeInteger(activeHistoryStateId) || activeHistoryStateId <= 0) return null;
-  if (!Number.isSafeInteger(historyStateCount) || historyStateCount < 0) return null;
-  return { documentId, name, activeHistoryStateId, historyStateCount };
 }
 
 function evaluateLiveEnvironmentSafety(input) {
   const blockers = [];
-  const photoshopDocumentPolicy = input.photoshopDocumentPolicy === "external_dirty_document_open"
-    ? "external_dirty_document_open"
-    : "none_open";
   const currentGit = input.currentGitEnvironment || {};
   const systemStatus = input.systemStatus?.ok ? input.systemStatus.result : undefined;
   const runtimeIdentity = systemStatus?.runtimeBuildIdentity;
@@ -3836,8 +3808,14 @@ function evaluateLiveEnvironmentSafety(input) {
     : null;
   const photoshopRuntimeBinding = buildPhotoshopRuntimeBinding(photoshopBuildVerification);
   const projectRootResult = input.projectRootStatus?.ok ? input.projectRootStatus.result : undefined;
-  const documents = normalizeOpenDocumentState(input.documentListStatus);
+  const documentPolicy = input.documentPolicy === "no_fixture_documents"
+    ? "no_fixture_documents"
+    : "none_open";
   const expectedProjectPath = normalizePathIdentity(input.expectedProjectPath);
+  const documents = normalizeOpenDocumentState(
+    input.documentListStatus,
+    expectedProjectPath
+  );
   const currentProjectPath = normalizePathIdentity(projectRootResult?.projectRoot);
   const pendingRequestCount = Number(systemStatus?.pluginConnectionDiagnostics?.pendingRequestCount);
 
@@ -3882,14 +3860,15 @@ function evaluateLiveEnvironmentSafety(input) {
   }
   if (!documents.verified) {
     blockers.push("photoshop_document_state_unavailable");
-  } else if (photoshopDocumentPolicy === "external_dirty_document_open") {
-    if (documents.count !== 1) {
-      blockers.push("external_dirty_document_not_exactly_one");
-    } else if (documents.hasUnsavedDocument !== true) {
-      blockers.push("external_document_not_dirty");
-    }
-  } else if (documents.count > 0) {
+  } else if (documentPolicy === "none_open" && documents.count > 0) {
     blockers.push("photoshop_documents_open");
+  } else if (documentPolicy === "no_fixture_documents") {
+    if (documents.unresolvedOwnershipDocumentCount > 0) {
+      blockers.push("photoshop_document_ownership_unresolved");
+    }
+    if (documents.fixtureDocumentCount > 0) {
+      blockers.push("photoshop_fixture_documents_open");
+    }
   }
 
   return {
@@ -3920,11 +3899,10 @@ function evaluateLiveEnvironmentSafety(input) {
         && currentProjectPath === expectedProjectPath
       ),
       photoshopDocumentStateVerified: documents.verified,
-      photoshopDocumentPolicy,
       noOpenPhotoshopDocuments: documents.verified && documents.count === 0,
-      externalDirtyDocumentBaselineSatisfied: photoshopDocumentPolicy === "external_dirty_document_open"
-        ? (documents.verified && documents.count === 1 && documents.hasUnsavedDocument === true)
-        : null
+      noOpenFixtureDocuments: documents.verified && documents.fixtureDocumentCount === 0,
+      openDocumentOwnershipResolved: documents.verified
+        && documents.unresolvedOwnershipDocumentCount === 0
     },
     runtime: runtimeIdentity?.version === "designecho-runtime-build-identity/v1"
       ? {
@@ -3943,6 +3921,7 @@ function evaluateLiveEnvironmentSafety(input) {
       }
       : null,
     photoshop: {
+      documentPolicy,
       connected: connection?.connected === true,
       runtimeBuildId: cleanString(photoshopRuntime?.buildId) || null,
       runtimeLoadedAt: cleanString(photoshopRuntime?.loadedAt) || null,
@@ -3957,7 +3936,11 @@ function evaluateLiveEnvironmentSafety(input) {
         : [],
       pendingRequestCount: Number.isFinite(pendingRequestCount) ? pendingRequestCount : null,
       openDocumentCount: documents.count,
-      hasUnsavedDocument: documents.hasUnsavedDocument
+      hasUnsavedDocument: documents.hasUnsavedDocument,
+      hasDirtyDocument: documents.hasDirtyDocument,
+      openFixtureDocumentCount: documents.fixtureDocumentCount,
+      openOutsideFixtureDocumentCount: documents.outsideFixtureDocumentCount,
+      unresolvedOwnershipDocumentCount: documents.unresolvedOwnershipDocumentCount
     },
     project: {
       expectedFixtureSupplied: Boolean(expectedProjectPath),
@@ -3969,21 +3952,27 @@ function evaluateLiveEnvironmentSafety(input) {
   };
 }
 
-async function inspectLiveEnvironment(args, fixtureRoot, photoshopDocumentPolicy = "none_open") {
+async function inspectLiveEnvironment(args, fixtureRoot, options = {}) {
   const endpoint = args.get("--photoshop-mcp", DEFAULT_PHOTOSHOP_MCP_ENDPOINT);
-  const [systemStatus, connectionStatus, photoshopDiagnosisStatus, projectRootStatus, documentListStatus] = await Promise.all([
+  const [systemStatus, connectionStatus, projectRootStatus, photoshopReadBatchStatus] = await Promise.all([
     safeCallMcpTool(endpoint, "system.status"),
     safeCallMcpTool(endpoint, "photoshop.connection_status"),
-    safeCallMcpTool(endpoint, "photoshop.tools.call", {
-      name: "diagnoseState",
-      arguments: { verbose: false }
-    }),
     safeCallMcpTool(endpoint, "resource.get_project_root"),
-    safeCallMcpTool(endpoint, "photoshop.tools.call", {
-      name: "listDocuments",
-      arguments: { includeDetails: true }
-    })
+    safeCallMcpTool(
+      endpoint,
+      "photoshop.tools.batch_call",
+      buildLiveEnvironmentPhotoshopReadBatch(),
+      LIVE_ENVIRONMENT_PHOTOSHOP_READ_TIMEOUT_MS
+    )
   ]);
+  const photoshopDiagnosisStatus = extractLiveEnvironmentPhotoshopRead(
+    photoshopReadBatchStatus,
+    "diagnoseState"
+  );
+  const documentListStatus = extractLiveEnvironmentPhotoshopRead(
+    photoshopReadBatchStatus,
+    "listDocuments"
+  );
   const livePhotoshopRuntime = photoshopDiagnosisStatus?.ok
     ? photoshopDiagnosisStatus.result?.state?.runtime
     : undefined;
@@ -4006,7 +3995,7 @@ async function inspectLiveEnvironment(args, fixtureRoot, photoshopDocumentPolicy
   return evaluateLiveEnvironmentSafety({
     currentGitEnvironment: readGitEnvironment(),
     expectedProjectPath: fixtureRoot,
-    photoshopDocumentPolicy,
+    documentPolicy: options.documentPolicy,
     systemStatus,
     connectionStatus,
     photoshopDiagnosisStatus,
@@ -4070,11 +4059,62 @@ function summarizeDebugResponse(response) {
   };
 }
 
+function validateUniqueDocumentRevisionRefs(value, expectedCount) {
+  if (!Array.isArray(value) || value.length !== expectedCount || value.length > 256) return false;
+  const keys = new Set();
+  for (const ref of value) {
+    const documentId = Number(ref?.documentId);
+    const historyStateId = Number(ref?.historyStateId);
+    if (!Number.isSafeInteger(documentId)
+      || documentId <= 0
+      || !Number.isSafeInteger(historyStateId)
+      || historyStateId <= 0) {
+      return false;
+    }
+    const key = `${documentId}:${historyStateId}`;
+    if (keys.has(key)) return false;
+    keys.add(key);
+  }
+  return true;
+}
+
 function validateDebugBridgeReceipt(response, input) {
   const receipt = response?.result?.receipt;
   const errors = [];
-  if (!isRecord(receipt) || receipt.version !== "debug-bridge-chat-submit-receipt/v1") {
-    return { ok: false, errors: ["运行窗口没有返回 debug-bridge-chat-submit-receipt/v1。"] };
+  if (!isRecord(receipt) || receipt.version !== "debug-bridge-chat-submit-receipt/v4") {
+    return { ok: false, errors: ["运行窗口没有返回 debug-bridge-chat-submit-receipt/v4。"] };
+  }
+  const interactionReceipt = receipt.interactionReceipt;
+  const expectedInteractionReceiptKeys = [
+    "completedAt",
+    "protocolInteractionCount",
+    "requestId",
+    "source",
+    "startedAt",
+    "userDesignCorrectionCount",
+    "version"
+  ];
+  const interactionStartedAt = Date.parse(cleanString(interactionReceipt?.startedAt));
+  const interactionCompletedAt = Date.parse(cleanString(interactionReceipt?.completedAt));
+  if (receipt.interactionReceiptVerifiedByMain !== true
+    || !isRecord(interactionReceipt)
+    || stableStringify(Object.keys(interactionReceipt).sort())
+      !== stableStringify(expectedInteractionReceiptKeys)
+    || interactionReceipt.version !== "debug-bridge-interaction-receipt/v1"
+    || cleanString(interactionReceipt.requestId) !== cleanString(receipt.requestId)
+    || interactionReceipt.source !== "renderer_ui_event_ledger"
+    || !Number.isSafeInteger(interactionReceipt.protocolInteractionCount)
+    || interactionReceipt.protocolInteractionCount < 0
+    || interactionReceipt.protocolInteractionCount > 1000
+    || !Number.isSafeInteger(interactionReceipt.userDesignCorrectionCount)
+    || interactionReceipt.userDesignCorrectionCount < 0
+    || interactionReceipt.userDesignCorrectionCount > 1000
+    || !Number.isFinite(interactionStartedAt)
+    || !Number.isFinite(interactionCompletedAt)
+    || new Date(interactionStartedAt).toISOString() !== cleanString(interactionReceipt.startedAt)
+    || new Date(interactionCompletedAt).toISOString() !== cleanString(interactionReceipt.completedAt)
+    || interactionCompletedAt < interactionStartedAt) {
+    errors.push("运行窗口没有返回由 Main 验证、与本次请求绑定的用户交互审计收据。 ");
   }
   const expectedProjectPath = normalizePathIdentity(input.fixtureRoot);
   const submittedProjectPath = normalizePathIdentity(receipt.submittedProjectPath);
@@ -4213,33 +4253,15 @@ function validateDebugBridgeReceipt(response, input) {
     || completedRuntimeIdentity?.fakePhotoshopEnabled !== false) {
     errors.push("运行窗口没有证明 DesignEcho 构建产物在任务完成前保持完全一致。");
   }
-  const expectedDocumentPolicy = input.photoshopDocumentPolicy === "external_dirty_document_open"
-    ? "external_dirty_document_open"
-    : "none_open";
-  const externalDocumentAtSubmission = readReceiptExternalDocumentIdentity(
-    receipt.externalDocumentAtSubmission
-  );
-  const externalDocumentAtCompletion = readReceiptExternalDocumentIdentity(
-    receipt.externalDocumentAtCompletion
-  );
-  if (expectedDocumentPolicy === "none_open") {
-    if (receipt.photoshopDocumentPolicy !== "none_open"
-      || receipt.photoshopDocumentGuardPassedAtSubmission !== true
-      || receipt.openPhotoshopDocumentCountAtSubmission !== 0) {
-      errors.push("运行窗口没有证明提交模型前 Photoshop 处于空文档隔离基线。");
-    }
-  } else if (receipt.photoshopDocumentPolicy !== "external_dirty_document_open"
+  if (receipt.photoshopDocumentPolicy !== "preserve_preexisting_documents"
     || receipt.photoshopDocumentGuardPassedAtSubmission !== true
-    || receipt.openPhotoshopDocumentCountAtSubmission !== 1
-    || !externalDocumentAtSubmission
-    || !externalDocumentAtCompletion
-    || externalDocumentAtCompletion.documentId !== externalDocumentAtSubmission.documentId
-    || externalDocumentAtCompletion.activeHistoryStateId
-      !== externalDocumentAtSubmission.activeHistoryStateId
-    || externalDocumentAtCompletion.historyStateCount
-      !== externalDocumentAtSubmission.historyStateCount
-    || receipt.externalDocumentUntouchedThroughCompletion !== true) {
-    errors.push("运行窗口没有证明外部脏文档在提交与完成之间保持打开且未被触碰。");
+    || receipt.openFixtureDocumentCountAtSubmission !== 0
+    || receipt.unresolvedDocumentOwnershipCountAtSubmission !== 0
+    || !Number.isSafeInteger(receipt.openPhotoshopDocumentCountAtSubmission)
+    || !Number.isSafeInteger(receipt.openOutsideFixtureDocumentCountAtSubmission)
+    || receipt.openPhotoshopDocumentCountAtSubmission
+      !== receipt.openOutsideFixtureDocumentCountAtSubmission) {
+    errors.push("运行窗口没有证明提交模型前所有已打开文档都已解析为 fixture 外部对象。");
   }
   const expectedPhotoshopRuntimeBuildId = cleanString(input.photoshopRuntimeBuildId);
   const expectedPhotoshopRuntimeBinding = input.photoshopRuntimeBinding;
@@ -4290,9 +4312,21 @@ function validateDebugBridgeReceipt(response, input) {
   }
   const firstMutationBaseline = receipt.firstPhotoshopMutationBaseline;
   if (!isRecord(firstMutationBaseline)
-    || firstMutationBaseline.version !== "guarded-photoshop-execution-baseline-receipt/v0"
+    || firstMutationBaseline.version !== "guarded-photoshop-execution-baseline-receipt/v2"
     || !["not_reached", "passed", "blocked"].includes(firstMutationBaseline.status)
     || cleanString(firstMutationBaseline.requestId) !== cleanString(receipt.requestId)
+    || firstMutationBaseline.documentPolicy !== "preserve_preexisting_documents"
+    || normalizePathIdentity(firstMutationBaseline.expectedProjectPath) !== expectedProjectPath
+    || firstMutationBaseline.initialOpenDocumentCount
+      !== receipt.openPhotoshopDocumentCountAtSubmission
+    || firstMutationBaseline.initialOpenOutsideFixtureDocumentCount
+      !== receipt.openOutsideFixtureDocumentCountAtSubmission
+    || firstMutationBaseline.initialDirtyOutsideFixtureDocumentCount
+      !== receipt.dirtyOutsideFixtureDocumentCountAtSubmission
+    || !validateUniqueDocumentRevisionRefs(
+      firstMutationBaseline.initialProtectedDocumentRefs,
+      receipt.openOutsideFixtureDocumentCountAtSubmission
+    )
     || cleanString(firstMutationBaseline.expectedPhotoshopRuntimeBuildId)
       !== expectedPhotoshopRuntimeBuildId
     || !validatePhotoshopRuntimeBinding(firstMutationBaseline.expectedPhotoshopRuntimeBinding)
@@ -4305,13 +4339,16 @@ function validateDebugBridgeReceipt(response, input) {
     && !cleanString(firstMutationBaseline.error)) {
     errors.push("首次 Photoshop 写入隔离基线声明 blocked 但没有失败事实。");
   } else if (firstMutationBaseline.status === "passed"
-    && ((expectedDocumentPolicy === "none_open"
-      ? firstMutationBaseline.openDocumentCount !== 0
-      : (firstMutationBaseline.documentPolicy !== "external_dirty_document_open"
-        || firstMutationBaseline.openDocumentCount !== 1
-        || !externalDocumentAtSubmission
-        || firstMutationBaseline.externalDocumentIdAtFirstMutation
-          !== externalDocumentAtSubmission.documentId))
+    && (firstMutationBaseline.documentPolicy !== "preserve_preexisting_documents"
+      || !Number.isSafeInteger(firstMutationBaseline.openFixtureDocumentCount)
+      || firstMutationBaseline.openFixtureDocumentCount < 0
+      || firstMutationBaseline.unresolvedOwnershipDocumentCount !== 0
+      || !Number.isSafeInteger(firstMutationBaseline.openDocumentCount)
+      || !Number.isSafeInteger(firstMutationBaseline.openOutsideFixtureDocumentCount)
+      || firstMutationBaseline.openDocumentCount
+        !== firstMutationBaseline.openFixtureDocumentCount
+          + firstMutationBaseline.openOutsideFixtureDocumentCount
+      || firstMutationBaseline.preexistingDocumentRevisionsUnchanged !== true
       || !Number.isFinite(Date.parse(cleanString(firstMutationBaseline.checkedAt)))
       || cleanString(firstMutationBaseline.observedPhotoshopRuntimeBuildId)
         !== expectedPhotoshopRuntimeBuildId
@@ -4319,8 +4356,26 @@ function validateDebugBridgeReceipt(response, input) {
         ...expectedPhotoshopRuntimeBinding,
         live: firstMutationBaseline.observedPhotoshopRuntimeIdentity
       }, expectedPhotoshopRuntimeBinding)
-      || !cleanString(firstMutationBaseline.firstMutationToolName))) {
-    errors.push("首次 Photoshop 写入隔离基线收据与文档基线或 Runtime Build 事实不一致。");
+      || cleanString(firstMutationBaseline.firstMutationToolName) !== "createDocument")) {
+    errors.push("首次 Photoshop 写入隔离基线收据与对象级文档归属或 Runtime Build 事实不一致。");
+  }
+  const completionCheckedAt = Date.parse(cleanString(firstMutationBaseline?.completionCheckedAt));
+  if (!isRecord(firstMutationBaseline)
+    || firstMutationBaseline.completionStatus !== "passed"
+    || !Number.isFinite(completionCheckedAt)
+    || firstMutationBaseline.completionUnresolvedOwnershipDocumentCount !== 0
+    || firstMutationBaseline.completionPreexistingDocumentRevisionsUnchanged !== true
+    || firstMutationBaseline.completionOpenOutsideFixtureDocumentCount
+      !== firstMutationBaseline.initialOpenOutsideFixtureDocumentCount
+    || firstMutationBaseline.completionDirtyOutsideFixtureDocumentCount
+      !== firstMutationBaseline.initialDirtyOutsideFixtureDocumentCount
+    || !Number.isSafeInteger(firstMutationBaseline.completionOpenDocumentCount)
+    || !Number.isSafeInteger(firstMutationBaseline.completionOpenFixtureDocumentCount)
+    || !Number.isSafeInteger(firstMutationBaseline.completionOpenOutsideFixtureDocumentCount)
+    || firstMutationBaseline.completionOpenDocumentCount
+      !== firstMutationBaseline.completionOpenFixtureDocumentCount
+        + firstMutationBaseline.completionOpenOutsideFixtureDocumentCount) {
+    errors.push("运行窗口没有证明 TaskRun 前置 Photoshop 文档在完成时仍打开且对象 revision 未变。");
   }
   if (providerBinding && firstMutationBaseline?.status === "passed") {
     const providerCommittedAt = Date.parse(cleanString(providerBinding.committedAt));
@@ -4354,7 +4409,7 @@ async function dispatchAutonomousZeroCorrectionProtocol(input) {
     version: "design-reliability-live-actor-dispatch/v1",
     protocolKind: "autonomous_zero_correction",
     capabilityId: "guarded-natural-chat-submit/v1",
-    receiptVersion: "debug-bridge-chat-submit-receipt/v1",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v4",
     response,
     receiptValidation
   };
@@ -4386,29 +4441,28 @@ function validateLiveActorDispatchResult(result, protocol, capability) {
   return { ok: errors.length === 0, errors };
 }
 
-function validateMutationBaselineAgainstObservation(
-  receipt,
-  observation,
-  expectedBuildId,
-  photoshopDocumentPolicy = "none_open"
-) {
+function validateMutationBaselineAgainstObservation(receipt, observation, expectedBuildId) {
   const observedMutationCalls = Number(observation?.observed?.observedMutationCalls || 0);
   if (observedMutationCalls <= 0) return { ok: true, errors: [] };
   const baseline = receipt?.firstPhotoshopMutationBaseline;
   const errors = [];
-  const externalDocumentAtSubmission = readReceiptExternalDocumentIdentity(
-    receipt?.externalDocumentAtSubmission
-  );
-  const documentBaselineHolds = photoshopDocumentPolicy === "external_dirty_document_open"
-    ? (isRecord(baseline)
-      && baseline.documentPolicy === "external_dirty_document_open"
-      && baseline.openDocumentCount === 1
-      && Boolean(externalDocumentAtSubmission)
-      && baseline.externalDocumentIdAtFirstMutation === externalDocumentAtSubmission.documentId)
-    : isRecord(baseline) && baseline.openDocumentCount === 0;
   if (!isRecord(baseline)
     || baseline.status !== "passed"
-    || !documentBaselineHolds
+    || baseline.version !== "guarded-photoshop-execution-baseline-receipt/v2"
+    || baseline.documentPolicy !== "preserve_preexisting_documents"
+    || baseline.unresolvedOwnershipDocumentCount !== 0
+    || baseline.preexistingDocumentRevisionsUnchanged !== true
+    || cleanString(baseline.firstMutationToolName) !== "createDocument"
+    || baseline.completionStatus !== "passed"
+    || baseline.completionUnresolvedOwnershipDocumentCount !== 0
+    || baseline.completionPreexistingDocumentRevisionsUnchanged !== true
+    || baseline.completionOpenOutsideFixtureDocumentCount
+      !== baseline.initialOpenOutsideFixtureDocumentCount
+    || !Number.isSafeInteger(baseline.openDocumentCount)
+    || !Number.isSafeInteger(baseline.openFixtureDocumentCount)
+    || !Number.isSafeInteger(baseline.openOutsideFixtureDocumentCount)
+    || baseline.openDocumentCount
+      !== baseline.openFixtureDocumentCount + baseline.openOutsideFixtureDocumentCount
     || cleanString(baseline.observedPhotoshopRuntimeBuildId) !== cleanString(expectedBuildId)
     || !validatePhotoshopRuntimeBinding(baseline.expectedPhotoshopRuntimeBinding)
     || !photoshopRuntimeBindingsMatch({
@@ -4425,27 +4479,66 @@ function buildFirstMutationBaselineProof(receipt) {
     ? receipt.firstPhotoshopMutationBaseline
     : null;
   if (!baseline
-    || baseline.version !== "guarded-photoshop-execution-baseline-receipt/v0"
+    || baseline.version !== "guarded-photoshop-execution-baseline-receipt/v2"
     || !["not_reached", "passed", "blocked"].includes(baseline.status)
     || !cleanString(baseline.requestId)
     || !cleanString(baseline.expectedPhotoshopRuntimeBuildId)
+    || !Number.isSafeInteger(baseline.initialOpenOutsideFixtureDocumentCount)
+    || !validateUniqueDocumentRevisionRefs(
+      baseline.initialProtectedDocumentRefs,
+      baseline.initialOpenOutsideFixtureDocumentCount
+    )
     || !validatePhotoshopRuntimeBinding(baseline.expectedPhotoshopRuntimeBinding)) {
     return null;
   }
   const expectedPhotoshopRuntimeBindingDigest = sha256Text(
     stableStringify(baseline.expectedPhotoshopRuntimeBinding)
   );
+  const initialProtectedDocumentRefsDigest = sha256Text(stableStringify(
+    baseline.initialProtectedDocumentRefs
+  ));
   const proofCore = {
-    version: "design-reliability-first-mutation-baseline-proof/v1",
+    version: "design-reliability-first-mutation-baseline-proof/v2",
     status: baseline.status,
+    documentPolicy: cleanString(baseline.documentPolicy),
     requestIdDigest: sha256Text(cleanString(baseline.requestId)),
     expectedPhotoshopRuntimeBuildId: cleanString(baseline.expectedPhotoshopRuntimeBuildId),
     expectedPhotoshopRuntimeBindingDigest,
+    initialProtectedDocumentCount: baseline.initialProtectedDocumentRefs.length,
+    initialProtectedDocumentRefsDigest,
+    completionStatus: cleanString(baseline.completionStatus),
     ...(cleanString(baseline.observedPhotoshopRuntimeBuildId)
       ? { observedPhotoshopRuntimeBuildId: cleanString(baseline.observedPhotoshopRuntimeBuildId) }
       : {}),
     ...(Number.isSafeInteger(baseline.openDocumentCount)
       ? { openDocumentCount: baseline.openDocumentCount }
+      : {}),
+    ...(Number.isSafeInteger(baseline.openFixtureDocumentCount)
+      ? { openFixtureDocumentCount: baseline.openFixtureDocumentCount }
+      : {}),
+    ...(Number.isSafeInteger(baseline.openOutsideFixtureDocumentCount)
+      ? { openOutsideFixtureDocumentCount: baseline.openOutsideFixtureDocumentCount }
+      : {}),
+    ...(Number.isSafeInteger(baseline.unresolvedOwnershipDocumentCount)
+      ? { unresolvedOwnershipDocumentCount: baseline.unresolvedOwnershipDocumentCount }
+      : {}),
+    ...(Number.isSafeInteger(baseline.completionOpenDocumentCount)
+      ? { completionOpenDocumentCount: baseline.completionOpenDocumentCount }
+      : {}),
+    ...(Number.isSafeInteger(baseline.completionOpenFixtureDocumentCount)
+      ? { completionOpenFixtureDocumentCount: baseline.completionOpenFixtureDocumentCount }
+      : {}),
+    ...(Number.isSafeInteger(baseline.completionOpenOutsideFixtureDocumentCount)
+      ? { completionOpenOutsideFixtureDocumentCount: baseline.completionOpenOutsideFixtureDocumentCount }
+      : {}),
+    ...(Number.isSafeInteger(baseline.completionUnresolvedOwnershipDocumentCount)
+      ? { completionUnresolvedOwnershipDocumentCount: baseline.completionUnresolvedOwnershipDocumentCount }
+      : {}),
+    ...(typeof baseline.completionPreexistingDocumentRevisionsUnchanged === "boolean"
+      ? {
+        completionPreexistingDocumentRevisionsUnchanged:
+          baseline.completionPreexistingDocumentRevisionsUnchanged
+      }
       : {}),
     ...(cleanString(baseline.firstMutationToolName)
       ? { firstMutationToolName: cleanString(baseline.firstMutationToolName).slice(0, 160) }
@@ -4586,12 +4679,6 @@ async function runLiveCase(suite, args) {
     ];
     throw new Error(`fixture 不是可复用的独立样本：${freshnessFailures.join("、")}`);
   }
-  const photoshopDocumentPolicy = resolveCasePhotoshopDocumentPolicy(caseSpec);
-  // 外部脏文档 Case：布景必须发生在 preflight 之前，preflight 按策略要求
-  // "恰好 1 个带未保存修改的文档"；布景失败即整轮失败，不产生 Attempt。
-  const externalDocumentSetup = photoshopDocumentPolicy === "external_dirty_document_open"
-    ? await armExternalDirtyDocument(args)
-    : null;
   const preflight = await buildPreflight(suite, {
     ...args,
     get(name, fallback = "") {
@@ -4627,6 +4714,9 @@ async function runLiveCase(suite, args) {
     throw new Error("正式样本缺少可验证的 Photoshop Runtime 完整身份。 ");
   }
   const photoshopRuntimeBindingDigest = sha256Text(stableStringify(photoshopRuntimeBinding));
+  const mainImageCanvasDigest = sha256Text(stableStringify({
+    mainImage: preflight.infrastructure.rendererPreflight.currentMainImageCanvas
+  }));
   const suiteCaseSetDigest = buildSuiteCaseSetDigest(suite);
   const suiteRubricSetDigest = buildSuiteRubricSetDigest(suite);
   const attemptEnvironment = {
@@ -4640,7 +4730,8 @@ async function runLiveCase(suite, args) {
     photoshopRuntimeArtifactDigest,
     photoshopRuntimeManifestDigest,
     photoshopRuntimeBinding,
-    photoshopRuntimeBindingDigest
+    photoshopRuntimeBindingDigest,
+    mainImageCanvasDigest
   };
   const cohortFingerprint = deriveLiveCohortFingerprint({
     suiteId: suite.manifest.suiteId,
@@ -4703,26 +4794,44 @@ async function runLiveCase(suite, args) {
   if (!debugToken) {
     throw new Error("run-live 需要 --debug-token 或 DESIGNECHO_DEBUG_TOKEN；未授权的本地进程不能启动真实 Agent 写入。");
   }
-  const armedAttempt = writeLiveAttemptEvent(attemptContext, 1, "armed", {
-    status: "armed",
-    interactionMetricsRequireReceipts: true,
-    photoshopDocumentPolicy,
-    ...(externalDocumentSetup ? { externalDocumentSetup } : {})
+  const runtimeLease = acquirePhotoshopRuntimeLease({
+    purpose: "formal_capture",
+    ownerId: attemptContext.attemptId,
+    ttlMs: timeoutMs + (5 * 60 * 1000)
   });
-  const submissionAttempt = writeLiveAttemptEvent(attemptContext, 2, "submission_started", {
-    status: "submitted",
-    endpointKind: "debug_bridge_chat_submit"
-  });
-  let trustedCompletionReceipt = false;
-  const projectAssetReferences = (caseSpec.task.agentVisibleReferences || []).map((reference) => ({
-    version: "debug-bridge-project-asset-reference/v1",
-    relativePath: normalizeRelativePath(reference.ref),
-    label: cleanString(reference.role) === "user_provided_target_reference"
-      ? "用户提供的目标参考"
-      : "用户参考",
-    digest: cleanString(reference.digest).toLowerCase()
-  }));
   try {
+    const leasedPhotoshopRuntime = await inspectPhotoshopRuntimeBinding(args);
+    if (!leasedPhotoshopRuntime.ready
+      || !photoshopRuntimeBindingsMatch(
+        leasedPhotoshopRuntime.binding,
+        photoshopRuntimeBinding
+      )) {
+      const issueCodes = (leasedPhotoshopRuntime.issues || [])
+        .map((issue) => cleanString(issue?.code))
+        .filter(Boolean);
+      throw new Error(
+        `Photoshop Runtime 在正式采集租约取得后发生漂移：${issueCodes.join("、") || "runtime_binding_drift"}；`
+        + "本轮尚未写入 Attempt，也不会提交模型或 Photoshop 写入。"
+      );
+    }
+    const armedAttempt = writeLiveAttemptEvent(attemptContext, 1, "armed", {
+      status: "armed",
+      interactionMetricsRequireReceipts: true
+    });
+    const submissionAttempt = writeLiveAttemptEvent(attemptContext, 2, "submission_started", {
+      status: "submitted",
+      endpointKind: "debug_bridge_chat_submit"
+    });
+    let trustedCompletionReceipt = false;
+    const projectAssetReferences = (caseSpec.task.agentVisibleReferences || []).map((reference) => ({
+      version: "debug-bridge-project-asset-reference/v1",
+      relativePath: normalizeRelativePath(reference.ref),
+      label: cleanString(reference.role) === "user_provided_target_reference"
+        ? "用户提供的目标参考"
+        : "用户参考",
+      digest: cleanString(reference.digest).toLowerCase()
+    }));
+    try {
     const actorDispatch = await actorCapability.dispatchProtocol({
       debugBridge,
       debugToken,
@@ -4736,8 +4845,7 @@ async function runLiveCase(suite, args) {
       photoshopRuntimeBuildId,
       photoshopRuntimeBinding,
       workspaceSemanticDigest: fixtureBefore.workspaceMetadata.semanticDigest,
-      projectAssetReferences,
-      photoshopDocumentPolicy
+      projectAssetReferences
     });
     const actorDispatchValidation = validateLiveActorDispatchResult(
       actorDispatch,
@@ -4749,21 +4857,12 @@ async function runLiveCase(suite, args) {
     }
     const response = actorDispatch.response;
     const receiptValidation = actorDispatch.receiptValidation;
-    if (externalDocumentSetup) {
-      const receiptExternalDocument = readReceiptExternalDocumentIdentity(
-        receiptValidation.receipt?.externalDocumentAtSubmission
-      );
-      if (!receiptExternalDocument
-        || receiptExternalDocument.documentId !== externalDocumentSetup.documentId
-        || receiptExternalDocument.activeHistoryStateId
-          !== externalDocumentSetup.activeHistoryStateId
-        || receiptExternalDocument.historyStateCount
-          !== externalDocumentSetup.historyStateCount) {
-        throw new Error(
-          "运行窗口冻结的外部文档与布景时冻结的身份不一致；提交前外部文档可能已被替换或改动。"
-        );
-      }
-    }
+    const protocolInteractionCount = Number(
+      receiptValidation.receipt.interactionReceipt.protocolInteractionCount
+    );
+    const userDesignCorrectionCount = Number(
+      receiptValidation.receipt.interactionReceipt.userDesignCorrectionCount
+    );
     trustedCompletionReceipt = true;
     const completionPhotoshopRuntime = await inspectPhotoshopRuntimeBinding(args);
     if (!completionPhotoshopRuntime.ready
@@ -4839,9 +4938,7 @@ async function runLiveCase(suite, args) {
       expectedProjectPath: fixtureRoot,
       cohortId,
       repeatIndex,
-      // 当前 Debug 协议还没有 Provider / operation 级交互收据。只发送一条自然请求
-      // 不能证明用户没有从 UI 介入；保持 unknown，禁止用伪造的 0 通过发布门禁。
-      userInterventionCount: undefined,
+      userInterventionCount: protocolInteractionCount + userDesignCorrectionCount,
       fixtureDigest: fixtureBefore.fixtureDigest,
       environment: {
         ...environmentAtSubmission,
@@ -4855,6 +4952,7 @@ async function runLiveCase(suite, args) {
         runtimeAppVersion: runtime?.appVersion,
         photoshopRuntimeBuildId,
         photoshopRuntimeBindingDigest,
+        mainImageCanvasDigest,
         timeoutMs,
         instructionDigest,
         rubricDigest,
@@ -4872,8 +4970,7 @@ async function runLiveCase(suite, args) {
     const baselineValidation = validateMutationBaselineAgainstObservation(
       receiptValidation.receipt,
       observation,
-      photoshopRuntimeBuildId,
-      photoshopDocumentPolicy
+      photoshopRuntimeBuildId
     );
     if (!baselineValidation.ok) throw new Error(baselineValidation.errors.join("；"));
     const validation = validateDesignReliabilityRun(observation);
@@ -4917,7 +5014,9 @@ async function runLiveCase(suite, args) {
       runObservationId: observation.runObservationId,
       sourceRunIds: observation.sourceRunRefs.map((item) => item.agentRunId),
       technicalDeliveryPassed: observation.observed.technicalDeliveryPassed === true,
-      interactionMetricsKnown: false,
+      interactionMetricsKnown: true,
+      protocolInteractionCount,
+      userDesignCorrectionCount,
       firstMutationBaselineProof: buildFirstMutationBaselineProof(receiptValidation.receipt)
     });
     return {
@@ -4951,6 +5050,12 @@ async function runLiveCase(suite, args) {
       } : {})
     });
     throw error;
+    }
+  } finally {
+    const released = releasePhotoshopRuntimeLease(runtimeLease);
+    if (!released.released && released.reason !== "lease_already_absent") {
+      console.warn(`[Design Reliability] Photoshop Runtime 租约释放异常：${released.reason}`);
+    }
   }
 }
 
@@ -4986,16 +5091,21 @@ async function reconcileLiveAttempt(args) {
   if (eventIdentities.size !== 1) {
     throw new Error("Attempt 事件身份已经漂移，不能自动完成 reconciliation。");
   }
-  const liveEnvironment = await inspectLiveEnvironment(args, fixtureRoot);
+  const liveEnvironment = await inspectLiveEnvironment(args, fixtureRoot, {
+    documentPolicy: "no_fixture_documents"
+  });
   const unresolvedEvent = terminal || submitted;
   const terminalAt = Date.parse(unresolvedEvent.occurredAt);
   const runtimeStartedAt = Date.parse(liveEnvironment.runtime?.processStartedAt || "");
+  const photoshopRuntimeLoadedAt = Date.parse(liveEnvironment.photoshop?.runtimeLoadedAt || "");
   if (!liveEnvironment.ready
     || !Number.isFinite(terminalAt)
     || !Number.isFinite(runtimeStartedAt)
-    || runtimeStartedAt <= terminalAt) {
+    || runtimeStartedAt <= terminalAt
+    || !Number.isFinite(photoshopRuntimeLoadedAt)
+    || photoshopRuntimeLoadedAt <= terminalAt) {
     throw new Error(
-      "Reconciliation 需要在该异常之后重启最新干净 Runtime，并确认原项目已绑定、Photoshop 无打开文档且无待处理请求。"
+      "Reconciliation 需要在异常后重启最新干净 Agent / Photoshop Runtime、绑定原项目、清空待处理请求，并证明所有打开文档都不属于原 fixture。"
     );
   }
   const context = buildLiveAttemptContextFromEvent(unresolvedEvent);
@@ -5015,8 +5125,13 @@ async function reconcileLiveAttempt(args) {
     photoshopRuntimeBuildId: liveEnvironment.photoshop.runtimeBuildId,
     reconciliationFacts: {
       runtimeRestartedAfterFailure: true,
+      photoshopRuntimeReloadedAfterFailure: true,
       noPendingPhotoshopRequests: true,
-      noOpenPhotoshopDocuments: true,
+      noOpenAttemptFixtureDocuments: true,
+      openDocumentOwnershipResolved: true,
+      openUnrelatedPhotoshopDocumentCount:
+        liveEnvironment.photoshop.openOutsideFixtureDocumentCount,
+      documentPolicy: "no_fixture_documents",
       projectMatchesOriginalFixture: true
     }
   });
@@ -5039,6 +5154,22 @@ function evaluateDebugRendererPreflight(input) {
   const selectedProvider = cleanString(renderer?.selectedProvider);
   const selectedModelId = cleanString(renderer?.selectedModelId);
   const selectedApiModelId = cleanString(renderer?.selectedApiModelId);
+  const rendererMainImageCanvas = isRecord(renderer?.mainImageCanvas)
+    && Number.isSafeInteger(renderer.mainImageCanvas.width)
+    && Number.isSafeInteger(renderer.mainImageCanvas.height)
+    ? {
+        width: renderer.mainImageCanvas.width,
+        height: renderer.mainImageCanvas.height
+      }
+    : null;
+  const expectedMainImageCanvas = isRecord(input?.expectedMainImageCanvas)
+    && Number.isSafeInteger(input.expectedMainImageCanvas.width)
+    && Number.isSafeInteger(input.expectedMainImageCanvas.height)
+    ? {
+        width: input.expectedMainImageCanvas.width,
+        height: input.expectedMainImageCanvas.height
+      }
+    : null;
   const capturedAt = Date.parse(cleanString(renderer?.capturedAt));
   const available = Boolean(
     input?.probe?.reachable === true
@@ -5048,6 +5179,7 @@ function evaluateDebugRendererPreflight(input) {
     && Number.isFinite(capturedAt)
     && typeof renderer?.selectedModelResolved === "boolean"
     && typeof renderer?.projectPath === "string"
+    && rendererMainImageCanvas !== null
     && typeof renderer?.chatBusy === "boolean"
   );
   const providerMatches = Boolean(
@@ -5065,8 +5197,14 @@ function evaluateDebugRendererPreflight(input) {
     && expectedProjectPath
     && normalizePathIdentity(renderer.projectPath) === expectedProjectPath
   );
+  const designDimensionMatches = Boolean(
+    available
+    && (!expectedMainImageCanvas
+      || (rendererMainImageCanvas?.width === expectedMainImageCanvas.width
+        && rendererMainImageCanvas?.height === expectedMainImageCanvas.height))
+  );
   return {
-    version: "design-reliability-renderer-preflight/v1",
+    version: "design-reliability-renderer-preflight/v2",
     available,
     expectedProviderSupplied: Boolean(expectedProvider),
     expectedModelSupplied: Boolean(expectedModelId),
@@ -5077,6 +5215,10 @@ function evaluateDebugRendererPreflight(input) {
     providerMatches,
     modelMatches,
     projectMatches,
+    expectedMainImageCanvasSupplied: Boolean(expectedMainImageCanvas),
+    expectedMainImageCanvas,
+    currentMainImageCanvas: rendererMainImageCanvas,
+    designDimensionMatches,
     chatBusy: renderer?.chatBusy === true,
     ready: Boolean(
       available
@@ -5084,6 +5226,7 @@ function evaluateDebugRendererPreflight(input) {
       && providerMatches
       && modelMatches
       && projectMatches
+      && designDimensionMatches
       && renderer?.chatBusy === false
     )
   };
@@ -5110,15 +5253,6 @@ function summarizeDebugWriteAuthorization(probe) {
 
 async function buildPreflight(suite, args) {
   const fixtureRoot = args.get("--fixture-root");
-  // --case 给出时按该 Case 的文档策略评估环境；没给或找不到时保持 none_open 缺省。
-  let preflightDocumentPolicy = "none_open";
-  const requestedCaseId = cleanString(args.get("--case"));
-  if (requestedCaseId) {
-    const requestedCase = suite.cases.find((item) => item.caseId === requestedCaseId);
-    if (requestedCase) {
-      preflightDocumentPolicy = resolveCasePhotoshopDocumentPolicy(requestedCase);
-    }
-  }
   const debugWriteTokenSupplied = Boolean(
     args.get("--debug-token", process.env.DESIGNECHO_DEBUG_TOKEN || "")
   );
@@ -5127,10 +5261,10 @@ async function buildPreflight(suite, args) {
     ready: false,
     reason: "未提供 --fixture-root；不会猜测或直接使用原始项目。"
   };
+  let selectedCases;
   if (fixtureRoot) {
     const absoluteFixtureRoot = path.resolve(fixtureRoot);
     if (fs.existsSync(absoluteFixtureRoot) && fs.statSync(absoluteFixtureRoot).isDirectory()) {
-      let selectedCases;
       try {
         selectedCases = selectFixtureCases(suite, args);
       } catch (error) {
@@ -5173,13 +5307,19 @@ async function buildPreflight(suite, args) {
       : Promise.resolve({ reachable: false, reason: "debug_write_token_missing" }),
     httpProbe(args.get("--photoshop-health", DEFAULT_PHOTOSHOP_MCP_HEALTH))
   ]);
+  const expectedMainImageCanvas = selectedCases?.length === 1
+    && selectedCases[0]?.oracle?.outputContract?.canvasAuthority === "runtime_setting"
+    && isRecord(selectedCases[0]?.oracle?.outputContract?.canvas)
+    ? selectedCases[0].oracle.outputContract.canvas
+    : undefined;
   const rendererPreflight = evaluateDebugRendererPreflight({
     probe: debugWriteAuthorization,
     expectedProvider: args.get("--provider"),
     expectedModelId: args.get("--model"),
     expectedProjectPath: fixture.supplied && fixture.ready === true
       ? path.resolve(fixtureRoot)
-      : ""
+      : "",
+    expectedMainImageCanvas
   });
   const debugWriteAuthorizationSummary = summarizeDebugWriteAuthorization(
     debugWriteAuthorization
@@ -5188,7 +5328,7 @@ async function buildPreflight(suite, args) {
     ? await inspectLiveEnvironment(
       args,
       fixture.supplied && fixture.ready === true ? path.resolve(fixtureRoot) : "",
-      preflightDocumentPolicy
+      { documentPolicy: "no_fixture_documents" }
     )
     : {
       ready: false,
@@ -5259,6 +5399,11 @@ async function buildPreflight(suite, args) {
     ...(rendererPreflight.available && !rendererPreflight.projectMatches
       ? ["renderer_project_not_bound_to_fixture"]
       : []),
+    ...(rendererPreflight.available
+      && rendererPreflight.expectedMainImageCanvasSupplied
+      && !rendererPreflight.designDimensionMatches
+      ? ["renderer_design_dimension_mismatch"]
+      : []),
     ...(rendererPreflight.available && rendererPreflight.chatBusy
       ? ["renderer_chat_busy"]
       : []),
@@ -5311,9 +5456,10 @@ function printStatus(status) {
     console.log(`  - ${item.taskFamily}: ${item.caseId} · ${item.instruction}`);
   }
   console.log(`Run Observation: ${status.evidence.runObservations}`);
-  console.log(`Attempt Submission: ${status.evidence.attemptCoverage.submittedAttempts}`);
-  console.log(`Attempt Terminal: ${status.evidence.attemptCoverage.terminalAttempts}`);
-  console.log(`Attempt 未闭合: ${status.evidence.attemptCoverage.attemptsWithoutTerminal}`);
+  console.log(`当前 Case revision Attempt Submission: ${status.evidence.attemptCoverage.submittedAttempts}`);
+  console.log(`当前 Case revision Attempt Terminal: ${status.evidence.attemptCoverage.terminalAttempts}`);
+  console.log(`当前 Case revision Attempt 未闭合: ${status.evidence.attemptCoverage.attemptsWithoutTerminal}`);
+  console.log(`全局写状态安全账本未清账: ${status.evidence.attemptSafetyLedger.unresolvedAttemptCount}`);
   console.log(`Human Review: ${status.evidence.humanReviews}`);
   console.log(`Attribution: ${status.evidence.attributions}`);
   console.log(`正式成功率可用: ${status.officialRateAvailable ? "是" : "否（尚未形成完整固定 cohort + 人工评审）"}`);
@@ -5364,7 +5510,7 @@ function printHelp() {
     "      --debug-token token（或 DESIGNECHO_DEBUG_TOKEN）",
     "      通过当前 DesignEcho 窗口提交自然请求；提交前强制当前项目与 fixture 精确匹配；timeout 由 Suite 固定，显式覆盖必须完全一致。",
     "  reconcile-live-attempt --attempt-id id --fixture-root dir",
-    "      超时或断连后，只在 Runtime 已重启、无打开文档/待处理请求且仍绑定原 fixture 时追加对账收据。",
+    "      超时或断连后，只在 Agent / Photoshop Runtime 已重启、无待处理请求、仍绑定原 fixture，且所有打开文档的路径身份均已解析并位于原 fixture 外时追加对账收据。",
     "  record-run --case id --run-record file [--run-record file...] --fixture-root dir",
     "      --cohort id --provider id --model id --repeat N --user-interventions N",
     "      --evidence editable_psd=relative/path --evidence raster_export=relative/path",
@@ -5486,6 +5632,8 @@ module.exports = {
   controlledProjectMetadataSchemaSnapshot,
   deriveLiveAttemptFingerprint,
   deriveLiveCohortFingerprint,
+  buildLiveEnvironmentPhotoshopReadBatch,
+  extractLiveEnvironmentPhotoshopRead,
   evaluateLiveEnvironmentSafety,
   evaluateAttributableAttemptEvents,
   evaluateOfficialAttemptEligibility,
@@ -5507,8 +5655,6 @@ module.exports = {
   recordReview,
   recordRun,
   reconcileLiveAttempt,
-  readReceiptExternalDocumentIdentity,
-  resolveCasePhotoshopDocumentPolicy,
   resolveReliabilityEvidenceRoots,
   resolveAttributionCliSubject,
   resolveLiveRunTimeout,

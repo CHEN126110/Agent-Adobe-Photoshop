@@ -1,7 +1,6 @@
 import { action, core } from 'photoshop';
 import { storage } from 'uxp';
 import { normalizeLocalFilePath } from './file-url';
-import type { PhotoshopHistoryStateRef } from './photoshop-history-state-ref';
 
 export interface JsxBridgeResult<T = any> {
     raw: any;
@@ -191,6 +190,8 @@ type SaveDocumentViaJsxOptions = {
     width?: number;
     height?: number;
     conflictPolicy?: 'overwrite' | 'fail_if_exists';
+    /** UXP 在派发前冻结的源文档 ID；JSX 写文件前必须核对实际选中的 sourceDoc。 */
+    expectedSourceDocumentId?: number;
 };
 
 function getJsxSaveOptions(
@@ -233,7 +234,7 @@ export async function saveDocumentViaJsx(
     format: 'psd' | 'psb' | 'png' | 'jpg',
     documentName?: string,
     options?: SaveDocumentViaJsxOptions
-): Promise<{ success: true; filePath: string; sourceHistoryStateRef?: PhotoshopHistoryStateRef }> {
+): Promise<{ success: true; filePath: string; sourceDocumentId?: number }> {
     const normalizedPath = normalizeLocalFilePath(filePath);
     const { optionCtor, setup } = getJsxSaveOptions(format, options);
     const maxDimensionRaw = Number(options?.maxDimension);
@@ -249,6 +250,7 @@ export async function saveDocumentViaJsx(
         explicitHeight > 0 ||
         ((format === 'jpg' || format === 'png') && maxDimension > 0);
     const failIfExists = options?.conflictPolicy === 'fail_if_exists';
+    const expectedSourceDocumentId = Number(options?.expectedSourceDocumentId);
     const documentLookup = documentName
         ? `
     var targetDoc = null;
@@ -275,6 +277,14 @@ try {
     var saveDoc = null;
 ${documentLookup}
     sourceDoc = targetDoc;
+    var sourceDocumentId = '';
+    try {
+        sourceDocumentId = sourceDoc ? sourceDoc.id : '';
+    } catch (sourceIdentityError) {}
+    if (${Number.isSafeInteger(expectedSourceDocumentId) ? expectedSourceDocumentId : 0} > 0
+        && Number(sourceDocumentId) !== ${Number.isSafeInteger(expectedSourceDocumentId) ? expectedSourceDocumentId : 0}) {
+        throw new Error('JSX 保存前源文档已变化，未写入目标文件。');
+    }
     saveDoc = sourceDoc;
     if (${shouldResizeOnSave ? 'true' : 'false'}) {
         var sourceWidth = 0;
@@ -323,8 +333,7 @@ ${documentLookup}
         success: 1,
         filePath: target.fsName,
         documentName: sourceDoc ? sourceDoc.name : '',
-        sourceDocumentId: sourceDoc ? sourceDoc.id : '',
-        sourceHistoryStateId: sourceDoc && sourceDoc.activeHistoryState ? sourceDoc.activeHistoryState.id : '',
+        sourceDocumentId: sourceDocumentId,
         format: '${format}'
     });
 } catch (error) {
@@ -350,16 +359,13 @@ __deOutput;
     const result = await runJsxCode(jsx, 'Save Document via JSX');
     if (result.data?.success) {
         const documentId = Number(result.data.sourceDocumentId);
-        const historyStateId = Number(result.data.sourceHistoryStateId);
-        const sourceHistoryStateRef = Number.isSafeInteger(documentId)
-            && documentId > 0
-            && Number.isSafeInteger(historyStateId)
-            && historyStateId > 0
-            ? { documentId, historyStateId }
-            : undefined;
+        const resultData = { ...result.data };
+        delete resultData.sourceDocumentId;
         return {
-            ...result.data,
-            ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {})
+            ...resultData,
+            ...(Number.isSafeInteger(documentId) && documentId > 0
+                ? { sourceDocumentId: documentId }
+                : {})
         };
     }
 

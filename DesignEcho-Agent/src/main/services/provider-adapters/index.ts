@@ -3,6 +3,7 @@
  */
 
 export type { ProviderAdapter, ToolSchema, ToolCall, ProviderResponse, AdapterMessage, AdapterOptions, ToolResultEntry } from './types';
+export { readOpenAICompatibleTokenUsage } from './openai-adapter';
 
 import type { ProviderAdapter } from './types';
 import { AnthropicAdapter } from './anthropic-adapter';

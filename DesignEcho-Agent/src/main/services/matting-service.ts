@@ -25,6 +25,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import type { SharpConstructor } from 'sharp';
 import { 
     BinaryImageData, 
     isBinaryImageData, 
@@ -187,34 +188,19 @@ const SCOPE_DILATE_RATIO = 4 / 1536;
 const SCOPE_DILATE_MIN_PIXELS = 2;
 const SCOPE_DILATE_MAX_PIXELS = 8;
 
-/**
- * matting 档的外扩半径要大得多——它的 alpha 过渡带比二值蒙版宽一个量级
- * （实测同一张图：纯 matting 有 40977 个半透明像素，按分割档的 4px 相交后只剩
- * 19922，一半的毛发过渡带被 SAM 的二值边界削掉了）。
- *
- * 之所以敢放这么大，是因为 matting 档配合 'transition-only' 模式：外扩带里
- * 只捞半透明像素，实心前景（邻近物）不捞。实测 R=64 时过渡带 100% 捞回，
- * 前景相比 R=4 只多 1.0%；若用 'solid' 模式同样放到 32px，前景会多 5.3%，
- * 多出来的全是腿。
- */
-const MATTING_SCOPE_DILATE_RATIO = 48 / 1536;
-const MATTING_SCOPE_DILATE_MIN_PIXELS = 16;
-const MATTING_SCOPE_DILATE_MAX_PIXELS = 96;
-
 /** alpha 达到这个值就算实心前景，外扩带里不再捞它（避免把邻近物整片带进来） */
 const SOLID_ALPHA_THRESHOLD = 248;
 
-/** 按局部图尺寸与权重档位换算范围蒙版的外扩半径 */
-function resolveScopeDilatePixels(
+/**
+ * 按局部图尺寸换算语义范围的机械不确定带。
+ * 权重档位不能扩大语义权限：matting 的 alpha 过渡更宽，不代表范围外的半透明
+ * 像素属于目标；邻近皮肤、鞋和背景边缘同样会产生半透明像素。
+ */
+export function resolveSemanticScopeRefinementRadius(
     width: number,
-    height: number,
-    variant: BiRefNetVariant = 'lite'
+    height: number
 ): number {
     const longSide = Math.max(width, height);
-    if (variant === 'matting') {
-        const scaled = Math.round(longSide * MATTING_SCOPE_DILATE_RATIO);
-        return Math.min(MATTING_SCOPE_DILATE_MAX_PIXELS, Math.max(MATTING_SCOPE_DILATE_MIN_PIXELS, scaled));
-    }
     const scaled = Math.round(longSide * SCOPE_DILATE_RATIO);
     return Math.min(SCOPE_DILATE_MAX_PIXELS, Math.max(SCOPE_DILATE_MIN_PIXELS, scaled));
 }
@@ -296,7 +282,8 @@ export interface BoxSegmenter {
     isReady(): boolean;
     segmentWithBox(
         imageBuffer: Buffer,
-        box: { x1: number; y1: number; x2: number; y2: number }
+        box: { x1: number; y1: number; x2: number; y2: number },
+        guidancePoints?: BoxSegmenterPointPrompt[]
     ): Promise<{
         success: boolean;
         mask?: Buffer;
@@ -304,6 +291,12 @@ export interface BoxSegmenter {
         maskHeight?: number;
         error?: string;
     }>;
+}
+
+export interface BoxSegmenterPointPrompt {
+    x: number;
+    y: number;
+    label: 0 | 1;
 }
 
 // ==================== 智能分割服务类 ====================
@@ -324,7 +317,7 @@ export class MattingService {
 
     // ONNX Runtime 和 Sharp（延迟加载）
     private ort: typeof import('onnxruntime-node') | null = null;
-    private sharp: typeof import('sharp') | null = null;
+    private sharp: SharpConstructor | null = null;
     
     // 模型会话缓存
     // BiRefNet 双档：full（birefnet.onnx，~970MB，边缘最优但慢）/ lite（birefnet_lite|_old.onnx，~220MB，3-5 倍速）
@@ -2227,6 +2220,8 @@ export class MattingService {
              * （真机：鞋与袜各自取像分割再合并，交界带 3.6% 的像素上下是前景、自己是空的）。
              */
             boxesInRegion: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+            /** 与 boxesInRegion 一一对应；点坐标属于当前局部图，内容只能由调用方显式提供。 */
+            guidancePointsByBox?: BoxSegmenterPointPrompt[][];
         }>,
         options: {
             outputWidth: number;
@@ -2336,14 +2331,25 @@ export class MattingService {
                 markRegionFailed(i);
                 continue;
             }
-            // 贴边检测与连通性挑选用所有目标的外接框
-            const box = {
-                x1: Math.min(...boxes.map(b => b.x1)),
-                y1: Math.min(...boxes.map(b => b.y1)),
-                x2: Math.max(...boxes.map(b => b.x2)),
-                y2: Math.max(...boxes.map(b => b.y2))
-            };
-
+            const guidancePointsByBox = region.guidancePointsByBox || [];
+            if (guidancePointsByBox.length > 0 && guidancePointsByBox.length !== boxes.length) {
+                failures.push(`${label} 的语义引导与目标框数量不一致`);
+                markRegionFailed(i);
+                continue;
+            }
+            const normalizedGuidancePoints = boxes.map((_box, boxIndex) => {
+                const rawPoints = guidancePointsByBox[boxIndex] || [];
+                return rawPoints.filter(point => Number.isFinite(point.x)
+                    && Number.isFinite(point.y)
+                    && (point.label === 0 || point.label === 1));
+            });
+            if (normalizedGuidancePoints.some((points, boxIndex) => (
+                points.length !== (guidancePointsByBox[boxIndex] || []).length
+            ))) {
+                failures.push(`${label} 含有无效的语义引导点`);
+                markRegionFailed(i);
+                continue;
+            }
             // 局部蒙版：SAM 定范围 + BiRefNet 定边缘，两者结合。
             //
             // 单用任一个都不行，真机 2026-08-27 两头都撞过：
@@ -2409,8 +2415,14 @@ export class MattingService {
             const scopeProviderReady = scopeProvider !== null;
             let scopedTargetCount = 0;
             if (scopeProvider) {
-                for (const target of boxes) {
-                    const samResult = await scopeProvider.segmentWithBox(decoded.buffer, target);
+                for (let targetIndex = 0; targetIndex < boxes.length; targetIndex++) {
+                    const target = boxes[targetIndex];
+                    const guidancePoints = normalizedGuidancePoints[targetIndex];
+                    const samResult = await scopeProvider.segmentWithBox(
+                        decoded.buffer,
+                        target,
+                        guidancePoints.length > 0 ? guidancePoints : undefined
+                    );
                     if (!samResult.success || !samResult.mask) {
                         failures.push(`${label} SAM 圈定范围失败：${samResult.error || '未返回蒙版'}`);
                         continue;
@@ -2474,21 +2486,33 @@ export class MattingService {
                 const activeVariant = this.birefnetActiveTier || 'lite';
                 regionMask = this.intersectWithScope(
                     detailMask, scopeMask, decoded.width, decoded.height,
-                    resolveScopeDilatePixels(decoded.width, decoded.height, activeVariant),
+                    resolveSemanticScopeRefinementRadius(decoded.width, decoded.height),
                     activeVariant === 'matting' ? 'transition-only' : 'solid'
                 );
             } else if (detailMask) {
-                // 没有 SAM 时退回连通性挑选：局部图里只有目标时够用，
-                // 目标与别的物体相连时会带出邻近物，属已知代价
-                const picked = this.keepTargetComponent(detailMask, decoded.width, decoded.height, box);
-                regionMask = picked.foreground > 0 ? picked.mask : null;
+                regionMask = detailMask;
             } else if (scopeMask) {
-                const picked = this.keepTargetComponent(scopeMask, decoded.width, decoded.height, box);
-                regionMask = picked.foreground > 0 ? picked.mask : null;
+                regionMask = scopeMask;
             }
 
             if (!regionMask) {
                 failures.push(`${label} 两种分割方式都没能产出蒙版`);
+                markRegionFailed(i);
+                continue;
+            }
+
+            // 不论走融合还是降级路径，最终都按 Agent 选定的目标框做一次组件归属。
+            // 这只移除与所有目标框都无归属关系的孤立碎片；每个目标各自保留重叠最多
+            // 的主体组件，不能用“全图最大组件”把第二个目标误删。
+            const ownedComponents = this.keepTargetComponents(
+                regionMask,
+                decoded.width,
+                decoded.height,
+                boxes
+            );
+            regionMask = ownedComponents.foreground > 0 ? ownedComponents.mask : null;
+            if (!regionMask) {
+                failures.push(`${label} 没有与选定目标框绑定的前景组件`);
                 markRegionFailed(i);
                 continue;
             }
@@ -3130,9 +3154,9 @@ export class MattingService {
                 continue;
             }
             if (near[i] > radius) continue;
-            // 外扩带：transition-only 时只捞半透明过渡像素。
-            // 判据是"范围外的实心前景必定属于邻近物（腿、裤脚），
-            // 范围外的半透明必定是目标自己的边缘过渡带"。
+            // 外扩带：transition-only 时只允许细节 Provider 在很窄的机械不确定带
+            // 内补半透明边缘。半透明不等于目标归属，因此半径必须由上面的 2–8px
+            // 通用上限约束，不能随 matting 过渡带宽度扩大。
             if (transitionOnly && detail[i] >= SOLID_ALPHA_THRESHOLD) continue;
             output[i] = detail[i];
         }
@@ -3140,20 +3164,21 @@ export class MattingService {
     }
 
     /**
-     * 从分割结果里保留"目标本身"，允许它超出目标框。
+     * 从分割结果里保留每个目标拥有的组件，允许组件超出目标框。
      *
      * 为什么不能按框硬裁：框外扩 padding 正是为了容纳检测框的误差，裁回原框等于白扩。
      * 真机 2026-08-27：抠鞋子时鞋面比检测框高出一截，硬裁后选区在那里出现一条水平直角，
      * 看起来像把图片剪了一刀。
      *
-     * 改按连通性判断：与目标框重叠最多的那个连通域整体保留（哪怕伸出框外），
-     * 与框无重叠的独立物体（邻近的袜子、道具）排除。
+     * 改按连通性判断：每个目标框各自保留重叠最多的连通域（哪怕伸出框外），
+     * 与所有框都无归属关系的独立碎片排除。不能只挑全图最大连通域，否则多目标时
+     * 第二个合法目标会被误删。
      */
-    private keepTargetComponent(
+    private keepTargetComponents(
         mask: Buffer,
         width: number,
         height: number,
-        box: { x1: number; y1: number; x2: number; y2: number }
+        boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>
     ): { mask: Buffer; foreground: number } {
         const { regions, labels } = extractMaskRegionsWithLabels(mask, width, height, {
             foregroundThreshold: BOX_SEGMENT_FOREGROUND_THRESHOLD,
@@ -3167,41 +3192,44 @@ export class MattingService {
             return { mask: Buffer.alloc(width * height, 0), foreground: 0 };
         }
 
-        // 统计每个连通域落在目标框内的像素数
-        const overlap = new Array(regions.length).fill(0);
-        const clipX1 = Math.max(0, Math.floor(box.x1));
-        const clipY1 = Math.max(0, Math.floor(box.y1));
-        const clipX2 = Math.min(width, Math.ceil(box.x2));
-        const clipY2 = Math.min(height, Math.ceil(box.y2));
+        const keep = new Set<number>();
+        for (const box of boxes) {
+            // 统计每个连通域落在当前目标框内的像素数。
+            const overlap = new Array(regions.length).fill(0);
+            const clipX1 = Math.max(0, Math.floor(box.x1));
+            const clipY1 = Math.max(0, Math.floor(box.y1));
+            const clipX2 = Math.min(width, Math.ceil(box.x2));
+            const clipY2 = Math.min(height, Math.ceil(box.y2));
 
-        for (let y = clipY1; y < clipY2; y++) {
-            const row = y * width;
-            for (let x = clipX1; x < clipX2; x++) {
-                const label = labels[row + x];
-                if (label > 0) overlap[label - 1]++;
+            for (let y = clipY1; y < clipY2; y++) {
+                const row = y * width;
+                for (let x = clipX1; x < clipX2; x++) {
+                    const label = labels[row + x];
+                    if (label > 0) overlap[label - 1]++;
+                }
+            }
+
+            let bestIndex = -1;
+            let bestOverlap = 0;
+            for (let index = 0; index < regions.length; index++) {
+                if (overlap[index] > bestOverlap) {
+                    bestOverlap = overlap[index];
+                    bestIndex = index;
+                }
+            }
+            if (bestIndex < 0) continue;
+
+            keep.add(bestIndex + 1);
+            // 主体之外，把同样与框高度重叠的部件一并保留（例如鞋带与鞋身断开）。
+            for (let index = 0; index < regions.length; index++) {
+                if (index === bestIndex) continue;
+                const ratio = regions[index].area > 0 ? overlap[index] / regions[index].area : 0;
+                if (ratio >= TARGET_COMPONENT_KEEP_RATIO) keep.add(index + 1);
             }
         }
 
-        let bestIndex = -1;
-        let bestOverlap = 0;
-        for (let i = 0; i < regions.length; i++) {
-            if (overlap[i] > bestOverlap) {
-                bestOverlap = overlap[i];
-                bestIndex = i;
-            }
-        }
-
-        if (bestIndex < 0) {
+        if (keep.size === 0) {
             return { mask: Buffer.alloc(width * height, 0), foreground: 0 };
-        }
-
-        // 主体之外，把同样与框高度重叠的部件一并保留（例如鞋带与鞋身在蒙版上断开）
-        const bestLabel = bestIndex + 1;
-        const keep = new Set<number>([bestLabel]);
-        for (let i = 0; i < regions.length; i++) {
-            if (i === bestIndex) continue;
-            const ratio = regions[i].area > 0 ? overlap[i] / regions[i].area : 0;
-            if (ratio >= TARGET_COMPONENT_KEEP_RATIO) keep.add(i + 1);
         }
 
         const output = Buffer.alloc(width * height, 0);

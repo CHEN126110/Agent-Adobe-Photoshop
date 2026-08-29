@@ -37,6 +37,12 @@ import {
     readReflexionReviewBinding,
     type ReflexionReviewBinding
 } from './agent-runtime-v5/reflexion-contract';
+import type { RuntimePerformanceUsage } from './agent-runtime-v5/runtime-accounting';
+import {
+    AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM,
+    evaluateAgentExecutionCapacity,
+    type AgentPerformanceBudget
+} from './agent-performance-policy';
 
 export interface ReflexionHandoffLike {
     status: 'reflexion_required' | 'not_required' | string;
@@ -527,6 +533,14 @@ export interface QualityAwareReentryInput {
      * 合并成 Harness 指令，也不新增 Photoshop 写入授权。
      */
     constraintMode?: 'merge_quality' | 'handoff_only';
+    /**
+     * 当前 TaskRun 的真实累计用量与当前有效预算。完成态可选改进必须提供该证明；
+     * 缺失或不足时 fail closed，不能仅凭上一代 stopReason === final_response 猜测仍有余量。
+     */
+    performanceCapacity?: {
+        usage: RuntimePerformanceUsage;
+        budget: AgentPerformanceBudget;
+    };
 }
 
 export interface QualityAwareReentryDecision extends ReflexionReentryDecision {
@@ -603,6 +617,36 @@ export function decideQualityAwareReflexionReentry(input: QualityAwareReentryInp
                 effectiveMaxReentries: baseMax
             }
             : { ...base, scoreTrajectory, effectiveMaxReentries: baseMax };
+    }
+    if (completedAestheticImprovement) {
+        const base = decideReflexionReentry({
+            handoff: input.handoff,
+            priorReentryCount: input.priorReentryCount,
+            maxReentries: baseMax,
+            cancelled: input.cancelled,
+            previousFailureSignature: input.previousFailureSignature,
+            stopReason: input.stopReason
+        });
+        if (!base.shouldReenter) {
+            return { ...base, scoreTrajectory, effectiveMaxReentries: baseMax };
+        }
+        const capacity = input.performanceCapacity
+            ? evaluateAgentExecutionCapacity({
+                ...input.performanceCapacity,
+                minimum: AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM
+            })
+            : undefined;
+        if (!capacity?.sufficient) {
+            return {
+                ...base,
+                shouldReenter: false,
+                reason: 'resource_budget_exhausted',
+                injectedConstraints: [],
+                reentryCount: input.priorReentryCount,
+                scoreTrajectory,
+                effectiveMaxReentries: baseMax
+            };
+        }
     }
     const operationalContinuation = input.handoff?.sourceOwner === 'E2'
         || input.handoff?.sourceOwner === 'Runtime'

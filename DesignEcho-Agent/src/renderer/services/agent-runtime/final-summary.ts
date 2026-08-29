@@ -6,6 +6,7 @@
 import { sanitizeUserVisibleAgentText } from '../../../shared/chat-response-cleaner';
 import { isBareAgentCompletionClaim } from '../../../shared/agent-runtime-liveness-policy';
 import { buildObservedDesignDraftSummary } from '../agent-policies/design-task-policy';
+import { deriveAgentUserResultFacts } from './agent-user-result-projection';
 import type { AgentToolCallLogEntry } from './types';
 
 /**
@@ -66,8 +67,6 @@ export function readOutputPathFromToolResult(result: any): string {
 
 export function buildToolResultFallbackMessage(input: {
     toolCallLog: AgentToolCallLogEntry[];
-    hasObservedTaskMutation: boolean;
-    hasSuccessfulSaveExport: boolean;
 }): string {
     const stateSummary = buildSummaryFromStatefulWrites(input.toolCallLog)
         || buildObservedDesignDraftSummary(input.toolCallLog);
@@ -75,7 +74,8 @@ export function buildToolResultFallbackMessage(input: {
         .map((entry) => readOutputPathFromToolResult(entry.result))
         .filter(Boolean)))
         .slice(0, 3);
-    const hasViewableResult = input.hasObservedTaskMutation || input.hasSuccessfulSaveExport;
+    const facts = deriveAgentUserResultFacts(input.toolCallLog);
+    const hasViewableResult = facts.hasViewableDesignChange || facts.hasSavedOrExportedFile;
     // 最终自然语言说明只是展示层。模型说明超时或返回空文本时，根据结构化事实给出
     // 中性摘要；是否完成仍由 TaskCompletion / DesignVerdict 决定，不能由“话没说完”
     // 反向推翻已经闭合的 Photoshop 交付。

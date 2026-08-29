@@ -88,10 +88,15 @@ import {
 } from '../../shared/agent-runtime-v5/operating-context-snapshot';
 import { resolveMaterialSelectionReasonProjection } from '../../shared/design-workshop/compose-design-rationale-visibility';
 import {
+    assessGuardedPhotoshopDocuments,
+    completeGuardedPhotoshopExecutionBaseline,
     createGuardedPhotoshopExecutionBaseline,
     readGuardedPhotoshopExecutionBaselineReceipt,
+    type GuardedPhotoshopDocumentAssessment,
+    type GuardedPhotoshopDocumentFact,
     type GuardedPhotoshopExecutionBaseline
 } from '../../shared/guarded-photoshop-execution-baseline';
+import { enrichPhotoshopDocumentInventory } from '../../shared/photoshop-document-inventory';
 // 保留 useChatActions Hook 的模型选择功能
 import { useChatActions } from '../hooks/useChatActions';
 import {
@@ -108,13 +113,19 @@ import {
     readDebugSkuDeliverySource
 } from '../services/debug-final-artifact-sidecar';
 import {
+    buildDebugBridgeInteractionReceipt,
     buildDebugBridgeChatExecutionFailure,
     buildDebugBridgeChatFailureEnvelope,
+    createDebugBridgeInteractionLedger,
     debugBridgePhotoshopRuntimeLiveIdentitiesMatch,
     DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION,
+    DEBUG_BRIDGE_CHAT_SUBMIT_RECEIPT_VERSION,
+    recordDebugBridgeInteraction,
     readDebugBridgePhotoshopRuntimeBinding,
     readDebugBridgePhotoshopRuntimeLiveIdentity,
     type DebugBridgeChatExecutionStage,
+    type DebugBridgeInteractionKind,
+    type DebugBridgeInteractionLedger,
     type DebugBridgePhotoshopRuntimeLiveIdentity
 } from '../../shared/debug-bridge-chat';
 import { getEagleLibraryPreview } from '../services/eagle-library.service';
@@ -165,10 +176,12 @@ import {
 import { readRuntimeTaskSnapshot } from '../../shared/agent-runtime-v5/runtime-task-snapshot';
 import { readPhotoshopOperationResult } from '../../shared/photoshop-operation-result';
 import {
-    buildUserStoppedResponseInterruption,
+    buildAgentResponseInterruption,
     isAgentResponseInterruptionSentinelContent,
-    resolveAgentResponseInterruption
+    resolveAgentResponseInterruption,
+    type AgentResponseInterruptionKind
 } from '../../shared/agent-response-interruption';
+import { normalizeDesignDimensionSpec } from '../../shared/design-dimension-spec';
 import { decideAgentRunResultDisposition } from '../../shared/agent-run-result-disposition';
 import {
     normalizeDebugFinalArtifactRefs,
@@ -353,6 +366,29 @@ function readDebugPhotoshopRuntimeIdentity(
         ? state.runtime
         : undefined;
     return readDebugBridgePhotoshopRuntimeLiveIdentity(runtime);
+}
+
+function readGuardedPhotoshopDocumentFacts(
+    value: unknown,
+    expectedProjectPath: string
+): GuardedPhotoshopDocumentFact[] | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    if ((value as any).success !== true || !Array.isArray((value as any).documents)) return undefined;
+    const inventory = enrichPhotoshopDocumentInventory(
+        value as Record<string, unknown>,
+        expectedProjectPath
+    );
+    return inventory.documents.map((document) => ({
+        id: document.id,
+        name: document.name,
+        isActive: document.isActive,
+        pathState: document.pathState,
+        editState: document.editState,
+        projectAffinity: document.projectAffinity,
+        ...(document.historyStateRef
+            ? { historyStateRef: { ...document.historyStateRef } }
+            : {})
+    }));
 }
 
 type ComposerRuntimeReference =
@@ -1711,6 +1747,31 @@ function buildOperatingWorkspaceRevision(input: {
     ].join('|');
 }
 
+const DEBUG_PROTOCOL_INTERACTION_ACTIONS = new Set([
+    'openProjectFile',
+    'switchDocument',
+    'submitUserChoice',
+    'submitInteractiveCard',
+    'submitDestructiveActionCard',
+    'confirmPublicPlan',
+    'submitDesignProjectRuleReviewCard',
+    'submitDesignProjectFactReviewCard'
+]);
+
+const DEBUG_DESIGN_CORRECTION_ACTIONS = new Set([
+    'runTool',
+    'submitVisualObservationCard',
+    'submitSkillInteractiveReview'
+]);
+
+function classifyDebugUserInteractionAction(
+    actionId: string
+): DebugBridgeInteractionKind | undefined {
+    if (DEBUG_PROTOCOL_INTERACTION_ACTIONS.has(actionId)) return 'protocol_interaction';
+    if (DEBUG_DESIGN_CORRECTION_ACTIONS.has(actionId)) return 'user_design_correction';
+    return undefined;
+}
+
 export const ChatPanel: React.FC<ChatPanelProps> = ({
     externalDraft,
     externalDraftRevision,
@@ -1799,6 +1860,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     // 用户停止后新发起的那一轮（与 activeAgentRunIdRef 的 runId 守卫同一套思路）。
     const chatSubmissionInFlightRef = useRef<string | null>(null);
     const activeDebugBridgeRequestIdRef = useRef<string | null>(null);
+    const activeDebugInteractionLedgerRef = useRef<DebugBridgeInteractionLedger | null>(null);
     const cancelledDebugBridgeRequestIdsRef = useRef<Set<string>>(new Set());
     const publicPlanPrivateOperationRequestsRef = useRef<Record<string, AgentTaskPublicPlanControlledOperationRequest[]>>({});
     const activeAgentRunIdRef = useRef<string | null>(null);
@@ -1809,6 +1871,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         streamedAssistantMessageId: string | null;
         visibleSteps: ThinkingStep[];
         stopMessageShown: boolean;
+        interruptionKind: AgentResponseInterruptionKind | null;
     } | null>(null);
 
     const insertComposerReference = useCallback((
@@ -2356,6 +2419,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         content
     }, deterministicBlockerReplyOrigin(source)), [addLocalAssistantMessage]);
 
+    const recordActiveDebugUserInteraction = useCallback((
+        kind: DebugBridgeInteractionKind
+    ): void => {
+        const ledger = activeDebugInteractionLedgerRef.current;
+        if (!ledger) return;
+        recordDebugBridgeInteraction(ledger, kind);
+    }, []);
+
     const isEditableConfirmationCard = (value: unknown): value is EditableConfirmationCard => {
         const card = value && typeof value === 'object' ? value as Partial<EditableConfirmationCard> : {};
         return card.version === 'interactive-card/v0'
@@ -2404,6 +2475,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             };
             return aliases[actionId] || normalizeSkillInteractiveCardAction(actionId) || actionId;
         })();
+        const debugInteractionKind = classifyDebugUserInteractionAction(normalizedActionId);
+        if (debugInteractionKind) recordActiveDebugUserInteraction(debugInteractionKind);
 
         const emitActionResult = (
             status: 'success' | 'failed' | 'skipped' | 'partial' | 'fallback',
@@ -3651,14 +3724,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         resultProjection?: {
             executionSummary?: AgentExecutionSummary;
             agentTaskPlanPresentation?: AgentTaskPlanPresentation;
-        }
+        },
+        interruptionKind: AgentResponseInterruptionKind = 'request_cancelled'
     ): boolean => {
         const ui = activeAgentRunUiRef.current;
         if (!ui || ui.runId !== runId) return false;
 
         cancelledAgentRunIdsRef.current.add(runId);
         const preservedSteps = normalizeStoppedVisibleProcessSteps(ui.visibleSteps);
-        const interruption = buildUserStoppedResponseInterruption();
+        ui.interruptionKind = ui.interruptionKind || interruptionKind;
+        const interruption = buildAgentResponseInterruption(ui.interruptionKind);
         const resultProjectionUpdate: UpdateMessageInput = {
             ...(resultProjection?.executionSummary
                 ? { executionSummary: resultProjection.executionSummary }
@@ -3712,7 +3787,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         }
 
         if (!didPresentTerminalState) {
-            console.warn('[ChatPanel] 用户停止终态未写入：目标会话或流式消息已不存在', {
+            console.warn('[ChatPanel] 响应中断终态未写入：目标会话或流式消息已不存在', {
                 runId,
                 conversationId: targetConversationId,
                 streamedAssistantMessageId: ui.streamedAssistantMessageId
@@ -3731,7 +3806,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     const markActiveAgentRunStopped = () => {
         const runId = activeAgentRunIdRef.current;
         if (!runId) return;
-        finalizeAgentRunStopped(runId, 'agent-run:user-stopped');
+        const ui = activeAgentRunUiRef.current;
+        if (ui?.runId === runId) ui.interruptionKind = 'user_stopped';
+        finalizeAgentRunStopped(
+            runId,
+            'agent-run:user-stopped',
+            undefined,
+            'user_stopped'
+        );
     };
 
     const resetMessageEditSession = useCallback((restoreFocus: boolean = false): void => {
@@ -4613,6 +4695,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         const internalResumeRequest = hasOverride
             ? override?.internalResumeRequest
             : undefined;
+        const guardedDebugRequestId = String(
+            override?.guardedPhotoshopExecutionBaseline?.requestId || ''
+        ).trim();
         const overrideImage = hasOverride && !inlineMessageEdit && override?.image
             ? createDesignImageInput({
                 data: override.image.data,
@@ -4707,6 +4792,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             if (inlineMessageEdit) throw new Error('消息不能为空。');
             return;
         }
+        if (!guardedDebugRequestId && !interactiveContinuationRequest && !internalResumeRequest) {
+            recordActiveDebugUserInteraction('user_design_correction');
+        }
         const stateAtSend = useAppStore.getState();
         if (chatSubmissionInFlightRef.current || stateAtSend.isLoading) {
             if (hasOverride) {
@@ -4782,9 +4870,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             }
         }
 
-        const guardedDebugRequestId = String(
-            override?.guardedPhotoshopExecutionBaseline?.requestId || ''
-        ).trim();
         if (guardedDebugRequestId
             && cancelledDebugBridgeRequestIdsRef.current.has(guardedDebugRequestId)) {
             throw new Error('受控调试请求已取消，本轮不会继续提交模型或 Photoshop 写入。');
@@ -5097,6 +5182,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             const state = useAppStore.getState();
             const selectedModelId = String(state.modelPreferences?.primaryModel || '').trim();
             const selectedModel = getModelById(selectedModelId);
+            const normalizedDimensionSpec = normalizeDesignDimensionSpec(state.designDimensionSpec);
             return {
                 version: DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION,
                 capturedAt: new Date().toISOString(),
@@ -5105,6 +5191,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 selectedApiModelId: String(selectedModel?.apiModelId || '').trim(),
                 selectedModelResolved: Boolean(selectedModel),
                 projectPath: String(state.currentProject?.path || '').trim(),
+                mainImageCanvas: { ...normalizedDimensionSpec.mainImage },
                 chatBusy: Boolean(chatSubmissionInFlightRef.current || state.isLoading)
             };
         });
@@ -5120,8 +5207,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // Cancel 可能早于 handleSend/AbortController 到达（例如仍在 diagnoseState/listDocuments
             // 写前预检）。请求级账本保证预检返回后也不能晚启动模型或 Photoshop 写入。
             cancelledDebugBridgeRequestIdsRef.current.add(requestId);
+            const runId = activeAgentRunIdRef.current;
+            const ui = activeAgentRunUiRef.current;
+            if (runId && ui?.runId === runId) {
+                // 调试调用方超时/撤销不是用户点击停止。这里只记录来源并发出 Abort；
+                // 真实 Agent 终态返回后仍优先消费它，不能提前伪造 user_stopped。
+                ui.interruptionKind = 'request_cancelled';
+            }
             stopGeneration();
-            markActiveAgentRunStopped();
         });
         return () => {
             unsubscribe?.();
@@ -5148,6 +5241,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     throw new Error('已有受控调试请求尚未闭合，本轮不会启动。');
                 }
                 activeDebugBridgeRequestIdRef.current = debugRequestId;
+                activeDebugInteractionLedgerRef.current = createDebugBridgeInteractionLedger(
+                    debugRequestId
+                );
                 cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
                 executionStage = 'before_handle_send';
                 const throwIfDebugRequestCancelled = (): void => {
@@ -5233,111 +5329,40 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         `当前 Photoshop Runtime 完整身份与受控调试指定版本不一致（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${submittedPhotoshopRuntimeBuildId || 'unknown'}）。`
                     );
                 }
-                if (request.requireNoOpenPhotoshopDocuments === true
-                    && request.requireExternalDirtyDocumentUntouched === true) {
-                    throw new Error('文档策略冲突：none_open 与 external_dirty_document_open 不能同时要求。');
-                }
-                // 逐文档读取历史身份的受控观察。history 字段缺失（旧插件）时如实失败，
-                // 不能让"读不到"降级成"默认没被改过"。
-                const readExternalDirtyDocumentObservation = async (): Promise<{
-                    documentId: number;
-                    name: string;
-                    activeHistoryStateId: number;
-                    historyStateCount: number;
-                    saved: boolean;
-                }[]> => {
+                let guardedOpenDocumentsAtSubmission: GuardedPhotoshopDocumentFact[] = [];
+                let guardedDocumentAssessmentAtSubmission: GuardedPhotoshopDocumentAssessment | null = null;
+                if (request.requireNoOpenFixtureDocuments === true) {
                     const documentListResult = await executeToolCall('listDocuments', {
-                        includeDetails: false,
-                        includePaths: false,
-                        includeHistory: true
-                    });
-                    if (documentListResult?.success !== true
-                        || !Array.isArray(documentListResult?.documents)) {
-                        throw new Error('无法可靠读取 Photoshop 文档列表，本轮受控调试不会提交模型或执行写入。');
-                    }
-                    return documentListResult.documents.map((document: {
-                        id?: number;
-                        name?: string;
-                        activeHistoryStateId?: number;
-                        historyStateCount?: number;
-                        saved?: boolean;
-                        historyStatusReason?: string;
-                    }) => {
-                        const documentId = Number(document?.id);
-                        const activeHistoryStateId = Number(document?.activeHistoryStateId);
-                        const historyStateCount = Number(document?.historyStateCount);
-                        if (!Number.isSafeInteger(documentId) || documentId <= 0
-                            || !Number.isSafeInteger(activeHistoryStateId) || activeHistoryStateId <= 0
-                            || !Number.isSafeInteger(historyStateCount) || historyStateCount < 0
-                            || typeof document?.saved !== 'boolean') {
-                            throw new Error(
-                                `无法读取文档 ${document?.name || document?.id || 'unknown'} 的完整历史身份`
-                                + `${document?.historyStatusReason ? `（${document.historyStatusReason}）` : '（当前 Photoshop 插件可能不支持 includeHistory）'}；`
-                                + '外部文档隔离基线无法建立，本轮受控调试不会提交模型。'
-                            );
-                        }
-                        return {
-                            documentId,
-                            name: String(document?.name || '').trim() || `document-${documentId}`,
-                            activeHistoryStateId,
-                            historyStateCount,
-                            saved: document.saved
-                        };
-                    });
-                };
-                let openPhotoshopDocumentCountAtSubmission: number | null = null;
-                let externalDocumentAtSubmission: {
-                    documentId: number;
-                    name: string;
-                    activeHistoryStateId: number;
-                    historyStateCount: number;
-                } | null = null;
-                if (request.requireNoOpenPhotoshopDocuments === true) {
-                    const documentListResult = await executeToolCall('listDocuments', {
-                        includeDetails: false
+                        includeDetails: true,
+                        includePaths: true,
+                        includeHistoryState: true
                     });
                     throwIfDebugRequestCancelled();
-                    if (documentListResult?.success !== true
-                        || !Array.isArray(documentListResult?.documents)) {
+                    const guardedDocuments = readGuardedPhotoshopDocumentFacts(
+                        documentListResult,
+                        expectedProjectPath
+                    );
+                    if (!guardedDocuments) {
                         throw new Error('无法可靠读取 Photoshop 文档列表，本轮受控调试不会提交模型或执行写入。');
                     }
-                    const openDocumentCount = documentListResult.documents.length;
-                    openPhotoshopDocumentCountAtSubmission = openDocumentCount;
-                    if (openDocumentCount > 0) {
-                        throw new Error(`Photoshop 当前仍打开 ${openDocumentCount} 个既有文档；请先安全处理这些文档，再运行隔离测试。`);
-                    }
-                } else if (request.requireExternalDirtyDocumentUntouched === true) {
-                    const observedDocuments = await readExternalDirtyDocumentObservation();
-                    throwIfDebugRequestCancelled();
-                    openPhotoshopDocumentCountAtSubmission = observedDocuments.length;
-                    if (observedDocuments.length !== 1) {
+                    guardedOpenDocumentsAtSubmission = guardedDocuments;
+                    guardedDocumentAssessmentAtSubmission = assessGuardedPhotoshopDocuments({
+                        documents: guardedOpenDocumentsAtSubmission,
+                        phase: 'submission'
+                    });
+                    if (!guardedDocumentAssessmentAtSubmission.ready) {
                         throw new Error(
-                            `外部脏文档基线要求提交前恰好打开 1 个外部文档，实际 ${observedDocuments.length} 个；本轮受控调试不会提交模型。`
+                            '当前 Photoshop 存在属于本测试目录或无法读取 documentId/historyStateId 的文档；'
+                            + '提交前已存在且版本可读的外部或未保存文档会被保护，但本轮不会猜测、保存或关闭冲突文档。'
                         );
                     }
-                    const [observedDocument] = observedDocuments;
-                    if (observedDocument.saved !== false) {
-                        throw new Error(
-                            `外部文档「${observedDocument.name}」当前没有未保存修改；该基线专门验证 dirty 文档不被触碰，请先让它带上未保存修改。`
-                        );
-                    }
-                    externalDocumentAtSubmission = {
-                        documentId: observedDocument.documentId,
-                        name: observedDocument.name,
-                        activeHistoryStateId: observedDocument.activeHistoryStateId,
-                        historyStateCount: observedDocument.historyStateCount
-                    };
                 }
                 const guardedPhotoshopExecutionBaseline = createGuardedPhotoshopExecutionBaseline({
                     requestId: debugRequestId,
                     expectedPhotoshopRuntimeBuildId,
                     expectedPhotoshopRuntimeBinding,
-                    ...(externalDocumentAtSubmission
-                        ? {
-                            documentPolicy: 'external_dirty_document_open' as const,
-                            externalDocument: externalDocumentAtSubmission
-                        }
-                        : {})
+                    expectedProjectPath,
+                    initialDocuments: guardedOpenDocumentsAtSubmission
                 });
                 if (request.resetConversation) {
                     resetChatTestConversation();
@@ -5423,42 +5448,42 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             `任务完成时 Photoshop Runtime 完整身份已变化或无法读取（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${completedPhotoshopRuntimeBuildId || 'unknown'}）。`
                         );
                     }
-                    const firstPhotoshopMutationBaseline = readGuardedPhotoshopExecutionBaselineReceipt(
-                        guardedPhotoshopExecutionBaseline
-                    );
-                    // 外部脏文档基线的完成侧读回：同一文档必须仍然打开、history 身份逐项一致、
-                    // 依旧带未保存修改。任何一项对不上都如实写进收据，由评测端拒绝，不在这里吞掉。
-                    let externalDocumentAtCompletion: {
-                        documentId: number;
-                        name: string;
-                        activeHistoryStateId: number;
-                        historyStateCount: number;
-                    } | null = null;
-                    let externalDocumentUntouchedThroughCompletion: boolean | null = null;
-                    if (externalDocumentAtSubmission) {
-                        const completedDocuments = await readExternalDirtyDocumentObservation();
-                        const matched = completedDocuments.find(
-                            (document) => document.documentId === externalDocumentAtSubmission!.documentId
-                        );
-                        if (matched) {
-                            externalDocumentAtCompletion = {
-                                documentId: matched.documentId,
-                                name: matched.name,
-                                activeHistoryStateId: matched.activeHistoryStateId,
-                                historyStateCount: matched.historyStateCount
-                            };
-                            externalDocumentUntouchedThroughCompletion =
-                                matched.activeHistoryStateId === externalDocumentAtSubmission.activeHistoryStateId
-                                && matched.historyStateCount === externalDocumentAtSubmission.historyStateCount
-                                && matched.saved === false;
-                        } else {
-                            externalDocumentUntouchedThroughCompletion = false;
+                    const completionBaselineDecision = await completeGuardedPhotoshopExecutionBaseline(
+                        guardedPhotoshopExecutionBaseline,
+                        {
+                            observeOpenDocuments: async (): Promise<GuardedPhotoshopDocumentFact[] | undefined> => {
+                                const completionDocumentList = await executeToolCall('listDocuments', {
+                                    includeDetails: true,
+                                    includePaths: true,
+                                    includeHistoryState: true
+                                });
+                                return readGuardedPhotoshopDocumentFacts(
+                                    completionDocumentList,
+                                    expectedProjectPath
+                                );
+                            }
                         }
+                    );
+                    throwIfDebugRequestCancelled();
+                    if (!completionBaselineDecision.ready) {
+                        throw new Error(
+                            completionBaselineDecision.error
+                            || '任务完成时受保护的 Photoshop 前置文档未通过对象级对账。'
+                        );
                     }
+                    const firstPhotoshopMutationBaseline = completionBaselineDecision.receipt;
+                    const debugInteractionLedger = activeDebugInteractionLedgerRef.current;
+                    if (!debugInteractionLedger
+                        || debugInteractionLedger.requestId !== debugRequestId) {
+                        throw new Error('受控调试交互审计范围已丢失，本轮不能形成可信完成收据。');
+                    }
+                    const interactionReceipt = buildDebugBridgeInteractionReceipt(
+                        debugInteractionLedger
+                    );
                     return {
                         snapshot,
                         receipt: {
-                            version: 'debug-bridge-chat-submit-receipt/v1',
+                            version: DEBUG_BRIDGE_CHAT_SUBMIT_RECEIPT_VERSION,
                             requestId: debugRequestId,
                             submittedProjectPath: currentProjectPath,
                             completedProjectPath,
@@ -5468,27 +5493,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             projectUnchangedThroughCompletion: Boolean(
                                 currentProjectPath && completedProjectPath === currentProjectPath
                             ),
-                            photoshopDocumentPolicy: request.requireNoOpenPhotoshopDocuments === true
-                                ? 'none_open'
-                                : (request.requireExternalDirtyDocumentUntouched === true
-                                    ? 'external_dirty_document_open'
-                                    : 'not_required'),
-                            openPhotoshopDocumentCountAtSubmission,
+                            photoshopDocumentPolicy: request.requireNoOpenFixtureDocuments === true
+                                ? 'preserve_preexisting_documents'
+                                : 'not_required',
+                            openPhotoshopDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.openDocumentCount ?? null,
+                            openFixtureDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.openFixtureDocumentCount ?? null,
+                            openOutsideFixtureDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.openOutsideFixtureDocumentCount ?? null,
+                            unresolvedDocumentOwnershipCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.unresolvedOwnershipDocumentCount ?? null,
+                            dirtyOutsideFixtureDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.dirtyOutsideFixtureDocumentCount ?? null,
                             photoshopDocumentGuardPassedAtSubmission: Boolean(
-                                (request.requireNoOpenPhotoshopDocuments === true
-                                    && openPhotoshopDocumentCountAtSubmission === 0)
-                                || (request.requireExternalDirtyDocumentUntouched === true
-                                    && openPhotoshopDocumentCountAtSubmission === 1
-                                    && externalDocumentAtSubmission !== null)
+                                request.requireNoOpenFixtureDocuments === true
+                                && guardedDocumentAssessmentAtSubmission?.ready === true
                             ),
-                            ...(externalDocumentAtSubmission
-                                ? {
-                                    externalDocumentAtSubmission,
-                                    externalDocumentAtCompletion,
-                                    externalDocumentUntouchedThroughCompletion:
-                                        externalDocumentUntouchedThroughCompletion === true
-                                }
-                                : {}),
                             expectedPhotoshopRuntimeBuildId,
                             expectedPhotoshopRuntimeBinding,
                             submittedPhotoshopRuntimeIdentity,
@@ -5535,6 +5556,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                     || expectedProvider === String(submittedModel?.provider || '').trim())
                             ),
                             conversationId: String(completedState.currentConversationId || '').trim(),
+                            interactionReceipt,
                             finalArtifactRefs,
                             ...(skuDeliveryEvidence ? { skuDeliveryEvidence } : {}),
                             completedAt: new Date().toISOString()
@@ -5559,6 +5581,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             } finally {
                 if (activeDebugBridgeRequestIdRef.current === debugRequestId) {
                     activeDebugBridgeRequestIdRef.current = null;
+                }
+                if (activeDebugInteractionLedgerRef.current?.requestId === debugRequestId) {
+                    activeDebugInteractionLedgerRef.current = null;
                 }
                 cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
                 clearDebugFinalArtifactCapture(debugRequestId);
@@ -5710,8 +5735,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             conversationId: runConversationId,
             streamedAssistantMessageId: null,
             visibleSteps: [],
-            stopMessageShown: false
+            stopMessageShown: false,
+            interruptionKind: null
         };
+        let allowTerminalResultSettlementAfterExternalCancel = false;
 
         const addRunAssistantMessage = (
             message: AssistantMessageWithOriginInput,
@@ -5726,7 +5753,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         const isActiveAgentRun = () => activeAgentRunIdRef.current === runId;
         const isRunCancelled = () => Boolean(signal.aborted || cancelledAgentRunIdsRef.current.has(runId));
-        const canApplyRunUpdate = () => isActiveAgentRun() && !isRunCancelled();
+        const canApplyRunUpdate = () => isActiveAgentRun()
+            && (!isRunCancelled() || allowTerminalResultSettlementAfterExternalCancel);
         const throwIfRunStopped = () => {
             if (!isActiveAgentRun() || isRunCancelled()) {
                 throw new Error('任务已取消');
@@ -6373,6 +6401,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         document: {
                             documentId: photoshopContext.documentId,
                             name: photoshopContext.documentName,
+                            editState: photoshopContext.editState,
                             width: photoshopContext.canvasSize?.width,
                             height: photoshopContext.canvasSize?.height,
                             layerCount: photoshopContext.layerCount
@@ -6960,10 +6989,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 }
             });
             const resultWasCancelled = (result as any).cancelled === true;
+            const executionSummary = readAgentExecutionSummaryFromResult(result);
+            const structuredStopReason = String(
+                executionSummary?.stopReason || (result as any).stopReason || ''
+            ).trim();
+            const activeInterruptionKind = activeAgentRunUiRef.current?.runId === runId
+                ? activeAgentRunUiRef.current.interruptionKind
+                : null;
+            const structuredNonCancellationTerminal = Boolean(
+                executionSummary && structuredStopReason && structuredStopReason !== 'cancelled'
+            );
+            const resultRepresentsCancellation = activeInterruptionKind === 'user_stopped'
+                || (resultWasCancelled && !structuredNonCancellationTerminal);
+            allowTerminalResultSettlementAfterExternalCancel = activeInterruptionKind === 'request_cancelled'
+                && structuredNonCancellationTerminal;
             const resultDisposition = decideAgentRunResultDisposition({
                 isActiveRun: isActiveAgentRun(),
-                runCancelled: isRunCancelled(),
-                resultCancelled: resultWasCancelled
+                runCancelled: isRunCancelled() && !allowTerminalResultSettlementAfterExternalCancel,
+                resultCancelled: resultRepresentsCancellation
             });
             if (resultDisposition === 'ignore_stale_result') return;
             if (resultDisposition === 'reject_result_after_stop') {
@@ -6973,7 +7016,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // 计算处理时长
             const processingTime = Date.now() - thinkingStartTime;
             const hasToolExecution = result.toolResults && result.toolResults.length > 0;
-            const executionSummary = readAgentExecutionSummaryFromResult(result);
             const resolvedVisibleResult = resolveAgentResultVisibleMessage(result);
             const resultVisibleMessage = resolvedVisibleResult.content;
             const assistantReplyOrigin = resolvedVisibleResult.assistantReplyOrigin;
@@ -7047,7 +7089,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             });
             const presentsResult = executionPresentationDisposition === 'result';
 
-            if (!resultWasCancelled && runOptions?.publicPlanConfirmationSourceMessageId && agentTaskPublicPlanApprovalRecord) {
+            if (!resultRepresentsCancellation && runOptions?.publicPlanConfirmationSourceMessageId && agentTaskPublicPlanApprovalRecord) {
                 if (runConversationId) {
                     updateMessageInConversation(runConversationId, runOptions.publicPlanConfirmationSourceMessageId, {
                         agentTaskPublicPlanApprovalRecord
@@ -7062,7 +7104,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // 只有成功返回才把剩余步骤收为完成；失败必须把仍在运行的步骤标错，
             // 否则 UI 会先显示“全部成功”，随后又给出未完成卡片。
             const finalizedCollectedSteps = collectedSteps.map((step) => {
-                if (step.status !== 'running' || resultWasCancelled) return step;
+                if (step.status !== 'running' || resultRepresentsCancellation) return step;
                 const status = presentsResult ? 'success' as const : 'error' as const;
                 updateStep(step.id, { status });
                 return { ...step, status };
@@ -7072,13 +7114,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             setShowThinking(false);
             setLiveActivity(null);
             
-            // 检查是否是用户取消（优先处理）
-            if (resultWasCancelled) {
-                console.log('[AI Agent] 用户主动停止');
+            // 中断终态优先处理；用户停止与外部请求取消必须保留不同身份。
+            if (resultRepresentsCancellation) {
+                console.log('[AI Agent] 响应已中断', { interruptionKind: activeInterruptionKind });
                 finalizeAgentRunStopped(runId, 'agent-run:cancelled-result', {
                     executionSummary,
                     agentTaskPlanPresentation
-                });
+                }, activeInterruptionKind || 'request_cancelled');
             } else if (presentsResult) {
                 let responseContent = resultVisibleMessage;
                 let generatedImage: { data: string; type: string } | undefined;
@@ -7231,10 +7273,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             console.error('[AI Agent] 处理失败:', error);
             // 注意：不再调用 removeLastMessage，因为现在没有添加 loading 消息
             
-            // 检查是否是用户取消
+            // Abort 可能来自用户，也可能来自受控调试请求；按已记录来源结算。
             if (error.message === '任务已取消' || signal.aborted || cancelledAgentRunIdsRef.current.has(runId) || !isActiveAgentRun()) {
-                console.log('[AI Agent] 任务已被用户取消');
-                finalizeAgentRunStopped(runId, 'agent-run:cancelled-exception');
+                const interruptionKind = activeAgentRunUiRef.current?.runId === runId
+                    ? activeAgentRunUiRef.current.interruptionKind || 'request_cancelled'
+                    : 'request_cancelled';
+                const source = interruptionKind === 'user_stopped'
+                    ? 'agent-run:user-stopped'
+                    : 'agent-run:debug-bridge-cancelled';
+                console.log('[AI Agent] 响应已中断', { interruptionKind });
+                finalizeAgentRunStopped(runId, source, undefined, interruptionKind);
                 return;
             }
 
@@ -8114,6 +8162,7 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                             className="send-button stop-button"
                             onClick={() => {
                                 console.log('[ChatPanel] 用户点击停止按钮');
+                                recordActiveDebugUserInteraction('protocol_interaction');
                                 stopGeneration();
                                 // 停止即释放提交占用：stopGeneration 只复位 store 的 isLoading，
                                 // 而发送守卫看的是这个 ref。不一起释放，界面会同时呈现「你已停止

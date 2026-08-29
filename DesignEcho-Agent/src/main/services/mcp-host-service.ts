@@ -13,6 +13,8 @@ import {
     DebugBridgeService
 } from './debug-bridge-service';
 import type { DesignEchoRuntimeBuildIdentity } from './runtime-build-identity';
+import { dispatchPhotoshopRemoveBackgroundWorkflow } from './photoshop-workflow-dispatch';
+import { dispatchSkuPoseAlignmentWorkflow } from './sku-pose-alignment-workflow-dispatch';
 import { WebSocketServer } from '../websocket/server';
 import {
     analyzeDetailPlaceholderAnchors,
@@ -421,6 +423,7 @@ export class MCPHostService {
     private readonly taskOrchestrator: TaskOrchestrator | null;
     private readonly runtimeBuildIdentity: DesignEchoRuntimeBuildIdentity;
     private readonly onLog?: MCPHostServiceOptions['onLog'];
+    private readonly workflowAbortControllers = new Map<string, AbortController>();
     private server: http.Server | null = null;
 
     constructor(options: MCPHostServiceOptions) {
@@ -477,7 +480,10 @@ export class MCPHostService {
         if (request.method !== 'tools/call') return '';
         const params = asRecord(request.params);
         const toolName = String(params.name || '').trim();
-        if (toolName !== 'photoshop.tools.call' && toolName !== 'photoshop.tools.batch_call') return '';
+        if (toolName !== 'photoshop.tools.call'
+            && toolName !== 'photoshop.tools.batch_call'
+            && toolName !== 'photoshop.workflows.remove_background'
+            && toolName !== 'photoshop.workflows.sku_pose_alignment') return '';
 
         const args = asRecord(params.arguments);
         const existing = String(args.requestKey || params.requestKey || '').trim();
@@ -510,6 +516,10 @@ export class MCPHostService {
                 return isMutation(record.name, record.arguments);
             });
         }
+        if (hostToolName === 'photoshop.workflows.remove_background'
+            || hostToolName === 'photoshop.workflows.sku_pose_alignment') {
+            return true;
+        }
         return false;
     }
 
@@ -525,6 +535,31 @@ export class MCPHostService {
                 arguments: {
                     ...args,
                     requestKey
+                }
+            }
+        };
+    }
+
+    private isHostWorkflowRequest(request: JsonRpcRequest): boolean {
+        if (request.method !== 'tools/call') return false;
+        const params = asRecord(request.params);
+        return String(params.name || '').trim() === 'photoshop.workflows.remove_background';
+    }
+
+    private attachHostWorkflowAbortSignal(
+        request: JsonRpcRequest,
+        signal: AbortSignal
+    ): JsonRpcRequest {
+        if (!this.isHostWorkflowRequest(request) || request.method !== 'tools/call') return request;
+        const params = asRecord(request.params);
+        const args = asRecord(params.arguments);
+        return {
+            ...request,
+            params: {
+                ...params,
+                arguments: {
+                    ...args,
+                    abortSignal: signal
                 }
             }
         };
@@ -574,24 +609,51 @@ export class MCPHostService {
             const requestForExecution = abortRequestKey
                 ? this.attachHttpAbortRequestKey(request, abortRequestKey)
                 : request;
+            let workflowAbortController: AbortController | null = null;
+            if (abortRequestKey && this.isHostWorkflowRequest(requestForExecution)) {
+                if (this.workflowAbortControllers.has(abortRequestKey)) {
+                    sendJson(res, 409, createErrorResponse(
+                        request.id,
+                        -32001,
+                        `Photoshop 工作流 requestKey 正在使用中：${abortRequestKey}`
+                    ));
+                    return;
+                }
+                workflowAbortController = new AbortController();
+                this.workflowAbortControllers.set(abortRequestKey, workflowAbortController);
+            }
+            const executableRequest = workflowAbortController
+                ? this.attachHostWorkflowAbortSignal(requestForExecution, workflowAbortController.signal)
+                : requestForExecution;
             let responseReady = false;
             const onResponseClosed = () => {
                 if (!responseReady && abortRequestKey) {
-                    const cancelled = this.wsServer.cancelRequestByKey(
+                    let workflowCancelled = false;
+                    if (workflowAbortController && !workflowAbortController.signal.aborted) {
+                        workflowCancelled = true;
+                        workflowAbortController.abort('mcp_http_client_closed');
+                    }
+                    const photoshopRequestCancelled = this.wsServer.cancelRequestByKey(
                         abortRequestKey,
                         'mcp_http_client_closed',
                         { awaitFinalResult: awaitFinalResultAfterAbort }
                     );
-                    if (cancelled) {
-                        this.log('warn', `[MCPHost] Cancelled Photoshop MCP request after HTTP client closed: ${abortRequestKey}`);
+                    if (workflowCancelled || photoshopRequestCancelled) {
+                        this.log(
+                            'warn',
+                            `[MCPHost] 已在 HTTP 客户端断开后取消 Photoshop 工作流：${abortRequestKey}`
+                        );
                     }
                 }
             };
             if (abortRequestKey) {
                 res.once('close', onResponseClosed);
             }
-            const response = await this.handleRpcRequest(requestForExecution);
+            const response = await this.handleRpcRequest(executableRequest);
             responseReady = true;
+            if (abortRequestKey && workflowAbortController) {
+                this.workflowAbortControllers.delete(abortRequestKey);
+            }
             if (abortRequestKey) {
                 res.off('close', onResponseClosed);
             }
@@ -866,6 +928,129 @@ export class MCPHostService {
                         timeoutMs: { type: 'number', minimum: 1 }
                     },
                     required: ['name']
+                }
+            },
+            {
+                name: 'photoshop.workflows.remove_background',
+                description: '运行与 DesignEcho UXP 面板相同的完整抠图链：导出、本地检测与分割、受保护的 Photoshop 写入和结构化读回。提供 targetPrompt 时只抠调用方选择的语义目标；省略时执行通用前景抠图。可选 semanticGuidance 只能承载 Agent 明确给出的归一化正负点，工作流不会自行猜目标或遮挡物。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        expectedDocumentId: { type: 'number', minimum: 1 },
+                        expectedHistoryStateId: { type: 'number', minimum: 1 },
+                        layerId: { type: 'number', minimum: 1 },
+                        targetPrompt: { type: 'string' },
+                        outputFormat: {
+                            type: 'string',
+                            enum: ['mask', 'selection', 'channel', 'layer']
+                        },
+                        quality: {
+                            type: 'string',
+                            enum: ['fast', 'balanced', 'quality']
+                        },
+                        sampleAllLayers: { type: 'boolean' },
+                        enableHairRefine: { type: 'boolean' },
+                        enableFabricRefine: { type: 'boolean' },
+                        semanticGuidance: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                version: {
+                                    type: 'string',
+                                    enum: ['semantic-matting-guidance/v1']
+                                },
+                                instanceSelectionMode: {
+                                    type: 'string',
+                                    enum: ['refine_detected_candidates', 'exact_guided_instances'],
+                                    description: '默认只精修检测候选；只有调用方已观察并明确选择全部实例时，才使用 exact_guided_instances。'
+                                },
+                                sets: {
+                                    type: 'array',
+                                    minItems: 1,
+                                    maxItems: 8,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            foregroundPoints: {
+                                                type: 'array',
+                                                minItems: 1,
+                                                maxItems: 4,
+                                                items: {
+                                                    type: 'object',
+                                                    additionalProperties: false,
+                                                    properties: {
+                                                        x: { type: 'number', minimum: 0, maximum: 1 },
+                                                        y: { type: 'number', minimum: 0, maximum: 1 }
+                                                    },
+                                                    required: ['x', 'y']
+                                                }
+                                            },
+                                            backgroundPoints: {
+                                                type: 'array',
+                                                maxItems: 8,
+                                                items: {
+                                                    type: 'object',
+                                                    additionalProperties: false,
+                                                    properties: {
+                                                        x: { type: 'number', minimum: 0, maximum: 1 },
+                                                        y: { type: 'number', minimum: 0, maximum: 1 }
+                                                    },
+                                                    required: ['x', 'y']
+                                                }
+                                            }
+                                        },
+                                        required: ['foregroundPoints']
+                                    }
+                                }
+                            },
+                            required: ['version', 'sets']
+                        },
+                        requestKey: {
+                            type: 'string',
+                            description: '可选取消键；可交给 photoshop.tools.cancel 终止仍在运行的同一工作流。'
+                        }
+                    },
+                    required: ['expectedDocumentId', 'layerId', 'outputFormat']
+                }
+            },
+            {
+                name: 'photoshop.workflows.sku_pose_alignment',
+                description: 'SKU Skill 内部的版本化姿态统一工作流：绑定当前 Photoshop document/history/layer，取得无损图层快照，在 Main 离线计算并仅用一次受保护 UXP 事务写入；不替调用方选择强度、袜口锁定范围或输出图层名。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        version: {
+                            type: 'string',
+                            enum: ['sku-pose-alignment-workflow/v1']
+                        },
+                        expectedDocumentId: { type: 'number', minimum: 1 },
+                        expectedHistoryStateId: { type: 'number', minimum: 1 },
+                        layerId: { type: 'number', minimum: 1 },
+                        resultLayerName: { type: 'string', minLength: 1, maxLength: 160 },
+                        options: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                strength: { type: 'number', minimum: 0, maximum: 1 },
+                                cuffLockRatio: { type: 'number', minimum: 0, maximum: 0.4 },
+                                maxIterations: { type: 'number', minimum: 1, maximum: 4 }
+                            },
+                            required: ['strength', 'cuffLockRatio']
+                        },
+                        requestKey: {
+                            type: 'string',
+                            description: '可选取消键。'
+                        }
+                    },
+                    required: [
+                        'version',
+                        'expectedDocumentId',
+                        'expectedHistoryStateId',
+                        'layerId',
+                        'resultLayerName',
+                        'options'
+                    ]
                 }
             },
             {
@@ -1281,17 +1466,93 @@ export class MCPHostService {
                 );
             }
 
+            case 'photoshop.workflows.remove_background': {
+                let workflowStarted = false;
+                try {
+                    await this.ensurePhotoshopConnected();
+                    return await dispatchPhotoshopRemoveBackgroundWorkflow(args, {
+                        getDocumentInfo: async (): Promise<unknown> => this.unwrapPhotoshopMcpPayload(
+                            await this.wsServer.callMCPTool('getDocumentInfo', {})
+                        ),
+                        invokeRegisteredHandler: async (
+                            method: string,
+                            params: Record<string, unknown>
+                        ): Promise<unknown> => {
+                            workflowStarted = true;
+                            return await this.wsServer.invokeRegisteredHandler(method, params);
+                        }
+                    });
+                } catch (error: any) {
+                    if (workflowStarted) {
+                        return {
+                            success: false,
+                            code: 'photoshop_workflow_outcome_unknown',
+                            error: error?.message || String(error),
+                            noMutation: false,
+                            mutationState: 'unknown',
+                            executesPhotoshop: true
+                        };
+                    }
+                    return {
+                        success: false,
+                        code: 'photoshop_workflow_not_started',
+                        error: error?.message || String(error),
+                        noMutation: true,
+                        executesPhotoshop: false
+                    };
+                }
+            }
+
+            case 'photoshop.workflows.sku_pose_alignment': {
+                let workflowStarted = false;
+                try {
+                    await this.ensurePhotoshopConnected();
+                    return await dispatchSkuPoseAlignmentWorkflow(args, {
+                        getDocumentInfo: async (): Promise<unknown> => this.unwrapPhotoshopMcpPayload(
+                            await this.wsServer.callMCPTool('getDocumentInfo', {})
+                        ),
+                        invokeRegisteredHandler: async (
+                            method: string,
+                            params: Record<string, unknown>
+                        ): Promise<unknown> => {
+                            workflowStarted = true;
+                            return await this.wsServer.invokeRegisteredHandler(method, params);
+                        }
+                    });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    return {
+                        success: false,
+                        status: 'failed',
+                        code: workflowStarted
+                            ? 'sku_pose_alignment_outcome_unknown'
+                            : 'sku_pose_alignment_not_started',
+                        error: message,
+                        noMutation: !workflowStarted,
+                        mutationState: workflowStarted ? 'unknown' : 'not_started',
+                        executesPhotoshop: workflowStarted
+                    };
+                }
+            }
+
             case 'photoshop.tools.cancel': {
                 const requestKey = String(args.requestKey || '').trim();
                 if (!requestKey) throw new Error('photoshop.tools.cancel requires requestKey');
-                const cancelled = this.wsServer.cancelRequestByKey(
+                const workflowController = this.workflowAbortControllers.get(requestKey);
+                const workflowCancelled = Boolean(workflowController && !workflowController.signal.aborted);
+                if (workflowCancelled) {
+                    workflowController!.abort('mcp_tool_cancel');
+                }
+                const photoshopRequestCancelled = this.wsServer.cancelRequestByKey(
                     requestKey,
                     'mcp_tool_cancel',
-                    { awaitFinalResult: args.awaitFinalResult === true }
+                    { awaitFinalResult: workflowCancelled || args.awaitFinalResult === true }
                 );
                 return {
                     success: true,
-                    cancelled,
+                    cancelled: workflowCancelled || photoshopRequestCancelled,
+                    workflowCancelled,
+                    photoshopRequestCancelled,
                     requestKey
                 };
             }

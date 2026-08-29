@@ -6,6 +6,8 @@ import type {
 import type { ModelReasoningEffort } from './config/models.config';
 import type { DebugBridgeModelTransportMetadata } from './debug-bridge-chat';
 import type { ModelVisualPresentationReceipt } from './model-visual-presentation-receipt';
+import type { ProviderReportedTokenUsage } from './provider-reported-token-usage';
+import type { ProviderTransportMetrics } from './provider-transport-metrics';
 
 export interface AgentToolStreamToolCall {
     id: string;
@@ -19,14 +21,13 @@ export interface AgentToolStreamResponse {
     toolCalls?: AgentToolStreamToolCall[];
     /** 未完整 Tool delta 中提取的名称诊断；不含参数且不可执行。 */
     incompleteToolCallNames?: string[];
-    usage?: {
-        inputTokens: number;
-        outputTokens: number;
-    };
+    usage?: ProviderReportedTokenUsage;
     citations?: ProviderNativeToolCitation[];
     nativeToolUsage?: ProviderNativeToolUsage[];
     stopReason?: string;
     streamMode?: 'stream' | 'fallback';
+    /** Main-process Provider timing/size facts; absent for uninstrumented fallback transports. */
+    providerTransportMetrics?: ProviderTransportMetrics;
     visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }
 

@@ -30,12 +30,11 @@ import { MattingService } from './services/matting-service';
 import { ResourceManagerService } from './services/resource-manager-service';
 import { InpaintingService } from './services/inpainting-service';
 import { bflService } from './services/bfl-service';
+import { syncImageProviderApiKeys } from './services/image-provider-credential-sync';
 import { volcengineJimengInpaintingService } from './services/volcengine-jimeng-inpainting-service';
 import { volcengineJimengImageService } from './services/volcengine-jimeng-image-service';
 import { volcengineSeedreamService } from './services/volcengine-seedream-service';
 import { volcengineTosUploadService } from './services/volcengine-tos-upload-service';
-import { openRouterGeminiImageService } from './services/openrouter-gemini-image-service';
-import { smileAiImageService } from './services/smile-ai-image-service';
 import { getSubjectDetectionService, SubjectDetectionService } from './services/subject-detection-service';
 import { ContourService } from './services/contour-service';
 import { getSAMService, SAMService } from './services/sam-service';
@@ -69,8 +68,12 @@ import { setupIPCHandlers, IPCContext } from './ipc-handlers';
 import { registerEarlyStateStoreHandlers } from './ipc-handlers/early-state-handlers';
 import { registerUXPHandlers, UXPContext } from './uxp-handlers';
 import { cleanupStreams } from './ipc-handlers/stream-handlers';
-import { CODEX_SUBSCRIPTION_PROVIDER } from '../shared/codex-subscription-contract';
+import {
+    CODEX_SUBSCRIPTION_PROVIDER,
+    isCodexSubscriptionModelId
+} from '../shared/codex-subscription-contract';
 import { getDynamicModels, setDynamicModels } from '../shared/config/dynamic-model-registry';
+import { normalizeModelPreferences } from '../shared/config/models.config';
 import { resolvePersistedModelRuntimeState } from '../shared/config/persisted-model-runtime';
 import {
     buildDebugBridgeChatExecutionFailure,
@@ -79,10 +82,12 @@ import {
     debugBridgePhotoshopRuntimeLiveIdentitiesMatch,
     readDebugBridgeChatExecutionFailure,
     readDebugBridgeChatPreflightSnapshot,
+    readDebugBridgeInteractionReceipt,
     readDebugBridgePhotoshopRuntimeBinding,
     readDebugBridgePhotoshopRuntimeLiveIdentity,
     MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS,
     type DebugBridgeChatExecutionStage,
+    type DebugBridgeInteractionReceipt,
     type DebugBridgeChatPreflightSnapshot,
     type DebugBridgePhotoshopRuntimeBinding
 } from '../shared/debug-bridge-chat';
@@ -106,6 +111,7 @@ function applyRemoteDebuggingPortFromEnv(): void {
 applyRemoteDebuggingPortFromEnv();
 
 // ============ 单实例锁（防止多开） ============
+const normalUserDataDir = app.getPath('userData');
 const testUserDataDir = process.env.DESIGNECHO_TEST_USER_DATA_DIR?.trim();
 if (testUserDataDir) {
     const resolvedTestUserDataDir = path.resolve(testUserDataDir);
@@ -113,6 +119,16 @@ if (testUserDataDir) {
     app.setPath('userData', resolvedTestUserDataDir);
     app.setName('DesignEcho Test');
     console.log(`[Main] Using isolated test userData directory: ${resolvedTestUserDataDir}`);
+}
+
+const reuseNormalCodexSubscriptionSession = process.env.DESIGNECHO_TEST_REUSE_CODEX_SUBSCRIPTION_SESSION === '1';
+if (reuseNormalCodexSubscriptionSession
+    && (!testUserDataDir
+        || process.env.DESIGNECHO_CHAT_TEST_BRIDGE !== '1'
+        || process.env.DESIGNECHO_PORT_OFFSET !== '0')) {
+    throw new Error(
+        'DESIGNECHO_TEST_REUSE_CODEX_SUBSCRIPTION_SESSION requires an isolated chat test bridge on the default runtime ports.'
+    );
 }
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -301,7 +317,7 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
         && String(input.expectedProvider || '').trim()
         && String(input.expectedModelId || '').trim()
         && input.requireCleanRuntimeGitState === true
-        && input.requireNoOpenPhotoshopDocuments === true
+        && input.requireNoOpenFixtureDocuments === true
     );
     if (!completeGuard) {
         return Promise.reject(buildDebugChatError({
@@ -361,6 +377,7 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
     }
 
     const requestId = `debug_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const submissionStartedAt = new Date().toISOString();
     const debugProjectReferenceLeaseToken = crypto.randomBytes(32).toString('hex');
     try {
         armDebugProjectReferenceProviderReceipt({
@@ -466,6 +483,28 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                 const receipt = resultReceipt && typeof resultReceipt === 'object' && !Array.isArray(resultReceipt)
                     ? resultReceipt as Record<string, unknown>
                     : {};
+                const interactionReceipt = readDebugBridgeInteractionReceipt(
+                    receipt['interactionReceipt']
+                );
+                const interactionStartedAt = Date.parse(interactionReceipt?.startedAt || '');
+                const interactionCompletedAt = Date.parse(interactionReceipt?.completedAt || '');
+                const mainSubmissionStartedAt = Date.parse(submissionStartedAt);
+                if (!interactionReceipt
+                    || interactionReceipt.requestId !== requestId
+                    || !Number.isFinite(interactionStartedAt)
+                    || !Number.isFinite(interactionCompletedAt)
+                    || interactionStartedAt < mainSubmissionStartedAt
+                    || interactionCompletedAt < interactionStartedAt) {
+                    cleanup();
+                    reject(buildDebugChatError({
+                        stage: 'completion',
+                        writePossible: true,
+                        message: '运行窗口没有返回与本次请求绑定的完整用户交互审计收据。',
+                        code: 'debug_interaction_receipt_invalid',
+                        requestId
+                    }));
+                    return;
+                }
                 const receiptExpectedPhotoshopBinding = readDebugBridgePhotoshopRuntimeBinding(
                     receipt['expectedPhotoshopRuntimeBinding']
                 );
@@ -551,6 +590,7 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                 }
                 const {
                     projectAssetProviderBindingReceipt: _rendererProjectAssetProviderBindingReceipt,
+                    interactionReceiptVerifiedByMain: _rendererInteractionReceiptVerifiedByMain,
                     ...rendererReceipt
                 } = receipt;
                 cleanup();
@@ -561,6 +601,8 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                         ...(mainProviderReceipt ? {
                             projectAssetProviderBindingReceipt: mainProviderReceipt
                         } : {}),
+                        interactionReceipt: interactionReceipt as DebugBridgeInteractionReceipt,
+                        interactionReceiptVerifiedByMain: true,
                         runtimeBuildIdentity: submissionRuntimeBuildIdentity,
                         completedRuntimeBuildIdentity,
                         runtimeArtifactsUnchangedThroughCompletion,
@@ -1014,6 +1056,9 @@ async function initializeServices(): Promise<void> {
     // renderer Zustand Store 是模型偏好的持久化 owner。主进程在任何资源 IPC 可达前
     // 直接读取同一份快照，并先恢复持久化动态目录；不再等待 App 挂载后的延迟推送。
     setDynamicModels(persistedModelRuntime.dynamicModels);
+    const restoredModelPreferences = normalizeModelPreferences(
+        persistedModelRuntime.modelPreferences
+    );
     logService.logAgent(
         'info',
         `[Main] Restored model runtime from ${persistedModelRuntime.source}: `
@@ -1054,21 +1099,38 @@ async function initializeServices(): Promise<void> {
         volcengineSeedreamService.setApiKey(persistedApiKeys.volcengineSeedreamApiKey);
         logService.logAgent('info', '[Main] Restored Seedream API Key from persisted state');
     }
+    syncImageProviderApiKeys({
+        openrouter: persistedApiKeys.openrouter,
+        smileAi: persistedApiKeys.smileAi
+    });
     if (persistedApiKeys.openrouter) {
-        openRouterGeminiImageService.setApiKey(persistedApiKeys.openrouter);
         logService.logAgent('info', '[Main] Restored OpenRouter API Key for Gemini image edit from persisted state');
     }
     if (persistedApiKeys.smileAi) {
-        smileAiImageService.setApiKey(persistedApiKeys.smileAi);
         logService.logAgent('info', '[Main] Restored Smile AI API Key for image generation from persisted state');
     }
     // ChatGPT 订阅模型使用独立 Codex App Server 与隔离凭据目录；它不是 OpenAI API Key。
     codexSubscriptionService = new CodexSubscriptionService({
-        userDataDir: app.getPath('userData'),
+        userDataDir: reuseNormalCodexSubscriptionSession
+            ? normalUserDataDir
+            : app.getPath('userData'),
         clientVersion: app.getVersion(),
         onStateChanged: handleCodexSubscriptionStateChanged
     });
-    await hydrateCodexSubscriptionModels();
+    if (reuseNormalCodexSubscriptionSession) {
+        logService.logAgent(
+            'info',
+            '[Main] Isolated debug runtime is using the normal secure ChatGPT subscription session without copying credentials'
+        );
+    }
+    if (isCodexSubscriptionModelId(restoredModelPreferences.primaryModel)) {
+        await hydrateCodexSubscriptionModels();
+    } else {
+        logService.logAgent(
+            'info',
+            '[Main] Skipped Codex subscription bootstrap because the persisted Agent model uses another provider'
+        );
+    }
 
     // Claude 订阅：Agent SDK 内嵌运行时，凭据由官方运行时自管（终端 /login），主进程不经手。
     claudeSubscriptionService = new ClaudeSubscriptionService();
@@ -1110,7 +1172,7 @@ async function initializeServices(): Promise<void> {
     // 任务协调器（管理 Agent 任务的调度与执行）
     taskOrchestrator = new TaskOrchestrator(
         modelService,
-        persistedModelRuntime.modelPreferences || undefined
+        restoredModelPreferences
     );
     logService.logAgent(
         'info',

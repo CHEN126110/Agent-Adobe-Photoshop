@@ -39,6 +39,7 @@ import {
     findObservedPhotoshopMutationProof,
     readPhotoshopHistoryStateRef,
     readPhotoshopMutationCommit,
+    readPhotoshopSourceHistoryStateRef,
     samePhotoshopHistoryStateRef,
     type PhotoshopHistoryStateRef
 } from '../../../shared/photoshop-history-state-ref';
@@ -66,7 +67,12 @@ import {
     resolveRuntimeExecutionTarget,
     sameRuntimeExecutionDocument
 } from '../../../shared/agent-runtime-v5/runtime-execution-target';
-import { countTaskRunCreatedDocumentsForTarget } from '../../../shared/task-run-document-creation-evidence';
+import {
+    countTaskRunCreatedDocumentsForTarget,
+    projectTaskRunCreatedDocumentLifecycle,
+    type TaskRunDocumentCreationEvidence,
+    type TaskRunCreatedDocumentDeliveryRequirement
+} from '../../../shared/task-run-document-creation-evidence';
 
 const INSPECTION_TOOLS = new Set([
     'getDocumentInfo',
@@ -1862,14 +1868,21 @@ function taskRequestsRasterDelivery(input: ContractInput): boolean {
     const text = `${task} ${skillId} ${intentMode}`.toLowerCase();
     const plannedDeliverables = input.context?.agentTaskPlan?.designBrief.deliverables || [];
     const runtimeDeliveryOutputs = input.context?.agenticArtifactContract?.deliveryOutputs || [];
+    if (/(?:不需要|无需|不要|不导出|别导出).{0,10}(?:jpg|jpeg|png|webp|预览图)/
+        .test(text)) {
+        return false;
+    }
     if (runtimeDeliveryOutputs.some(isRuntimeRasterDeliveryOutput)) return true;
     if (plannedDeliverables.some((value) => (
         /(?:^|_)(?:exports?|raster|png|jpe?g|webp)(?:$|_)/i.test(String(value || ''))
     ))) {
         return true;
     }
+    if (/长图|图片|图像|jpg|jpeg|png|webp|预览图|上传|导出|输出|export/.test(text)) {
+        return true;
+    }
     if (/\b(?:psd|psb)\b|源文件|可编辑文件|工程文件/.test(text)) return false;
-    return /长图|图片|图像|jpg|jpeg|png|webp|上传|导出|输出|export/.test(text);
+    return false;
 }
 
 function taskRequestsEditableDelivery(input: ContractInput): boolean {
@@ -1877,6 +1890,10 @@ function taskRequestsEditableDelivery(input: ContractInput): boolean {
     const text = `${task} ${skillId} ${intentMode}`.toLowerCase();
     const plannedDeliverables = input.context?.agentTaskPlan?.designBrief.deliverables || [];
     const runtimeDeliveryOutputs = input.context?.agenticArtifactContract?.deliveryOutputs || [];
+    if (/(?:不需要|无需|不要|不保存|别保存).{0,10}(?:psd|psb|源文件|源稿|可编辑文件|工程文件)/
+        .test(text)) {
+        return false;
+    }
     if (runtimeDeliveryOutputs.some(isRuntimeEditableDeliveryOutput)) return true;
     if (plannedDeliverables.some((value) => (
         /(?:^|_)(?:psd|psb|saved_document|editable_source_file)(?:$|_)/i.test(String(value || ''))
@@ -1887,7 +1904,7 @@ function taskRequestsEditableDelivery(input: ContractInput): boolean {
         .test(text);
 }
 
-function isRuntimeEditableDeliveryOutput(value: unknown): boolean {
+export function isRuntimeEditableDeliveryOutput(value: unknown): boolean {
     const outputRef = String(value || '').trim().toLowerCase();
     if (!outputRef) return false;
     return /(?:^|_)(?:psd|psb)(?:$|_)/.test(outputRef)
@@ -1895,7 +1912,7 @@ function isRuntimeEditableDeliveryOutput(value: unknown): boolean {
         || /(?:^|_)(?:saved|source)_document(?:$|_)/.test(outputRef);
 }
 
-function isRuntimeRasterDeliveryOutput(value: unknown): boolean {
+export function isRuntimeRasterDeliveryOutput(value: unknown): boolean {
     const outputRef = String(value || '').trim().toLowerCase();
     if (!outputRef) return false;
     return /(?:^|_)(?:preview|raster|png|jpe?g|webp|slices?|images?)(?:$|_)/.test(outputRef);
@@ -1905,16 +1922,216 @@ function isRuntimeFileDeliveryOutput(value: unknown): boolean {
     return isRuntimeEditableDeliveryOutput(value) || isRuntimeRasterDeliveryOutput(value);
 }
 
-function buildDeclaredDeliveryRequirement(
+const CREATED_DOCUMENT_PAIRED_DELIVERY_BASIS = 'created_document_final_revision_pair' as const;
+const CREATED_DOCUMENT_PAIRED_DELIVERY_OUTPUTS = [
+    'editable_document',
+    'raster_preview'
+] as const;
+
+interface CreatedDocumentPairedDeliveryProjection {
+    basis: typeof CREATED_DOCUMENT_PAIRED_DELIVERY_BASIS;
+    documentId: number;
+    sourceHistoryStateRef: PhotoshopHistoryStateRef;
+    rasterDeliveryCount: number;
+    editableDeliveryCount: number;
+}
+
+function explicitlyRequestsSingleFormatDelivery(input: ContractInput): boolean {
+    const workMode = String(
+        input.context?.agenticArtifactContract?.workMode
+        || input.context?.agentTaskPlan?.designBrief.workMode
+        || ''
+    ).trim();
+    if (workMode === 'export_only') return true;
+    const { task } = resolveStableTaskIdentity(input);
+    const text = String(task || '').toLowerCase();
+    const rasterOnly = /(?:只|仅).{0,10}(?:jpg|jpeg|png|webp)/i.test(text)
+        || /(?:不需要|无需|不要|不导出|别导出).{0,10}(?:jpg|jpeg|png|webp|预览图)/i.test(text);
+    const editableOnly = /(?:只|仅).{0,10}(?:psd|psb|源文件|源稿|可编辑文件|工程文件)/i.test(text)
+        || /(?:不需要|无需|不要|不保存|别保存).{0,10}(?:psd|psb|源文件|源稿|可编辑文件|工程文件)/i
+            .test(text);
+    return rasterOnly || editableOnly;
+}
+
+/**
+ * 新建文档的结算格式只来自当前 Task / Manifest 的既有交付 owner。
+ * 未绑定开放创意沿用 D-112 的源稿 + 预览默认；用户明确单格式时保持原范围。
+ */
+export function resolveTaskRunCreatedDocumentDeliveryRequirement(input: {
+    task: string;
+    context?: TaskCompletionContext;
+}): TaskRunCreatedDocumentDeliveryRequirement {
+    const contractInput: ContractInput = {
+        task: input.task,
+        context: input.context,
+        toolCallLog: []
+    };
+    const explicitSingleFormat = explicitlyRequestsSingleFormatDelivery(contractInput);
+    if (!input.context?.agenticArtifactContract && !explicitSingleFormat) {
+        return { rasterRequired: true, editableRequired: true };
+    }
+    const rasterRequired = taskRequestsRasterDelivery(contractInput);
+    const editableRequired = taskRequestsEditableDelivery(contractInput);
+    if (!rasterRequired && !editableRequired) {
+        return { rasterRequired: true, editableRequired: true };
+    }
+    return { rasterRequired, editableRequired };
+}
+
+export function buildTaskRunCreatedDocumentPreflightInput(
+    task: string,
+    context: TaskCompletionContext,
+    toolCallLog: AgentToolCallLogEntry[]
+): {
+    completedToolCalls: AgentToolCallLogEntry[];
+    taskRunCreatedDocumentLifecycle: {
+        taskRunId?: string;
+        generation?: number;
+        previous?: TaskRunDocumentCreationEvidence;
+        deliveryRequirement: TaskRunCreatedDocumentDeliveryRequirement;
+        toolCallLog: AgentToolCallLogEntry[];
+    };
+} {
+    const chain = context.taskRunDocumentCreation;
+    return {
+        completedToolCalls: toolCallLog,
+        taskRunCreatedDocumentLifecycle: {
+            previous: chain?.evidence,
+            taskRunId: chain?.taskRunId,
+            generation: chain?.generation,
+            toolCallLog: buildAgentOperationLedger(toolCallLog) as unknown as AgentToolCallLogEntry[],
+            deliveryRequirement: resolveTaskRunCreatedDocumentDeliveryRequirement({ task, context })
+        }
+    };
+}
+
+function buildTaskRunCreatedDocumentLifecycleRequirement(
     input: ContractInput,
     log: AgentToolCallLogEntry[],
     id: string
 ): TaskCompletionRequirement | undefined {
-    if (!taskRequestsDelivery(input)) return undefined;
-    const rasterRequired = taskRequestsRasterDelivery(input);
-    const editableRequired = taskRequestsEditableDelivery(input);
-    const rasterDeliveryCount = countRasterDelivery(log);
-    const editableDeliveryCount = countEditableDelivery(log);
+    const chain = input.context?.taskRunDocumentCreation;
+    const deliveryRequirement = resolveTaskRunCreatedDocumentDeliveryRequirement({
+        task: input.task,
+        context: input.context
+    });
+    const lifecycle = projectTaskRunCreatedDocumentLifecycle({
+        previous: chain?.evidence,
+        taskRunId: chain?.taskRunId,
+        generation: chain?.generation,
+        toolCallLog: log,
+        deliveryRequirement
+    });
+    if (lifecycle.createdDocumentCount === 0) return undefined;
+    const status: TaskCompletionRequirement['status'] = lifecycle.unsettledDocumentCount === 0
+        ? 'passed'
+        : 'failed';
+    return {
+        id,
+        label: '结算本 TaskRun 创建的全部文档',
+        status,
+        expected: {
+            everyCreatedDocumentSettled: true,
+            rasterRequired: deliveryRequirement.rasterRequired,
+            editableRequired: deliveryRequirement.editableRequired
+        },
+        actual: {
+            createdDocumentCount: lifecycle.createdDocumentCount,
+            settledDocumentCount: lifecycle.settledDocumentCount,
+            deliveredDocumentCount: lifecycle.deliveredDocumentCount,
+            closedDocumentCount: lifecycle.closedDocumentCount,
+            unsettledDocumentCount: lifecycle.unsettledDocumentCount,
+            unsettledDocumentIds: lifecycle.unsettledDocumentIds,
+            documents: lifecycle.documents
+        },
+        reason: status === 'passed'
+            ? undefined
+            : `本 TaskRun 新建的 Photoshop 文档 ${lifecycle.unsettledDocumentIds.join(', ')} 尚未按当前交付范围取得最新 revision 文件收据，也没有由 Agent 通过精确 documentId 显式关闭。请在当前文档继续修订、完成交付，或在需要放弃候选时请求关闭确认；不能留下未结算文档后直接完成。`,
+        ...qualifiedCompletionFailure(status, 'required_artifact_missing', id)
+    };
+}
+
+function collectCurrentTaskRunCreatedDocumentIds(
+    log: AgentToolCallLogEntry[]
+): Set<number> {
+    const documentIds = new Set<number>();
+    for (const entry of log) {
+        if (!completionOperationSucceeded(entry)) continue;
+        const commit = readPhotoshopMutationCommit(entry.result);
+        if (commit?.changeKind !== 'document_creation'
+            || !Number.isSafeInteger(commit.createdDocumentId)
+            || Number(commit.createdDocumentId) <= 0) {
+            continue;
+        }
+        documentIds.add(Number(commit.createdDocumentId));
+    }
+    return documentIds;
+}
+
+function projectCreatedDocumentPairedDelivery(
+    input: ContractInput,
+    log: AgentToolCallLogEntry[]
+): CreatedDocumentPairedDeliveryProjection | undefined {
+    if (input.context?.agenticArtifactContract || explicitlyRequestsSingleFormatDelivery(input)) {
+        return undefined;
+    }
+    const createdDocumentIds = collectCurrentTaskRunCreatedDocumentIds(log);
+    if (createdDocumentIds.size === 0) return undefined;
+    const latestMutationIndex = findLatestVerifiedPhotoshopMutationIndex(log);
+    const finalMutationProof = readCompletionMutationProof(log[latestMutationIndex]);
+    const sourceHistoryStateRef = finalMutationProof?.after;
+    if (!sourceHistoryStateRef || !createdDocumentIds.has(sourceHistoryStateRef.documentId)) {
+        return undefined;
+    }
+    const sameFinalRevision = (entry: AgentToolCallLogEntry): boolean => (
+        samePhotoshopHistoryStateRef(
+            readPhotoshopSourceHistoryStateRef(entry.result),
+            sourceHistoryStateRef
+        )
+    );
+    return {
+        basis: CREATED_DOCUMENT_PAIRED_DELIVERY_BASIS,
+        documentId: sourceHistoryStateRef.documentId,
+        sourceHistoryStateRef,
+        rasterDeliveryCount: log.filter((entry) => (
+            isRasterDeliveryEntry(entry) && sameFinalRevision(entry)
+        )).length,
+        editableDeliveryCount: log.filter((entry) => (
+            isEditableDeliveryEntry(entry) && sameFinalRevision(entry)
+        )).length
+    };
+}
+
+export function readTaskCompletionRequiredDeliveryOutputs(
+    contract: Pick<TaskCompletionContract, 'required'> | undefined
+): string[] {
+    const pairedRequirement = contract?.required.find((requirement) => {
+        const actual = requirement.actual;
+        return Boolean(actual)
+            && typeof actual === 'object'
+            && !Array.isArray(actual)
+            && (actual as Record<string, unknown>).deliveryBasis
+                === CREATED_DOCUMENT_PAIRED_DELIVERY_BASIS;
+    });
+    return pairedRequirement
+        ? [...CREATED_DOCUMENT_PAIRED_DELIVERY_OUTPUTS]
+        : [];
+}
+
+function buildDeclaredDeliveryRequirement(
+    input: ContractInput,
+    log: AgentToolCallLogEntry[],
+    id: string,
+    options: { pairCreatedCreativeDocument?: boolean } = {}
+): TaskCompletionRequirement | undefined {
+    const pairedDelivery = options.pairCreatedCreativeDocument
+        ? projectCreatedDocumentPairedDelivery(input, log)
+        : undefined;
+    if (!taskRequestsDelivery(input) && !pairedDelivery) return undefined;
+    const rasterRequired = Boolean(pairedDelivery) || taskRequestsRasterDelivery(input);
+    const editableRequired = Boolean(pairedDelivery) || taskRequestsEditableDelivery(input);
+    const rasterDeliveryCount = pairedDelivery?.rasterDeliveryCount ?? countRasterDelivery(log);
+    const editableDeliveryCount = pairedDelivery?.editableDeliveryCount ?? countEditableDelivery(log);
     const deliveryPassed = (!rasterRequired || rasterDeliveryCount > 0)
         && (!editableRequired || editableDeliveryCount > 0)
         && (rasterRequired || editableRequired
@@ -1922,7 +2139,9 @@ function buildDeclaredDeliveryRequirement(
             : rasterDeliveryCount + editableDeliveryCount > 0);
     const status: TaskCompletionRequirement['status'] = deliveryPassed ? 'passed' : 'failed';
     let reason: string | undefined;
-    if (!deliveryPassed && rasterRequired && editableRequired) {
+    if (!deliveryPassed && pairedDelivery) {
+        reason = '本轮新建设计文档需要交付同一最终版本的可编辑源稿与预览图片，但当前没有同时取得该 document/history 的 PSD/PSB 保存和 JPG/PNG/WebP 导出收据。';
+    } else if (!deliveryPassed && rasterRequired && editableRequired) {
         reason = '交付要求包含可编辑文档和预览图片，但当前没有同时取得成功的文档保存与图片导出收据。';
     } else if (!deliveryPassed && rasterRequired) {
         reason = '交付要求包含预览图片，但没有检测到成功的 JPG、PNG 或 WebP 导出收据。';
@@ -1933,9 +2152,11 @@ function buildDeclaredDeliveryRequirement(
     }
     return {
         id,
-        label: rasterRequired && editableRequired
-            ? '保存可编辑文档与预览图片'
-            : (rasterRequired ? '导出预览图片' : '保存可编辑文档'),
+        label: pairedDelivery
+            ? '保存新建设计的可编辑源稿与预览图片'
+            : (rasterRequired && editableRequired
+                ? '保存可编辑文档与预览图片'
+                : (rasterRequired ? '导出预览图片' : '保存可编辑文档')),
         status,
         expected: {
             rasterRequired,
@@ -1944,7 +2165,12 @@ function buildDeclaredDeliveryRequirement(
         },
         actual: {
             rasterDeliveryCount,
-            editableDeliveryCount
+            editableDeliveryCount,
+            ...(pairedDelivery ? {
+                deliveryBasis: pairedDelivery.basis,
+                documentId: pairedDelivery.documentId,
+                sourceHistoryStateRef: pairedDelivery.sourceHistoryStateRef
+            } : {})
         },
         reason,
         ...qualifiedCompletionFailure(status, 'required_artifact_missing', id)
@@ -3123,7 +3349,13 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
     const deliveryRequirement = buildDeclaredDeliveryRequirement(
         input,
         log,
-        'creative-delivery'
+        'creative-delivery',
+        { pairCreatedCreativeDocument: true }
+    );
+    const documentLifecycleRequirement = buildTaskRunCreatedDocumentLifecycleRequirement(
+        input,
+        log,
+        'creative-document-lifecycle'
     );
     const renderLayoutQuality = collectLatestRenderLayoutQualityState(log);
     const unresolvedComparisonFinding = Boolean(
@@ -3344,6 +3576,7 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
         });
     }
 
+    if (documentLifecycleRequirement) requirements.push(documentLifecycleRequirement);
     if (deliveryRequirement) requirements.push(deliveryRequirement);
 
     const blockers: string[] = [];
@@ -3590,6 +3823,12 @@ function buildProfileProductionEvidenceContract(
     const deliveryRequirement = input.context?.agenticArtifactContract
         ? buildDeclaredDeliveryRequirement(input, log, 'production-delivery')
         : undefined;
+    const documentLifecycleRequirement = buildTaskRunCreatedDocumentLifecycleRequirement(
+        input,
+        log,
+        'production-document-lifecycle'
+    );
+    if (documentLifecycleRequirement) requirements.push(documentLifecycleRequirement);
     if (deliveryRequirement) requirements.push(deliveryRequirement);
 
     const blockers = requirements

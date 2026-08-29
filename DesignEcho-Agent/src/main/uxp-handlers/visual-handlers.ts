@@ -9,6 +9,14 @@ import {
     buildUnresolvedTargetHint,
     resolveTargetPhrases
 } from '../../shared/semantic-target-vocabulary';
+import {
+    bindSemanticMattingGuidanceToDetectionBoxes,
+    normalizeSemanticMattingGuidance,
+    selectSemanticMattingDetectionInstances,
+    type SemanticMattingGuidance,
+    type SemanticMattingLifecycleSelectionMode,
+    type SemanticMattingProviderPoint
+} from '../../shared/semantic-matting-guidance';
 import type { UXPContext } from './types';
 
 export interface SemanticSourceBounds {
@@ -53,7 +61,10 @@ export interface SemanticTargetLifecycleReceipt {
     unresolvedTargetCount: number;
     omittedTargetCount: number;
     detectedTargetCount: number;
+    candidateRegionCount?: number;
     detectedRegionCount: number;
+    unselectedCandidateCount?: number;
+    instanceSelectionMode?: SemanticMattingLifecycleSelectionMode;
     segmentationRequestedRegionCount: number;
     segmentationCompletedRegionCount: number;
     segmentationRequestedTargetCount: number;
@@ -69,6 +80,29 @@ export type SemanticTargetLifecycleStage =
     | 'post-apply';
 
 export type MattingOutputFormat = 'mask' | 'selection' | 'channel' | 'layer';
+
+interface MattingWorkflowExecutionControl {
+    requestKey?: string;
+    abortSignal?: AbortSignal;
+}
+
+function buildMattingCancelledResult(stage: string): {
+    success: false;
+    error: string;
+    errorCode: 'MATTING_WORKFLOW_CANCELLED';
+    diagnostic: { stage: string; reason: 'workflow_cancelled' };
+} {
+    return {
+        success: false,
+        error: '抠图请求已取消，本轮没有启动新的 Photoshop 写入。',
+        errorCode: 'MATTING_WORKFLOW_CANCELLED',
+        diagnostic: { stage, reason: 'workflow_cancelled' }
+    };
+}
+
+function isMattingWorkflowCancelled(control?: MattingWorkflowExecutionControl): boolean {
+    return control?.abortSignal?.aborted === true;
+}
 
 export function normalizeMattingOutputFormat(value: unknown): MattingOutputFormat | null {
     const normalized = String(value === undefined ? 'mask' : value).trim().toLowerCase();
@@ -180,6 +214,32 @@ export function validateMattingTargetIdentityReceipt(
     return { valid: true, identity };
 }
 
+export function validateExpectedMattingTargetIdentity(args: {
+    identity: MattingTargetIdentityReceipt;
+    expectedDocumentId?: unknown;
+    expectedHistoryStateId?: unknown;
+}): { valid: boolean; code?: string } {
+    if (args.expectedDocumentId !== undefined) {
+        const expectedDocumentId = Number(args.expectedDocumentId);
+        if (!Number.isSafeInteger(expectedDocumentId) || expectedDocumentId <= 0) {
+            return { valid: false, code: 'expected_document_id_invalid' };
+        }
+        if (args.identity.documentId !== expectedDocumentId) {
+            return { valid: false, code: 'expected_document_changed' };
+        }
+    }
+    if (args.expectedHistoryStateId !== undefined) {
+        const expectedHistoryStateId = Number(args.expectedHistoryStateId);
+        if (!Number.isSafeInteger(expectedHistoryStateId) || expectedHistoryStateId <= 0) {
+            return { valid: false, code: 'expected_history_state_id_invalid' };
+        }
+        if (args.identity.historyStateId !== expectedHistoryStateId) {
+            return { valid: false, code: 'expected_history_state_changed' };
+        }
+    }
+    return { valid: true };
+}
+
 export function validateMattingMutationReceipt(args: {
     value: unknown;
     expectedTargetIdentity: MattingTargetIdentityReceipt;
@@ -265,6 +325,27 @@ export function validateSemanticBaseExportReceipt(args: {
     if (![outputLeft, outputTop, outputWidth, outputHeight].every(Number.isFinite)
         || !(outputWidth > 0) || !(outputHeight > 0)) {
         return fail('semantic_base_output_geometry_invalid', 'output_geometry_invalid');
+    }
+    const documentWidth = Number(result?.docWidth);
+    const documentHeight = Number(result?.docHeight);
+    if (!Number.isFinite(documentWidth) || !(documentWidth > 0)
+        || !Number.isFinite(documentHeight) || !(documentHeight > 0)) {
+        return fail('semantic_base_document_geometry_missing', 'document_geometry_invalid');
+    }
+    const expectedDocumentBounds = normalizeSemanticBounds({
+        left: Math.max(0, outputLeft),
+        top: Math.max(0, outputTop),
+        right: Math.min(documentWidth, outputLeft + outputWidth),
+        bottom: Math.min(documentHeight, outputTop + outputHeight)
+    });
+    if (!expectedDocumentBounds) {
+        return fail('semantic_base_layer_outside_document', 'layer_has_no_document_intersection');
+    }
+    if (!boundsApproximatelyEqual(actual, expectedDocumentBounds, 1)) {
+        return fail(
+            'semantic_base_coordinate_space_mismatch',
+            'actual_bounds_do_not_match_layer_document_intersection'
+        );
     }
     const tolerance = 1;
     const x1 = actual.left - outputLeft;
@@ -404,12 +485,18 @@ export function validateSemanticTargetLifecycle(
         return { valid: false, issues: ['invalid_schema'] };
     }
 
+    const candidateRegionCount = receipt.candidateRegionCount ?? receipt.detectedRegionCount;
+    const unselectedCandidateCount = receipt.unselectedCandidateCount ?? 0;
+    const instanceSelectionMode = receipt.instanceSelectionMode ?? 'all_detected';
+
     const counts = [
         receipt.requestedTargetCount,
         receipt.unresolvedTargetCount,
         receipt.omittedTargetCount,
         receipt.detectedTargetCount,
+        candidateRegionCount,
         receipt.detectedRegionCount,
+        unselectedCandidateCount,
         receipt.segmentationRequestedRegionCount,
         receipt.segmentationCompletedRegionCount,
         receipt.segmentationRequestedTargetCount,
@@ -422,6 +509,19 @@ export function validateSemanticTargetLifecycle(
     if (!(receipt.requestedTargetCount > 0)) issues.push('empty_request');
     if (receipt.unresolvedTargetCount > 0) issues.push('unresolved_targets');
     if (receipt.omittedTargetCount > 0) issues.push('omitted_targets');
+    if (instanceSelectionMode !== 'all_detected'
+        && instanceSelectionMode !== 'exact_guided_instances') {
+        issues.push('invalid_instance_selection_mode');
+    }
+    if (candidateRegionCount < receipt.detectedRegionCount) {
+        issues.push('selected_regions_exceed_candidates');
+    }
+    if (unselectedCandidateCount !== candidateRegionCount - receipt.detectedRegionCount) {
+        issues.push('candidate_selection_count_mismatch');
+    }
+    if (instanceSelectionMode === 'all_detected' && unselectedCandidateCount !== 0) {
+        issues.push('unexpected_unselected_candidates');
+    }
 
     if (stage !== 'pre-detection') {
         if (receipt.detectedTargetCount !== receipt.requestedTargetCount) {
@@ -659,18 +759,21 @@ export function registerVisualHandlers(context: UXPContext): void {
      */
     const buildHighResRegions = async (
         boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>,
+        guidancePointsByBox: SemanticMattingProviderPoint[][] | undefined,
         exportWidth: number,
         exportHeight: number,
         exportResult: any,
         quality: 'fast' | 'balanced' | 'quality',
         sampleAllLayers: boolean,
-        paddingRatio: number = HIGH_RES_REGION_PADDING
+        paddingRatio: number = HIGH_RES_REGION_PADDING,
+        control: MattingWorkflowExecutionControl = {}
     ): Promise<{
         success: boolean;
         regions: Array<{
             imageInput: string | BinaryImageData;
             regionInOutput: { x1: number; y1: number; x2: number; y2: number };
             boxesInRegion: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+            guidancePointsByBox?: SemanticMattingProviderPoint[][];
         }>;
         notRequired?: boolean;
         baseRegionInOutput?: { x1: number; y1: number; x2: number; y2: number };
@@ -678,6 +781,9 @@ export function registerVisualHandlers(context: UXPContext): void {
         errorCode?: string;
         diagnostic?: Record<string, unknown>;
     }> => {
+        if (isMattingWorkflowCancelled(control)) {
+            return { ...buildMattingCancelledResult('region-export'), regions: [] };
+        }
         const layerId = exportResult?.layerId;
         const originalWidth = Number(exportResult?.originalWidth);
         const originalHeight = Number(exportResult?.originalHeight);
@@ -762,6 +868,7 @@ export function registerVisualHandlers(context: UXPContext): void {
             imageInput: string | BinaryImageData;
             regionInOutput: { x1: number; y1: number; x2: number; y2: number };
             boxesInRegion: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+            guidancePointsByBox?: SemanticMattingProviderPoint[][];
         }> = [];
 
         // 相邻目标并成一组共用局部图；容差按目标尺度走，太小会漏掉刚好挨着的两个目标
@@ -770,6 +877,9 @@ export function registerVisualHandlers(context: UXPContext): void {
         const groups = groupAdjacentBoxes(boxes, avgSize * ADJACENT_GROUP_TOLERANCE);
 
         for (const group of groups) {
+            if (isMattingWorkflowCancelled(control)) {
+                return { ...buildMattingCancelledResult('region-export'), regions: [] };
+            }
             // 组的外接框决定取像范围
             const groupBox = {
                 x1: Math.min(...group.map(b => b.x1)),
@@ -815,10 +925,14 @@ export function registerVisualHandlers(context: UXPContext): void {
                 sampleAllLayers,
                 sourceRegion: requestedSourceBounds,
                 expectedTargetIdentity: targetIdentity
-            }, 60000).catch((e: any) => {
+            }, 60000, control.requestKey ? { requestKey: control.requestKey } : {}).catch((e: any) => {
                 logService?.logAgent('warn', `[UXP Handler] 区域取像请求失败: ${e?.message}`);
                 return null;
             });
+
+            if (isMattingWorkflowCancelled(control)) {
+                return { ...buildMattingCancelledResult('region-export'), regions: [] };
+            }
 
             if (!exported?.success) {
                 logService?.logAgent(
@@ -916,11 +1030,24 @@ export function registerVisualHandlers(context: UXPContext): void {
             // 相邻目标共用同一张局部源图，避免重复传输；但每个检测框必须形成独立的
             // 分割 region。否则一个 box 的 scope 失败后，邻近 box 的 union mask 可能跨进来，
             // 让“框内有前景”误报为该目标已完成，破坏逐目标完整性收据。
-            for (const mappedBox of mappedBoxes) {
+            for (let mappedIndex = 0; mappedIndex < mappedBoxes.length; mappedIndex++) {
+                const mappedBox = mappedBoxes[mappedIndex];
+                const sourceBoxIndex = boxes.indexOf(group[mappedIndex]);
+                const sourceGuidance = sourceBoxIndex >= 0
+                    ? guidancePointsByBox?.[sourceBoxIndex] || []
+                    : [];
+                const mappedGuidance = sourceGuidance.map(point => ({
+                    x: (sourceBounds.left + point.x * scaleX - actualSourceBounds.left) * regionScaleX,
+                    y: (sourceBounds.top + point.y * scaleY - actualSourceBounds.top) * regionScaleY,
+                    label: point.label
+                }));
                 built.push({
                     imageInput: regionImage,
                     regionInOutput: geometry.regionInOutput,
-                    boxesInRegion: [mappedBox]
+                    boxesInRegion: [mappedBox],
+                    ...(mappedGuidance.length > 0
+                        ? { guidancePointsByBox: [mappedGuidance] }
+                        : {})
                 });
             }
 
@@ -947,6 +1074,7 @@ export function registerVisualHandlers(context: UXPContext): void {
      */
     const segmentWithAutoExpand = async (args: {
         boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+        guidancePointsByBox?: SemanticMattingProviderPoint[][];
         detectWidth: number;
         detectHeight: number;
         exportResult: any;
@@ -955,6 +1083,7 @@ export function registerVisualHandlers(context: UXPContext): void {
         sampleAllLayers: boolean;
         targetDimensions: { originalWidth?: number; originalHeight?: number };
         fallbackImageInput: string | BinaryImageData;
+        control?: MattingWorkflowExecutionControl;
     }): Promise<{ result: any }> => {
         const outputWidth = args.targetDimensions.originalWidth || args.detectWidth;
         const outputHeight = args.targetDimensions.originalHeight || args.detectHeight;
@@ -963,14 +1092,20 @@ export function registerVisualHandlers(context: UXPContext): void {
             paddingRatio: number,
             boxes: typeof args.boxes
         ): Promise<{ built: any; result: any }> => {
+            if (isMattingWorkflowCancelled(args.control)) {
+                const cancelled = buildMattingCancelledResult('segmentation');
+                return { built: { success: false, regions: [] }, result: cancelled };
+            }
             const built = await buildHighResRegions(
                 boxes,
+                args.guidancePointsByBox,
                 args.detectWidth,
                 args.detectHeight,
                 args.exportResult,
                 args.normalizedQuality,
                 args.sampleAllLayers,
-                paddingRatio
+                paddingRatio,
+                args.control
             );
             if (!built.success) {
                 return {
@@ -1000,11 +1135,17 @@ export function registerVisualHandlers(context: UXPContext): void {
                         }
                     };
                 }
-                regions = boxes.map(box => ({
-                    imageInput: args.fallbackImageInput,
-                    regionInOutput: baseRegionInOutput,
-                    boxesInRegion: [box]
-                }));
+                regions = boxes.map((box, boxIndex) => {
+                    const guidancePoints = args.guidancePointsByBox?.[boxIndex] || [];
+                    return {
+                        imageInput: args.fallbackImageInput,
+                        regionInOutput: baseRegionInOutput,
+                        boxesInRegion: [box],
+                        ...(guidancePoints.length > 0
+                            ? { guidancePointsByBox: [guidancePoints] }
+                            : {})
+                    };
+                });
             }
             if (regions.length === 0) {
                 return {
@@ -1018,6 +1159,10 @@ export function registerVisualHandlers(context: UXPContext): void {
                 };
             }
 
+            if (isMattingWorkflowCancelled(args.control)) {
+                return { built, result: buildMattingCancelledResult('segmentation') };
+            }
+
             const result = await mattingService!.segmentHighResRegions(regions, {
                 outputWidth,
                 outputHeight,
@@ -1029,6 +1174,9 @@ export function registerVisualHandlers(context: UXPContext): void {
                     sendMattingProgress(Math.max(60, Math.min(95, progress)), message, stage);
                 }
             });
+            if (isMattingWorkflowCancelled(args.control)) {
+                return { built, result: buildMattingCancelledResult('segmentation') };
+            }
             return { built, result };
         };
 
@@ -1037,6 +1185,10 @@ export function registerVisualHandlers(context: UXPContext): void {
         const clipped = first.result.clippedRegionIndexes || [];
         if (clipped.length === 0 || !first.result.success) {
             return { result: first.result };
+        }
+
+        if (isMattingWorkflowCancelled(args.control)) {
+            return { result: buildMattingCancelledResult('segmentation') };
         }
 
         logService?.logAgent(
@@ -1180,8 +1332,14 @@ export function registerVisualHandlers(context: UXPContext): void {
         exportResult: any;
         /** 与第一次导出保持一致，否则两次取像的图像内容不同 */
         sampleAllLayers: boolean;
+        /** 只承载 Agent 已明确给出的视觉判断；Harness 仅验证和换算坐标。 */
+        semanticGuidance?: SemanticMattingGuidance;
+        control?: MattingWorkflowExecutionControl;
     }): Promise<any> => {
         const startTime = Date.now();
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('pre-detection');
+        }
 
         // 1. 目标词规范化：全程本地词表，不调用任何语言模型。
         //    抠图是本地能力，挂到云端模型上会平白多出网络、额度、答非所问三类失败
@@ -1194,7 +1352,10 @@ export function registerVisualHandlers(context: UXPContext): void {
             unresolvedTargetCount: resolved.unresolved.length,
             omittedTargetCount: resolved.omitted.length,
             detectedTargetCount: 0,
+            candidateRegionCount: 0,
             detectedRegionCount: 0,
+            unselectedCandidateCount: 0,
+            instanceSelectionMode: 'all_detected',
             segmentationRequestedRegionCount: 0,
             segmentationCompletedRegionCount: 0,
             segmentationRequestedTargetCount: 0,
@@ -1243,11 +1404,17 @@ export function registerVisualHandlers(context: UXPContext): void {
         sendMattingProgress(30, `正在图中定位「${args.targetPrompt}」...`, 'detection');
 
         const decoded = await mattingService!.decodeImageInput(args.imageInput);
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('detection');
+        }
         if (!decoded) {
             return { success: false, error: '无法解码图层图像：图层可能为空或数据损坏。' };
         }
 
         const detection = await groundingDinoService.detect(decoded.buffer, phrases);
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('detection');
+        }
         if (!detection.success) {
             return {
                 success: false,
@@ -1293,7 +1460,10 @@ export function registerVisualHandlers(context: UXPContext): void {
         );
         const missingPhrases = phrases.filter(phrase => !detectedPhrases.has(phrase.trim().toLowerCase()));
         lifecycle.detectedTargetCount = phrases.length - missingPhrases.length;
+        lifecycle.candidateRegionCount = detection.boxes.length;
         lifecycle.detectedRegionCount = detection.boxes.length;
+        lifecycle.unselectedCandidateCount = 0;
+        lifecycle.instanceSelectionMode = 'all_detected';
         const postDetection = validateSemanticTargetLifecycle(lifecycle, 'post-detection');
 
         if (!postDetection.valid) {
@@ -1338,18 +1508,126 @@ export function registerVisualHandlers(context: UXPContext): void {
             `[UXP Handler] Detected ${detection.boxes.length} target(s) in ${detection.processingTime}ms — ${boxSummary}`
         );
 
+        const semanticBoxes = detection.boxes.map(box => ({
+            x1: box.x1,
+            y1: box.y1,
+            x2: box.x2,
+            y2: box.y2,
+            phrase: box.phrase
+        }));
+        let selectedSemanticBoxes = semanticBoxes;
+        let guidancePointsByBox: SemanticMattingProviderPoint[][] | undefined;
+        if (args.semanticGuidance) {
+            const baseExportGeometry = validateSemanticBaseExportReceipt({
+                exportResult: args.exportResult,
+                expectedMode: args.sampleAllLayers ? 'composite-layer-bounds' : 'layer-full',
+                outputGeometry: {
+                    left: Number(args.exportResult?.originalLeft),
+                    top: Number(args.exportResult?.originalTop),
+                    width: Number(args.exportResult?.originalWidth),
+                    height: Number(args.exportResult?.originalHeight)
+                }
+            });
+            if (!baseExportGeometry.valid || !baseExportGeometry.regionInOutput) {
+                return {
+                    success: false,
+                    error: '首次图像导出的坐标收据无效，无法绑定语义引导，本轮没有修改图层。',
+                    errorCode: 'SEMANTIC_GUIDANCE_GEOMETRY_INVALID',
+                    diagnostic: {
+                        stage: 'post-detection',
+                        reason: baseExportGeometry.code || 'base_region_missing',
+                        issues: baseExportGeometry.issues
+                    },
+                    semanticTargetLifecycle: lifecycle
+                };
+            }
+            const binding = bindSemanticMattingGuidanceToDetectionBoxes({
+                guidance: args.semanticGuidance,
+                boxes: semanticBoxes,
+                outputWidth: Number(args.exportResult?.originalWidth),
+                outputHeight: Number(args.exportResult?.originalHeight),
+                baseRegionInOutput: baseExportGeometry.regionInOutput,
+                detectWidth: decoded.width,
+                detectHeight: decoded.height
+            });
+            if (!binding.valid) {
+                return {
+                    success: false,
+                    error: binding.error,
+                    errorCode: binding.code,
+                    diagnostic: {
+                        stage: 'post-detection',
+                        reason: 'semantic_guidance_binding_failed',
+                        issues: binding.issues
+                    },
+                    semanticTargetLifecycle: lifecycle
+                };
+            }
+            const selection = selectSemanticMattingDetectionInstances({
+                guidance: args.semanticGuidance,
+                boxes: semanticBoxes,
+                pointsByBox: binding.pointsByBox,
+                guidedBoxIndexes: binding.guidedBoxIndexes,
+                requestedPhrases: phrases
+            });
+            if (!selection.valid) {
+                return {
+                    success: false,
+                    error: selection.error,
+                    errorCode: selection.code,
+                    diagnostic: {
+                        stage: 'post-detection',
+                        reason: 'semantic_instance_selection_incomplete',
+                        issues: selection.issues,
+                        candidateRegionCount: semanticBoxes.length
+                    },
+                    semanticTargetLifecycle: lifecycle
+                };
+            }
+            selectedSemanticBoxes = selection.boxes;
+            guidancePointsByBox = selection.pointsByBox;
+            lifecycle.candidateRegionCount = selection.candidateRegionCount;
+            lifecycle.detectedRegionCount = selection.selectedRegionCount;
+            lifecycle.unselectedCandidateCount = selection.unselectedCandidateCount;
+            lifecycle.instanceSelectionMode = selection.mode;
+            if (selection.mode === 'exact_guided_instances') {
+                lifecycle.detectedTargetCount = phrases.length;
+                const postSelection = validateSemanticTargetLifecycle(lifecycle, 'post-detection');
+                if (!postSelection.valid) {
+                    return {
+                        success: false,
+                        error: 'Agent 选择的目标实例收据不完整，本轮没有修改图层。',
+                        errorCode: 'SEMANTIC_INSTANCE_SELECTION_RECEIPT_INVALID',
+                        diagnostic: {
+                            stage: 'post-detection',
+                            reason: 'instance_selection_receipt_invalid',
+                            issues: postSelection.issues,
+                            lifecycle
+                        },
+                        semanticTargetLifecycle: lifecycle
+                    };
+                }
+                logService?.logAgent(
+                    'info',
+                    `[UXP Handler] Agent exact instance selection: `
+                    + `${selection.selectedRegionCount}/${selection.candidateRegionCount}, `
+                    + `unselected=${selection.unselectedCandidateCount}`
+                );
+            }
+        }
+
         sendMattingProgress(
             60,
-            `已定位 ${detection.boxes.length} 处「${args.targetPrompt}」，正在生成选区...`,
+            `已选定 ${selectedSemanticBoxes.length} 处「${args.targetPrompt}」，正在生成选区...`,
             'segmentation'
         );
-
 
         // 3. 按目标框二次高分辨率取像，再在局部图上精细分割。
         //    第一次导出为了让检测器看全画面，被压到 1024 长边；直接在那张图上分割，
         //    目标只有一百多像素，边缘精度从源头就丢了。
         const { result } = await segmentWithAutoExpand({
-            boxes: detection.boxes.map(b => ({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })),
+            boxes: selectedSemanticBoxes,
+            guidancePointsByBox,
             detectWidth: decoded.width,
             detectHeight: decoded.height,
             exportResult: args.exportResult,
@@ -1357,8 +1635,13 @@ export function registerVisualHandlers(context: UXPContext): void {
             edgeRefine: args.edgeRefine,
             sampleAllLayers: args.sampleAllLayers,
             targetDimensions: args.targetDimensions,
-            fallbackImageInput: args.imageInput
+            fallbackImageInput: args.imageInput,
+            control: args.control
         });
+
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('segmentation');
+        }
 
         if (!result?.success) {
             return {
@@ -1612,6 +1895,11 @@ export function registerVisualHandlers(context: UXPContext): void {
         usePythonBackend?: boolean;
         sampleAllLayers?: boolean;
         layerId?: number;
+        expectedDocumentId?: number;
+        expectedHistoryStateId?: number;
+        semanticGuidance?: unknown;
+        requestKey?: string;
+        abortSignal?: AbortSignal;
     }) => {
         logService?.logAgent('info', '[UXP Handler] Received panel matting request');
 
@@ -1623,7 +1911,7 @@ export function registerVisualHandlers(context: UXPContext): void {
             return { success: false, error: 'Photoshop 插件未连接，请先在面板完成连接。' };
         }
 
-        const targetPrompt = params.targetPrompt || '';
+        const targetPrompt = String(params.targetPrompt || '').trim();
         const outputFormat = normalizeMattingOutputFormat(params.outputFormat);
         if (!outputFormat) {
             return {
@@ -1632,9 +1920,37 @@ export function registerVisualHandlers(context: UXPContext): void {
                 errorCode: 'MATTING_OUTPUT_FORMAT_INVALID'
             };
         }
+        const guidanceValidation = normalizeSemanticMattingGuidance(params.semanticGuidance);
+        if (!guidanceValidation.valid) {
+            return {
+                success: false,
+                error: `${guidanceValidation.error} ${guidanceValidation.issues.join(' ')}`.trim(),
+                errorCode: guidanceValidation.code,
+                noMutation: true,
+                executesPhotoshop: false
+            };
+        }
+        const semanticGuidance = guidanceValidation.guidance;
+        if (semanticGuidance && !targetPrompt) {
+            return {
+                success: false,
+                error: '正负点引导必须绑定 Agent 明确选择的语义目标，抠图工作流没有启动。',
+                errorCode: 'SEMANTIC_GUIDANCE_REQUIRES_TARGET',
+                noMutation: true,
+                executesPhotoshop: false
+            };
+        }
         const sampleAllLayers = params.sampleAllLayers === true;
         const normalizedQuality = normalizeMattingQuality(params.quality);
         const exportMaxSize = resolveMattingExportMaxSize(params.quality);
+        const control: MattingWorkflowExecutionControl = {
+            requestKey: String(params.requestKey || '').trim() || undefined,
+            abortSignal: params.abortSignal
+        };
+        if (isMattingWorkflowCancelled(control)) {
+            return buildMattingCancelledResult('prepare-export');
+        }
+        let photoshopApplyStarted = false;
 
         try {
             sendMattingProgress(3, '正在导出图层图像', 'prepare-export');
@@ -1647,7 +1963,11 @@ export function registerVisualHandlers(context: UXPContext): void {
                 maxSize: exportMaxSize,
                 // 对所有图层取样：导出图层边界内的复合图像，让模型看到完整上下文
                 sampleAllLayers
-            }, 60000);
+            }, 60000, control.requestKey ? { requestKey: control.requestKey } : {});
+
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('prepare-export');
+            }
 
             if (!exportResult?.success) {
                 return {
@@ -1668,6 +1988,27 @@ export function registerVisualHandlers(context: UXPContext): void {
                     diagnostic: {
                         stage: 'prepare-export',
                         reason: initialTargetIdentity.code || 'history_state_ref_mismatch'
+                    }
+                };
+            }
+            const expectedTargetValidation = validateExpectedMattingTargetIdentity({
+                identity: initialTargetIdentity.identity,
+                expectedDocumentId: params.expectedDocumentId,
+                expectedHistoryStateId: params.expectedHistoryStateId
+            });
+            if (!expectedTargetValidation.valid) {
+                return {
+                    success: false,
+                    error: '当前 Photoshop 文档或版本已不同于调用方确认的目标，本轮没有执行模型推理，也没有修改图层。请重新读取文档与历史版本后再决定是否重试。',
+                    errorCode: 'MATTING_EXPECTED_TARGET_MISMATCH',
+                    diagnostic: {
+                        stage: 'prepare-export',
+                        reason: expectedTargetValidation.code,
+                        expectedDocumentId: params.expectedDocumentId,
+                        expectedHistoryStateId: params.expectedHistoryStateId,
+                        actualDocumentId: initialTargetIdentity.identity.documentId,
+                        actualHistoryStateId: initialTargetIdentity.identity.historyStateId,
+                        actualLayerId: initialTargetIdentity.identity.layerId
                     }
                 };
             }
@@ -1700,6 +2041,10 @@ export function registerVisualHandlers(context: UXPContext): void {
             const imageInput = await resolveMattingImageInput(exportResult);
             const targetDimensions = resolveMattingTargetDimensions(exportResult);
 
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('export-ready');
+            }
+
             if (!imageInput) {
                 return { success: false, error: '未能获取图层图像数据：图层可能为空、被隐藏或边界无效。' };
             }
@@ -1718,7 +2063,9 @@ export function registerVisualHandlers(context: UXPContext): void {
                     edgeRefine: resolveMattingEdgeRefineMode(params, 'product-hard'),
                     targetDimensions,
                     exportResult,
-                    sampleAllLayers
+                    sampleAllLayers,
+                    semanticGuidance,
+                    control
                 })
                 : await runSalientMatting({
                     imageInput,
@@ -1728,6 +2075,10 @@ export function registerVisualHandlers(context: UXPContext): void {
                     exportResult,
                     sampleAllLayers
                 });
+
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('pre-apply');
+            }
 
             if (!mattingResult?.success || (!mattingResult?.maskImage && !mattingResult?.maskBuffer)) {
                 return {
@@ -1768,7 +2119,12 @@ export function registerVisualHandlers(context: UXPContext): void {
             logService?.logAgent('info', `[UXP Handler] Step 2 complete: model=${mattingResult.usedModel}, duration=${mattingResult.processingTime}ms`);
             sendMattingProgress(96, '正在应用抠图结果', 'apply-mask');
 
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('apply-mask');
+            }
+
             const applyPayload = buildMattingApplyPayload(mattingResult, exportResult);
+            photoshopApplyStarted = true;
             const applyResult = await wsServer.sendRequest('applyMattingResult', {
                 originalLayerId: layerId,
                 outputFormat,
@@ -1776,7 +2132,7 @@ export function registerVisualHandlers(context: UXPContext): void {
                 semanticTargetContract,
                 expectedTargetIdentity: initialTargetIdentity.identity,
                 ...applyPayload
-            }, 60000);
+            }, 60000, control.requestKey ? { requestKey: control.requestKey } : {});
 
             if (!applyResult?.success) {
                 return {
@@ -1815,7 +2171,10 @@ export function registerVisualHandlers(context: UXPContext): void {
                     'unresolvedTargetCount',
                     'omittedTargetCount',
                     'detectedTargetCount',
+                    'candidateRegionCount',
                     'detectedRegionCount',
+                    'unselectedCandidateCount',
+                    'instanceSelectionMode',
                     'segmentationRequestedRegionCount',
                     'segmentationCompletedRegionCount',
                     'segmentationRequestedTargetCount',
@@ -1864,6 +2223,21 @@ export function registerVisualHandlers(context: UXPContext): void {
                 mutationReceipt: mutationReceiptValidation.receipt
             };
         } catch (error: any) {
+            if (isMattingWorkflowCancelled(control)) {
+                if (photoshopApplyStarted) {
+                    return {
+                        success: false,
+                        error: '取消发生在 Photoshop 写入请求发出之后，但没有取得可验证的最终收据。当前写入状态未知，请先检查目标图层，不要重复执行。',
+                        errorCode: 'MATTING_CANCELLED_WRITE_STATE_UNKNOWN',
+                        diagnostic: {
+                            stage: 'apply-mask',
+                            reason: 'cancelled_after_write_dispatch',
+                            underlyingError: error?.message || String(error)
+                        }
+                    };
+                }
+                return buildMattingCancelledResult('workflow');
+            }
             logService?.logAgent('error', `[UXP Handler] Matting failed: ${error.message}`);
             return { success: false, error: error.message || '抠图失败：发生未知错误，请查看日志。' };
         }

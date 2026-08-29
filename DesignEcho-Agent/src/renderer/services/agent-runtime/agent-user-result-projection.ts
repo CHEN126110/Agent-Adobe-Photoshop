@@ -1,4 +1,11 @@
-import type { AgentExecutionSummary } from './types';
+import { buildAgentOperationLedger } from '../../../shared/agent-operation-ledger';
+import {
+    classifyAgentToolExecution,
+    isAgentHarnessControlTool
+} from '../../../shared/agent-tool-execution-preflight';
+import { isDesignDisciplineMutationTool } from '../../../shared/design-discipline-runtime';
+import { findObservedPhotoshopMutationProof } from '../../../shared/photoshop-history-state-ref';
+import type { AgentExecutionSummary, AgentToolCallLogEntry } from './types';
 
 export interface UserResultProjection {
     title: string;
@@ -8,32 +15,84 @@ export interface UserResultProjection {
     message: string;
 }
 
+export interface AgentUserResultFacts {
+    hasViewableDesignChange: boolean;
+    hasWorkspacePreparation: boolean;
+    hasSavedOrExportedFile: boolean;
+    hasGeneratedAsset: boolean;
+}
+
+/** 从同一原子 operation ledger 投影用户结果事实；不读取助手措辞，也不决定完成状态。 */
+export function deriveAgentUserResultFacts(
+    toolCallLog: readonly AgentToolCallLogEntry[]
+): AgentUserResultFacts {
+    const operations = buildAgentOperationLedger(toolCallLog).filter((entry) => (
+        entry.operationLedgerProvenance.role !== 'workflow_envelope'
+        && !isAgentHarnessControlTool(entry.name)
+    ));
+    const observedMutations = operations.filter((entry) => (
+        Boolean(findObservedPhotoshopMutationProof(entry.result))
+    ));
+    const hasViewableDesignChange = observedMutations.some((entry) => (
+        isDesignDisciplineMutationTool(entry.name)
+    ));
+    const hasSuccessfulActivity = (kind: 'save_export' | 'external_generation'): boolean => (
+        operations.some((entry) => (
+            entry.succeeded !== false
+            && classifyAgentToolExecution(entry.name, entry.arguments) === kind
+        ))
+    );
+    return {
+        hasViewableDesignChange,
+        hasWorkspacePreparation: !hasViewableDesignChange
+            && observedMutations.some((entry) => entry.name === 'createDocument'),
+        hasSavedOrExportedFile: hasSuccessfulActivity('save_export'),
+        hasGeneratedAsset: hasSuccessfulActivity('external_generation')
+    };
+}
+
+export function buildAgentUserResultProjectionFromToolLog(input: {
+    summary: AgentExecutionSummary;
+    toolCallLog: readonly AgentToolCallLogEntry[];
+}): UserResultProjection {
+    const facts = deriveAgentUserResultFacts(input.toolCallLog);
+    return buildAgentUserResultProjection({
+        summary: input.summary,
+        ...facts,
+        hasViewedLatestVersion: Number(input.summary.successfulObservationCalls || 0) > 0,
+        hasObservedContext: Number(input.summary.observedToolCallCount || 0) > 0
+    });
+}
+
 /**
  * 将结构化终态投影成设计师口吻。只消费已由 Runtime 验真的事实，既不决定
  * 完成状态，也不把尝试级失败、工具计数或内部恢复指令暴露给用户。
  */
 export function buildAgentUserResultProjection(input: {
     summary: AgentExecutionSummary;
-    hasPhotoshopChange: boolean;
+    hasViewableDesignChange: boolean;
+    hasWorkspacePreparation: boolean;
     hasSavedOrExportedFile: boolean;
     hasGeneratedAsset: boolean;
     hasViewedLatestVersion: boolean;
     hasObservedContext: boolean;
 }): UserResultProjection {
     const { summary } = input;
-    const hasViewableVersion = input.hasPhotoshopChange || input.hasSavedOrExportedFile;
+    const hasViewableVersion = input.hasViewableDesignChange || input.hasSavedOrExportedFile;
     const awaitingInteractiveConfirmation = summary.stopReason === 'awaiting_user_confirmation';
     const awaitingUserInput = summary.stopReason === 'awaiting_user_input';
 
     let outcome: string;
-    if (input.hasPhotoshopChange && input.hasSavedOrExportedFile) {
+    if (input.hasViewableDesignChange && input.hasSavedOrExportedFile) {
         outcome = '本轮已经完成实际画面或结构调整，并保存或导出了文件。';
-    } else if (input.hasPhotoshopChange) {
+    } else if (input.hasViewableDesignChange) {
         outcome = '本轮已经在 Photoshop 中做出实际画面或结构调整。';
     } else if (input.hasSavedOrExportedFile) {
         outcome = '本轮已经保存或导出当前文件。';
     } else if (input.hasGeneratedAsset) {
         outcome = '本轮已经生成可用于后续制作的设计素材。';
+    } else if (input.hasWorkspacePreparation) {
+        outcome = '本轮已经建立目标画布，但还没有形成设计内容。';
     } else if (input.hasObservedContext) {
         outcome = '本轮已经查看项目素材和当前画面，还没有开始实际制作。';
     } else {
@@ -41,9 +100,9 @@ export function buildAgentUserResultProjection(input: {
     }
 
     let versionState: string;
-    if (input.hasPhotoshopChange && input.hasViewedLatestVersion) {
+    if (input.hasViewableDesignChange && input.hasViewedLatestVersion) {
         versionState = '当前版本：已经看过修改后的画面，可以直接查看。';
-    } else if (input.hasPhotoshopChange) {
+    } else if (input.hasViewableDesignChange) {
         versionState = '当前版本：已经有实际改动，可以先看；我还需要查看修改后的画面。';
     } else if (input.hasSavedOrExportedFile) {
         versionState = '当前文件：已经保存或导出，可以直接查看。';
@@ -64,12 +123,14 @@ export function buildAgentUserResultProjection(input: {
         const unresolvedNoChange = summary.completionBlockingNoDocumentChangeRisks
             ?? summary.noDocumentChangeRisks;
         if (summary.downgradedByObservationGate
-            || (input.hasPhotoshopChange && !input.hasViewedLatestVersion)) {
+            || (input.hasViewableDesignChange && !input.hasViewedLatestVersion)) {
             nextAction = '下一步：我会先读取修改后的画面，再决定如何继续调整。';
         } else if (unresolvedNoChange > 0) {
             nextAction = '下一步：我会重新读取目标位置，确认改动是否落在正确位置。';
         } else if (!hasViewableVersion && input.hasGeneratedAsset) {
             nextAction = '下一步：把已有素材编排到 Photoshop 中，完成画面和排版。';
+        } else if (!hasViewableVersion && input.hasWorkspacePreparation) {
+            nextAction = '下一步：在现有目标画布中完成图片、文字或排版，形成第一版。';
         } else if (!hasViewableVersion && input.hasObservedContext) {
             nextAction = '下一步：根据已经看过的素材和画面开始实际制作。';
         } else if (!hasViewableVersion && summary.stopReason === 'tool_preflight_blocked') {

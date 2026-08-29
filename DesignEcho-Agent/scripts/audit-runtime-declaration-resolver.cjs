@@ -93,11 +93,16 @@ const {
   'tool-schemas.ts'
 ));
 const {
+  consumeHarnessQualityVerificationCallBudget,
   consumePerformanceToolCallBudget,
   createPerformanceLedgerState,
   isInMutationExecutionReserveZone,
+  MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS,
+  MAX_FINAL_QUALITY_JUDGE_CALLS,
+  MAX_HARNESS_QUALITY_VERIFICATION_CALLS,
   readPerformanceBudgetExhaustion,
   resolveExecutionSupplyReserve,
+  shouldIssuePerformanceBudgetDisciplineDirective,
   takeObservationReserveAdvice
 } = require(path.resolve(
   __dirname,
@@ -108,7 +113,33 @@ const {
   'agent-runtime',
   'performance-ledger.ts'
 ));
+
 const {
+  buildAgentUserResultProjection,
+  deriveAgentUserResultFacts
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'agent-user-result-projection.ts'
+));
+const {
+  buildRequestCancelledResponseInterruption,
+  buildUserStoppedResponseInterruption,
+  formatAgentResponseInterruption,
+  resolveAgentResponseInterruption
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'agent-response-interruption.ts'
+));
+const {
+  buildAgentCapabilityBaseline,
   buildRecommendedSkillFastPathBaseline,
   createAgentCapabilitySession,
   REQUEST_AGENT_CAPABILITIES_TOOL_NAME
@@ -149,7 +180,8 @@ const {
   decideTerminalClosureContinuation,
   evaluateNaturalFinalTerminalClosureCheckpoint,
   projectRecoverableTerminalClosureGap,
-  projectTerminalClosureRuntimeBoundary
+  projectTerminalClosureRuntimeBoundary,
+  resolveAgentExecutionStatus
 } = require(path.resolve(
   __dirname,
   '..',
@@ -194,6 +226,7 @@ const {
   'tool-result-provenance.ts'
 ));
 const {
+  finalQualityJudgeVisualPresentationMatches,
   runFinalQualityModelProtocol
 } = require(path.resolve(
   __dirname,
@@ -213,6 +246,17 @@ const {
   'src',
   'shared',
   'model-visual-presentation-receipt.ts'
+));
+const {
+  OpenAIAdapter
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'main',
+  'services',
+  'provider-adapters',
+  'openai-adapter.ts'
 ));
 const {
   clearDynamicModels,
@@ -441,6 +485,7 @@ const {
   'agent-stage-incomplete-recovery.ts'
 ));
 const {
+  buildDesignReviewSetFromBundle,
   buildDesignReviewSetFromSingleSurface
 } = require(path.resolve(
   __dirname,
@@ -448,6 +493,17 @@ const {
   'src',
   'shared',
   'visual-observation-bundle.ts'
+));
+const {
+  readTrustedVisualReviewArtifact
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'trusted-visual-review-artifact.ts'
 ));
 const {
   extractFreshDesignSurfaceSnapshotFromToolResults
@@ -768,11 +824,77 @@ assert(!toolExecutorSource.includes('声明设计意图失败：taskTypeId'));
 assert(agentSource.includes("code: 'tool_deferred_after_runtime_declaration'"));
 assert(agentSource.includes('createRuntimeDeclarationSiblingTurn(response.toolCalls'));
 assert(agentSource.includes('runtimeDeclarationTurn.recordResult(call, output)'));
-assert(agentSource.includes('hasPhotoshopChange: this.hasObservedTaskMutation(),'));
-assert(agentUserResultProjectionSource.includes('const hasViewableVersion = input.hasPhotoshopChange || input.hasSavedOrExportedFile;'));
+assert(agentSource.includes('buildAgentUserResultProjectionFromToolLog({'));
+assert(agentUserResultProjectionSource.includes('hasWorkspacePreparation: !hasViewableDesignChange'));
+assert(agentUserResultProjectionSource.includes('const hasViewableVersion = input.hasViewableDesignChange || input.hasSavedOrExportedFile;'));
 assert(!agentSource.includes('const hasRecordedMutation = Number(summary.successfulMutationCalls || 0) > 0;'));
 assert(agentUserResultProjectionSource.includes('当前状态：还没有可看的设计版本'));
 assert(agentUserResultProjectionSource.includes('只消费已由 Runtime 验真的事实'));
+const buildObservedMutationResult = (beforeHistory, afterHistory) => ({
+  success: true,
+  photoshopMutationCommit: {
+    version: 'photoshop-mutation-commit/v1',
+    basis: 'same_execute_as_modal',
+    bindingStrength: 'document_revision',
+    before: { documentId: 901, historyStateId: beforeHistory, activeLayerId: null },
+    after: { documentId: 901, historyStateId: afterHistory, activeLayerId: null },
+    toolActionCompleted: true,
+    mutationObserved: true,
+    documentChanged: false
+  }
+});
+const blankDocumentFacts = deriveAgentUserResultFacts([{
+  name: 'createDocument',
+  arguments: { width: 1440, height: 1440 },
+  result: buildObservedMutationResult(1, 2)
+}]);
+assert.strictEqual(blankDocumentFacts.hasWorkspacePreparation, true);
+assert.strictEqual(blankDocumentFacts.hasViewableDesignChange, false,
+  'createDocument-only must not claim a viewable design version');
+const placedDesignFacts = deriveAgentUserResultFacts([
+  {
+    name: 'createDocument',
+    arguments: { width: 1440, height: 1440 },
+    result: buildObservedMutationResult(1, 2)
+  },
+  {
+    name: 'placeImage',
+    arguments: { path: 'fixture-relative-source.jpg' },
+    result: buildObservedMutationResult(2, 3)
+  }
+]);
+assert.strictEqual(placedDesignFacts.hasViewableDesignChange, true);
+assert.strictEqual(placedDesignFacts.hasWorkspacePreparation, false);
+const blankCanvasProjection = buildAgentUserResultProjection({
+  summary: {
+    status: 'failed',
+    stopReason: 'performance_budget',
+    noDocumentChangeRisks: 0
+  },
+  hasViewableDesignChange: false,
+  hasWorkspacePreparation: true,
+  hasSavedOrExportedFile: false,
+  hasGeneratedAsset: false,
+  hasViewedLatestVersion: false,
+  hasObservedContext: true
+});
+assert.strictEqual(blankCanvasProjection.title, '这次还没做出版本');
+assert(blankCanvasProjection.summary.includes('已经建立目标画布，但还没有形成设计内容'));
+assert(!blankCanvasProjection.summary.includes('做出实际画面或结构调整'));
+assert.strictEqual(
+  formatAgentResponseInterruption(buildUserStoppedResponseInterruption()),
+  '你已停止此响应'
+);
+assert.strictEqual(
+  formatAgentResponseInterruption(buildRequestCancelledResponseInterruption()),
+  '本次响应已中断'
+);
+assert.strictEqual(resolveAgentResponseInterruption({
+  assistantReplyOrigin: {
+    origin: 'ui_status',
+    source: 'agent-run:cancelled-result'
+  }
+}), undefined, 'ambiguous cancelled results must not be inferred as a user stop');
 assert(!agentSource.includes('这稿先做到这里，你看看现在的效果。本轮执行预算已用完'));
 assert(agentActionEventProjectionSource.includes("failureDisposition: 'control_turn_deferred' as const"));
 assert(agentSource.includes("entry.failureDisposition !== 'control_turn_deferred'"));
@@ -4327,6 +4449,208 @@ function requireAgentTool(toolName) {
   return tool;
 }
 
+function buildReviewedCanvasResult(historyStateRef) {
+  const result = {
+    success: true,
+    documentId: historyStateRef.documentId,
+    historyStateId: historyStateRef.historyStateId,
+    historyStateRef,
+    snapshot: {
+      base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcR0AAAAASUVORK5CYII=' + 'A'.repeat(600),
+      format: 'png',
+      width: 1440,
+      height: 1440
+    }
+  };
+  const observationKey = `agentic-final-${historyStateRef.documentId}-${historyStateRef.historyStateId}`;
+  writeAgentVisualObservation(result, {
+    status: 'observed_by_primary',
+    reviewed: true,
+    observer: 'primary_model',
+    strategy: 'primary-self',
+    toolName: 'getCanvasSnapshot',
+    sourceId: 'active-canvas',
+    observationKey,
+    reviewDecision: {
+      version: 'visual-observation-review-decision/v1',
+      observationKey,
+      status: 'passed',
+      reviewer: 'primary_model',
+      summary: '当前完整画面已由主模型复核。'
+    }
+  });
+  return result;
+}
+
+function assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts() {
+  const historyStateRef = { documentId: 541, historyStateId: 28 };
+  const config = buildAgentTestConfig({ maxIterations: 2 });
+  config.agenticArtifactContract = {
+    version: 'agentic-artifact-completion-contract/v0',
+    skillId: 'design.single_canvas_visual',
+    taskType: 'design.single_canvas_visual.v1',
+    workMode: 'create_new',
+    productionObligation: 'photoshop_mutation_with_readback',
+    deliveryOutputs: [
+      'editable_single_canvas_document',
+      'design_preview',
+      'delivery_record'
+    ],
+    exitCriteria: ['保存同一最终版本的可编辑文档与预览图。']
+  };
+  const agent = new Agent(
+    config,
+    async () => ({ content: '', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  agent.toolCallLog = [{
+    callId: 'agentic-compose',
+    name: 'composeDesign',
+    arguments: {},
+    result: {
+      success: true,
+      activeDocumentId: historyStateRef.documentId,
+      documentId: historyStateRef.documentId,
+      historyStateRef,
+      photoshopMutationCommit: {
+        version: 'photoshop-mutation-commit/v1',
+        basis: 'same_execute_as_modal',
+        bindingStrength: 'document_revision',
+        before: { documentId: historyStateRef.documentId, historyStateId: 27, activeLayerId: null },
+        after: { documentId: historyStateRef.documentId, historyStateId: 28, activeLayerId: null },
+        toolActionCompleted: true,
+        mutationObserved: true,
+        documentChanged: false
+      }
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'agentic-final-review',
+    name: 'getCanvasSnapshot',
+    arguments: {},
+    result: buildReviewedCanvasResult(historyStateRef),
+    origin: 'model_tool_call'
+  }, {
+    callId: 'agentic-save-editable',
+    name: 'saveDocument',
+    arguments: { format: 'psd', projectSubdir: '主图' },
+    result: {
+      success: true,
+      documentId: historyStateRef.documentId,
+      sourceHistoryStateRef: historyStateRef,
+      savedPath: 'C:/fixture/主图/商品主图.psd',
+      editableDocumentArtifact: {
+        version: 'runtime-editable-document-artifact/v1',
+        basis: 'uxp_post_save_file_metadata',
+        path: 'C:/fixture/主图/商品主图.psd',
+        format: 'psd',
+        byteLength: 4096,
+        modifiedAt: 1,
+        documentId: historyStateRef.documentId,
+        canvas: { width: 1440, height: 1440 }
+      }
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'agentic-export-preview',
+    name: 'quickExport',
+    arguments: { format: 'jpg', outputPath: 'C:/fixture/主图/商品主图.jpg' },
+    result: {
+      success: true,
+      savedPath: 'C:/fixture/主图/商品主图.jpg',
+      outputPath: 'C:/fixture/主图/商品主图.jpg',
+      exportedFiles: ['C:/fixture/主图/商品主图.jpg'],
+      format: 'jpg',
+      redirectedTo: 'saveDocument',
+      redirectedFrom: 'quickExport'
+    },
+    origin: 'model_tool_call'
+  }];
+  const summary = {
+    status: 'completed',
+    blockers: [],
+    taskCompletion: {
+      required: [{ id: 'production-delivery', status: 'passed' }]
+    },
+    designVerdict: { status: 'passed', blockers: [], warnings: [] }
+  };
+  assert.strictEqual(
+    agent.projectDeliveryStageEvidence(summary).deliveryEvidencePassed,
+    false,
+    'a written raster path without its Photoshop source revision must not close E2'
+  );
+  const rasterDeliveryEntry = agent.toolCallLog.find((entry) => (
+    entry.callId === 'agentic-export-preview'
+  ));
+  rasterDeliveryEntry.result.sourceHistoryStateRef = historyStateRef;
+  const evidence = agent.projectDeliveryStageEvidence(summary);
+  assert.strictEqual(evidence.deliveryEvidencePassed, true);
+  assert.deepStrictEqual(evidence.finalDeliveryResultRefs, [
+    'agentic-save-editable',
+    'agentic-export-preview'
+  ], 'agentic final delivery must bind every same-revision editable and raster artifact');
+
+  const unboundConfig = buildAgentTestConfig({ maxIterations: 2 });
+  const unboundAgent = new Agent(
+    unboundConfig,
+    async () => ({ content: '', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  unboundAgent.toolCallLog = agent.toolCallLog.map((entry) => ({
+    ...entry,
+    arguments: { ...(entry.arguments || {}) },
+    // 视觉复核证据由 Runtime 以对象所有权签发；复制普通字段会故意失去该所有权。
+    // 这里复用同一只读 Tool result，验证的只是“无显式 artifact contract”投影。
+    result: entry.result
+  }));
+  const unboundSummary = {
+    ...summary,
+    taskCompletion: {
+      kind: 'creative_design',
+      status: 'completed',
+      required: [{
+        id: 'creative-delivery',
+        status: 'passed',
+        actual: { deliveryBasis: 'created_document_final_revision_pair' }
+      }]
+    }
+  };
+  const unboundEvidence = unboundAgent.projectDeliveryStageEvidence(unboundSummary);
+  assert.strictEqual(unboundEvidence.deliveryEvidencePassed, true);
+  assert.deepStrictEqual(unboundEvidence.finalDeliveryResultRefs, [
+    'agentic-save-editable',
+    'agentic-export-preview'
+  ], 'an unbound created-document pair requirement must retain both same-revision final artifact refs');
+
+  agent.toolCallLog.push({
+    callId: 'agentic-later-mutation',
+    name: 'setTextContent',
+    arguments: { layerId: 9, content: 'changed after delivery' },
+    result: {
+      success: true,
+      activeDocumentId: historyStateRef.documentId,
+      documentId: historyStateRef.documentId,
+      historyStateRef: { documentId: historyStateRef.documentId, historyStateId: 29 },
+      photoshopMutationCommit: {
+        version: 'photoshop-mutation-commit/v1',
+        basis: 'same_execute_as_modal',
+        bindingStrength: 'document_revision',
+        before: { documentId: historyStateRef.documentId, historyStateId: 28, activeLayerId: null },
+        after: { documentId: historyStateRef.documentId, historyStateId: 29, activeLayerId: null },
+        toolActionCompleted: true,
+        mutationObserved: true,
+        documentChanged: false
+      }
+    },
+    origin: 'model_tool_call'
+  });
+  assert.strictEqual(
+    agent.projectDeliveryStageEvidence(summary).deliveryEvidencePassed,
+    false,
+    'a later content mutation must invalidate the earlier agentic final artifact set'
+  );
+}
+
 function createPlanNeutralIdentity(label) {
   return createRuntimeSessionIdentity({
     now: new Date().toISOString(),
@@ -7059,6 +7383,49 @@ async function assertBareCompletionClaimsCannotBypassTextExits() {
 }
 
 /**
+ * 完整质量闭环的 Host 只读预算必须覆盖：两次 Judge 前事实采集，以及每个允许的
+ * 质量模型事件之后各一次 Photoshop revision 读回。否则 diagnosis repair 一旦发生，
+ * 最后一次历史校验会被确定性拒绝，可靠结果也会被误判为 stale。
+ */
+function assertHarnessQualityVerificationBudgetCoversBoundedProtocol() {
+  const requiredCalls = 2
+    + MAX_FINAL_QUALITY_JUDGE_CALLS
+    + MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS;
+  assert.strictEqual(
+    MAX_HARNESS_QUALITY_VERIFICATION_CALLS,
+    requiredCalls,
+    'Host verification budget must cover the full bounded quality protocol'
+  );
+
+  const ledger = createPerformanceLedgerState();
+  const protocolTools = [
+    'getAcceptanceSnapshot',
+    'getCanvasSnapshot',
+    'getDocumentInfo',
+    'getDocumentInfo'
+  ];
+  assert.strictEqual(protocolTools.length, requiredCalls, 'fixture must model the complete protocol');
+  for (const toolName of protocolTools) {
+    assert.strictEqual(
+      consumeHarnessQualityVerificationCallBudget({ ledger, toolName }),
+      undefined,
+      `${toolName} must fit inside the complete quality protocol budget`
+    );
+  }
+  const exhausted = consumeHarnessQualityVerificationCallBudget({
+    ledger,
+    toolName: 'getAcceptanceSnapshot'
+  });
+  assert(exhausted, 'a fifth quality verification call must remain bounded');
+  assert.strictEqual(exhausted.code, 'agent_quality_verification_budget_exhausted');
+  assert.strictEqual(
+    ledger.harnessQualityVerificationCallCount,
+    requiredCalls,
+    'a rejected call must not advance the quality verification ledger'
+  );
+}
+
+/**
  * 治理切片 2（执行供给预留）纯账本断言：预留区边界、写入前观察 allowance、
  * 超限观察转执行指令、交付动作尝试后开闸、硬预算耗尽兜底。
  */
@@ -7077,6 +7444,14 @@ function assertExecutionSupplyReservePureAccounting() {
     'reserve must be min(fixed cap, 20% of tool budget)'
   );
   assert.strictEqual(resolveExecutionSupplyReserve(undefined), 0);
+  const closureBudget = { ...budget, softTimeBudgetMs: 1_800_000 };
+  assert.strictEqual(shouldIssuePerformanceBudgetDisciplineDirective({
+    budget: closureBudget,
+    ledger: createPerformanceLedgerState(),
+    activeElapsedMs: 1_800_000 - (180_000 * 3),
+    imminentModelCalls: 0,
+    requestTimeoutMs: 180_000
+  }), true, 'closure discipline must reserve three slow model windows, not wait for the final turn');
   assert.strictEqual(
     isInMutationExecutionReserveZone({
       ledger: createPerformanceLedgerState(),
@@ -7098,7 +7473,8 @@ function assertExecutionSupplyReservePureAccounting() {
     authorizedMutationExpectation: true,
     attemptedDeliveryAction: false,
     reservesFinalQualityJudge: false,
-    hasObservedTaskMutation: false
+    hasObservedTaskMutation: false,
+    hasViewableDesignChange: false
   };
   const firstRead = consumePerformanceToolCallBudget({
     ledger,
@@ -7224,6 +7600,39 @@ function assertExecutionSupplyReservePureAccounting() {
   });
   assert(exhaustion, 'hard tool budget must still stop all calls');
   assert.strictEqual(exhaustion.code, 'agent_tool_call_budget_exhausted');
+
+  const expiredSoftTimeLedger = createPerformanceLedgerState();
+  expiredSoftTimeLedger.runStartedAtMs = Date.now() - budget.softTimeBudgetMs - 10;
+  assert.strictEqual(
+    readPerformanceBudgetExhaustion({
+      ledger: expiredSoftTimeLedger,
+      budget,
+      elapsedMs: budget.softTimeBudgetMs + 10
+    })?.code,
+    'agent_soft_time_budget_exhausted',
+    'soft time must still stop the next model turn'
+  );
+  assert.strictEqual(consumePerformanceToolCallBudget({
+    ledger: expiredSoftTimeLedger,
+    budget,
+    reserveContext,
+    toolName: 'saveDocument',
+    toolArguments: { format: 'psd', projectSubdir: '主图' }
+  }), undefined, 'an admitted model turn must be allowed to settle its returned Tool call');
+  assert.strictEqual(resolveAgentExecutionStatus({
+    stopReason: 'performance_budget',
+    toolCallCount: 4,
+    successfulToolCalls: 4,
+    failedToolCalls: 0,
+    acceptanceFailed: 0,
+    acceptanceNeedsReview: 0,
+    noDocumentChangeRisks: 0,
+    taskCompletionStatus: 'completed',
+    designQualityHardBlocked: false,
+    taskProgressMissing: false,
+    terminalSkillOutcomeFailed: false,
+    terminalSkillOutcomeUnverified: false
+  }), 'completed', 'soft budget must not downgrade already verified completion');
 }
 
 /**
@@ -7267,6 +7676,547 @@ async function assertZeroProgressWriteAuthorizedStopIsPushedBackAndEndsHonestly(
     observedContractRemediationCount >= 1,
     'the model must receive the completion-gap directive before the honest stop'
   );
+}
+
+/**
+ * D112 真实循环断言：未绑定 Task Profile 的开放设计在本轮新建 Photoshop 文档后，
+ * 只有预览图时不得接受模型收尾；Harness 必须把“同一最终 revision 的源稿 + 预览”
+ * 缺口推回同一个 Agent。模型补齐源稿后才能进入自然语言最终回复。
+ */
+async function assertUnboundCreatedDesignRequiresPairedDeliveryInLiveLoop() {
+  const createdHistory = { documentId: 541, historyStateId: 201 };
+  const finalHistory = { documentId: 541, historyStateId: 202 };
+  const tools = [
+    requireAgentTool('createDocument'),
+    requireAgentTool('createRectangle'),
+    requireAgentTool('getLayerHierarchy'),
+    requireAgentTool('getCanvasSnapshot'),
+    requireAgentTool('saveDocument')
+  ];
+  let modelCallCount = 0;
+  let sawPairedDeliveryRemediation = false;
+  let rasterDelivered = false;
+  let editableDelivered = false;
+  const executedTools = [];
+  const agent = new Agent(
+    {
+      ...buildAgentTestConfig({
+        tools,
+        maxIterations: 12,
+        openingCanvasObservationMode: 'none'
+      }),
+      modelId: 'deepseek-v4-flash-vision-exp'
+    },
+    async (_modelId, messages) => {
+      modelCallCount += 1;
+      sawPairedDeliveryRemediation = sawPairedDeliveryRemediation || messages.some((message) => (
+        JSON.stringify(message).includes('task-completion-remediation')
+        && JSON.stringify(message).includes('保存新建设计的可编辑源稿与预览图片')
+      ));
+      if (modelCallCount === 1) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-create-document',
+            name: 'createDocument',
+            arguments: { name: 'D112 开放设计', width: 1440, height: 1440 }
+          }]
+        };
+      }
+      if (modelCallCount === 2) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-create-visual',
+            name: 'createRectangle',
+            arguments: {
+              x: 0,
+              y: 0,
+              width: 1440,
+              height: 1440,
+              name: '主视觉',
+              fillColorHex: '#D7B5A6'
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 3) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-readback',
+            name: 'getLayerHierarchy',
+            arguments: { includeHidden: true }
+          }]
+        };
+      }
+      if (modelCallCount === 4) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-review',
+            name: 'getCanvasSnapshot',
+            arguments: { expectedDocumentId: finalHistory.documentId, maxSize: 800 }
+          }]
+        };
+      }
+      if (modelCallCount === 5) {
+        const messageText = JSON.stringify(messages);
+        const observationKeys = Array.from(
+          messageText.matchAll(/observationKey=([^\\\s\"<]+)/g),
+          (match) => match[1]
+        );
+        const observationKey = observationKeys[observationKeys.length - 1];
+        assert(observationKey, 'review turn did not receive the Runtime observationKey');
+        return {
+          content: '<visual_observation_review>'
+            + JSON.stringify({
+              version: 'visual-observation-review-batch/v1',
+              decisions: [{
+                version: 'visual-observation-review-decision/v1',
+                observationKey,
+                status: 'passed',
+                reviewer: 'primary_model',
+                summary: '粉咖主视觉铺满画布，焦点集中且四周留白关系稳定，符合本轮简化海报目标。',
+                issues: []
+              }]
+            })
+            + '</visual_observation_review>',
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-save-preview',
+            name: 'saveDocument',
+            arguments: { format: 'jpg', path: 'C:/fixture/主图/D112-开放设计.jpg' }
+          }]
+        };
+      }
+      if (!sawPairedDeliveryRemediation) {
+        return {
+          content: '画面和预览图都已经完成，可以直接交付。',
+          stopReason: 'end_turn'
+        };
+      }
+      if (!editableDelivered) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-save-editable',
+            name: 'saveDocument',
+            arguments: { format: 'psd', path: 'C:/fixture/主图/D112-开放设计.psd' }
+          }]
+        };
+      }
+      return {
+        content: '已完成新建海报设计，并复核最终画面。可编辑源稿和预览图均来自同一最终版本，现已交付。',
+        stopReason: 'end_turn'
+      };
+    },
+    async (toolName, arguments_) => {
+      executedTools.push(toolName);
+      if (toolName === 'createDocument') {
+        return {
+          success: true,
+          activeDocumentId: createdHistory.documentId,
+          documentId: createdHistory.documentId,
+          historyStateRef: createdHistory,
+          photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'unguarded',
+            changeKind: 'document_creation',
+            beforeOpenDocumentIds: [41],
+            createdDocumentId: createdHistory.documentId,
+            after: { ...createdHistory, activeLayerId: 1 },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: true
+          }
+        };
+      }
+      if (toolName === 'createRectangle') {
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          layerId: 2,
+          photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before: { ...createdHistory, activeLayerId: 1 },
+            after: { ...finalHistory, activeLayerId: 2 },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: false
+          }
+        };
+      }
+      if (toolName === 'getLayerHierarchy') {
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          layers: [{ id: 2, name: '主视觉', kind: 'shape' }]
+        };
+      }
+      if (toolName === 'getCanvasSnapshot') {
+        return buildReviewedCanvasResult(finalHistory);
+      }
+      assert.strictEqual(toolName, 'saveDocument');
+      if (arguments_.format === 'jpg') {
+        rasterDelivered = true;
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          sourceHistoryStateRef: finalHistory,
+          format: 'jpg',
+          savedPath: arguments_.path,
+          outputPath: arguments_.path,
+          exportedFiles: [arguments_.path]
+        };
+      }
+      assert.strictEqual(arguments_.format, 'psd');
+      assert.strictEqual(
+        sawPairedDeliveryRemediation,
+        true,
+        'editable source was requested before the generic paired-delivery gap reached the model'
+      );
+      editableDelivered = true;
+      return {
+        success: true,
+        activeDocumentId: finalHistory.documentId,
+        documentId: finalHistory.documentId,
+        sourceHistoryStateRef: finalHistory,
+        format: 'psd',
+        savedPath: arguments_.path,
+        editableDocumentArtifact: {
+          version: 'runtime-editable-document-artifact/v1',
+          basis: 'uxp_post_save_file_metadata',
+          path: arguments_.path,
+          format: 'psd',
+          byteLength: 4096,
+          modifiedAt: 1,
+          documentId: finalHistory.documentId,
+          canvas: { width: 1440, height: 1440 }
+        }
+      };
+    }
+  );
+  const result = await agent.run('请设计一张海报，并新建画布，完成后交付成品。');
+  assert.strictEqual(rasterDelivered, true, 'live-loop fixture never produced its preview');
+  assert.strictEqual(
+    sawPairedDeliveryRemediation,
+    true,
+    'JPG-only created design escaped the live completion-remediation loop'
+  );
+  assert.strictEqual(editableDelivered, true, 'live loop did not repair the missing editable source');
+  assert.deepStrictEqual(
+    executedTools.filter((toolName) => toolName === 'saveDocument'),
+    ['saveDocument', 'saveDocument'],
+    'paired-delivery repair must add exactly one source save after the preview save'
+  );
+  assert.strictEqual(result.success, true, 'same-revision paired delivery did not close the live Agent run');
+  assert.strictEqual(result.stopReason, 'final_response');
+  const deliveryRequirement = result.executionSummary?.taskCompletion?.required.find((requirement) => (
+    requirement.id === 'creative-delivery'
+  ));
+  assert.strictEqual(deliveryRequirement?.status, 'passed');
+  assert.strictEqual(
+    deliveryRequirement?.actual?.deliveryBasis,
+    'created_document_final_revision_pair'
+  );
+}
+
+/**
+ * D113 真实循环断言：同一 TaskRun 已有未结算新建候选时，第二次 composeDesign(new)
+ * 必须在执行前回到同一个 Agent；模型改用 active 后继续完成同 revision 交付。
+ */
+async function assertUnsettledCreatedDocumentReplansToActiveRevisionInLiveLoop() {
+  const createdHistory = { documentId: 641, historyStateId: 301 };
+  const finalHistory = { documentId: 641, historyStateId: 302 };
+  const tools = [
+    requireAgentTool('composeDesign'),
+    requireAgentTool('getLayerHierarchy'),
+    requireAgentTool('getCanvasSnapshot'),
+    requireAgentTool('saveDocument')
+  ];
+  let modelCallCount = 0;
+  let sawLifecycleBlock = false;
+  let rasterDelivered = false;
+  let editableDelivered = false;
+  let activeAttemptBlockSignals = [];
+  const executedComposeModes = [];
+  const agent = new Agent(
+    {
+      ...buildAgentTestConfig({
+        tools,
+        maxIterations: 16,
+        openingCanvasObservationMode: 'none'
+      }),
+      modelId: 'deepseek-v4-flash-vision-exp'
+    },
+    async (_modelId, messages) => {
+      modelCallCount += 1;
+      const messageText = JSON.stringify(messages);
+      sawLifecycleBlock = sawLifecycleBlock
+        || messageText.includes('task_run_created_document_unsettled');
+      if (modelCallCount === 1) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-compose-first',
+            name: 'composeDesign',
+            arguments: {
+              document: { mode: 'new', name: 'D113 候选' },
+              canvas: { width: 1440, height: 1440 }
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 2) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-compose-second-new',
+            name: 'composeDesign',
+            arguments: {
+              document: { mode: 'new', name: 'D113 候选-v2' },
+              canvas: { width: 1440, height: 1440 }
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 3) {
+        assert.strictEqual(
+          sawLifecycleBlock,
+          true,
+          'same Agent did not receive the unsettled-created-document preflight fact'
+        );
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-compose-active',
+            name: 'composeDesign',
+            arguments: {
+              document: { mode: 'active', name: 'D113 候选修订' },
+              canvas: { width: 1440, height: 1440 }
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 4) {
+        activeAttemptBlockSignals = [
+          '尚未读取目标 Photoshop 文档或画面',
+          '已有读取结果未包含可校验的 documentId',
+          'photoshop_document_required',
+          'task_run_created_document_unsettled',
+          'agent_tool_execution_preflight_blocked',
+          'tool_decision_replan'
+        ].filter((signal) => messageText.includes(signal));
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-readback',
+            name: 'getLayerHierarchy',
+            arguments: { includeHidden: true }
+          }]
+        };
+      }
+      if (modelCallCount === 5) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-review',
+            name: 'getCanvasSnapshot',
+            arguments: { expectedDocumentId: finalHistory.documentId, maxSize: 800 }
+          }]
+        };
+      }
+      if (modelCallCount === 6) {
+        const observationKeys = Array.from(
+          messageText.matchAll(/observationKey=([^\s"<]+)/g),
+          (match) => match[1]
+        );
+        const observationKey = observationKeys[observationKeys.length - 1];
+        assert(observationKey, 'D113 review turn did not receive the Runtime observationKey');
+        return {
+          content: '<visual_observation_review>'
+            + JSON.stringify({
+              version: 'visual-observation-review-batch/v1',
+              decisions: [{
+                version: 'visual-observation-review-decision/v1',
+                observationKey,
+                status: 'passed',
+                reviewer: 'primary_model',
+                summary: '当前候选已在原文档完成对比度修订，主体与文字层级清楚。',
+                issues: []
+              }]
+            })
+            + '</visual_observation_review>',
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-save-preview',
+            name: 'saveDocument',
+            arguments: { format: 'jpg', path: 'C:/fixture/主图/D113-候选.jpg' }
+          }]
+        };
+      }
+      if (!editableDelivered && rasterDelivered) {
+        if (!messageText.includes('task-completion-remediation')) {
+          return {
+            content: '当前文档已完成修订并导出预览。',
+            stopReason: 'end_turn'
+          };
+        }
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-save-editable',
+            name: 'saveDocument',
+            arguments: { format: 'psd', path: 'C:/fixture/主图/D113-候选.psd' }
+          }]
+        };
+      }
+      return {
+        content: '已在原文档完成修订，并交付同一最终版本的可编辑源稿和预览图。',
+        stopReason: 'end_turn'
+      };
+    },
+    async (toolName, arguments_) => {
+      if (toolName === 'getAcceptanceSnapshot') {
+        return {
+          success: true,
+          hasDocument: true,
+          document: { id: finalHistory.documentId, name: 'D113 候选', width: 1440, height: 1440 },
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          summary: { totalLayers: 1, truncated: false },
+          layers: [{ id: 2, name: '主视觉', type: 'shape', visible: true }]
+        };
+      }
+      if (toolName === 'composeDesign') {
+        executedComposeModes.push(arguments_.document?.mode);
+        if (arguments_.document?.mode === 'new') {
+          return {
+            success: true,
+            activeDocumentId: createdHistory.documentId,
+            documentId: createdHistory.documentId,
+            data: { createdDocument: true },
+            historyStateRef: createdHistory,
+            photoshopMutationCommit: {
+              version: 'photoshop-mutation-commit/v1',
+              basis: 'same_execute_as_modal',
+              bindingStrength: 'unguarded',
+              changeKind: 'document_creation',
+              beforeOpenDocumentIds: [41],
+              createdDocumentId: createdHistory.documentId,
+              after: { ...createdHistory, activeLayerId: 1 },
+              toolActionCompleted: true,
+              mutationObserved: true,
+              documentChanged: true
+            }
+          };
+        }
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before: { ...createdHistory, activeLayerId: 1 },
+            after: { ...finalHistory, activeLayerId: 2 },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: false
+          }
+        };
+      }
+      if (toolName === 'getLayerHierarchy') {
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          layers: [{ id: 2, name: '主视觉', kind: 'shape' }]
+        };
+      }
+      if (toolName === 'getCanvasSnapshot') {
+        return buildReviewedCanvasResult(finalHistory);
+      }
+      assert.strictEqual(toolName, 'saveDocument');
+      if (arguments_.format === 'jpg') {
+        rasterDelivered = true;
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          sourceHistoryStateRef: finalHistory,
+          format: 'jpg',
+          savedPath: arguments_.path,
+          outputPath: arguments_.path,
+          exportedFiles: [arguments_.path]
+        };
+      }
+      assert.strictEqual(arguments_.format, 'psd');
+      editableDelivered = true;
+      return {
+        success: true,
+        activeDocumentId: finalHistory.documentId,
+        documentId: finalHistory.documentId,
+        sourceHistoryStateRef: finalHistory,
+        format: 'psd',
+        savedPath: arguments_.path,
+        editableDocumentArtifact: {
+          version: 'runtime-editable-document-artifact/v1',
+          basis: 'uxp_post_save_file_metadata',
+          path: arguments_.path,
+          format: 'psd',
+          byteLength: 4096,
+          modifiedAt: 1,
+          documentId: finalHistory.documentId,
+          canvas: { width: 1440, height: 1440 }
+        }
+      };
+    }
+  );
+  const result = await agent.run('请设计一张新海报；发现问题时在当前候选上修订，完成后交付。');
+  assert.deepStrictEqual(
+    executedComposeModes,
+    ['new', 'active'],
+    `the blocked second new document reached the Tool executor or active revision was lost: ${JSON.stringify({
+      activeAttemptBlockSignals,
+      toolCallLog: (result.toolCallLog || []).map((entry) => ({
+        name: entry.name,
+        mode: entry.arguments?.document?.mode,
+        success: entry.result?.success,
+        code: entry.result?.code,
+        issue: entry.result?.preflight?.issue,
+        blockers: entry.result?.preflight?.blockers
+      }))
+    })}`
+  );
+  assert.strictEqual(sawLifecycleBlock, true);
+  assert.strictEqual(rasterDelivered, true);
+  assert.strictEqual(editableDelivered, true);
+  assert.strictEqual(
+    result.success,
+    false,
+    'the minimal D113 fixture intentionally leaves the independent visual-quality verdict unmodeled'
+  );
+  assert.strictEqual(result.stopReason, 'final_response');
+  assert.strictEqual(result.executionSummary?.taskCompletion?.status, 'needs_review');
+  const lifecycleRequirement = result.executionSummary?.taskCompletion?.required.find((requirement) => (
+    requirement.id === 'creative-document-lifecycle'
+  ));
+  assert.strictEqual(lifecycleRequirement?.status, 'passed');
+  assert.strictEqual(lifecycleRequirement?.actual?.createdDocumentCount, 1);
+  assert.strictEqual(lifecycleRequirement?.actual?.unsettledDocumentCount, 0);
 }
 
 /**
@@ -7938,7 +8888,7 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
       budget,
       elapsedMs: 1000,
       scope: 'model',
-      hasObservedTaskMutation: false
+      hasViewableDesignChange: false
     }),
     undefined,
     'task-class model budget must no longer be pre-deducted for the final quality judge'
@@ -8136,7 +9086,7 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
   expiredRepairAgent.performanceLedger.finalQualityJudgeCallCount = 1;
   expiredRepairAgent.performanceLedger.finalQualityJudgeVisionCandidateCount = 1;
   expiredRepairAgent.performanceLedger.finalQualityJudgeVisionCandidateKeys = ['expired-repair-fixture'];
-  assert.throws(
+  assert.doesNotThrow(
     () => expiredRepairAgent.beginPerformanceModelCall(
       true,
       'final_quality_diagnosis_repair',
@@ -8144,9 +9094,9 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
       ['expired-repair-fixture'],
       true
     ),
-    (error) => error && error.code === 'agent_soft_time_budget_exhausted',
-    'diagnosis repair must not bypass the physical soft-time deadline'
+    'the fixed final-quality event must not be erased by the ordinary task soft-time boundary'
   );
+  assert.strictEqual(expiredRepairAgent.performanceLedger.finalQualityDiagnosisRepairCallCount, 1);
 }
 
 function buildDiagnosisRepairFixture() {
@@ -8212,9 +9162,13 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
   assert.strictEqual(successful.diagnosisRepairStatus, 'repaired');
   assert.strictEqual(calls.map((call) => call.kind).join(','), 'judge,repair');
   assert.strictEqual(historyReads, 2, 'the same Photoshop revision must be checked after Judge and repair');
+  assert.strictEqual(calls[0].request.thinkingEnabled, false,
+    'the fixed-JSON Judge must not spend its output budget on Provider-native thinking');
+  assert.strictEqual(calls[1].request.thinkingEnabled, false,
+    'diagnosis-only repair must use the same no-thinking transport policy');
   assert.deepStrictEqual(
     Object.keys(calls[1].request).sort(),
-    ['maxTokens', 'messages', 'temperature', 'timeoutMs'],
+    ['maxTokens', 'messages', 'temperature', 'thinkingEnabled', 'timeoutMs'],
     'diagnosis repair request must not expose a Tool or execution channel'
   );
   assert(calls[1].request.messages[0].content.includes('不是在重新评价画面'));
@@ -8223,6 +9177,94 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
   assert.strictEqual(successful.results[0].confidence, 0.92, 'repair must preserve confidence');
   assert.strictEqual(successful.results[0].status, 'needs_review', 'repair must preserve status');
   assert(successful.results[0].diagnosis, 'valid diagnosis-only response must be merged');
+
+  const fullJudgePending = DESIGN_ASSERTIONS
+    .filter((assertion) => assertion.method === 'vlm_judge')
+    .slice(0, 12);
+  assert.strictEqual(fullJudgePending.length, 12, 'the r32-shaped Judge fixture requires twelve VLM assertions');
+  let fullJudgeRequest;
+  const fullJudge = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending: fullJudgePending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async (request) => {
+      fullJudgeRequest = request;
+      return {
+        content: JSON.stringify(fullJudgePending.map((assertion) => ({
+          id: assertion.id,
+          applicable: true,
+          score: 0.9,
+          confidence: 0.9,
+          reason: '当前关系稳定'
+        }))),
+        stopReason: 'end_turn'
+      };
+    },
+    callDiagnosisRepair: async () => { throw new Error('complete Judge fixture must not repair'); },
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(fullJudge.status, 'completed');
+  assert.strictEqual(fullJudgeRequest.maxTokens, 4320,
+    'D-097 must remove hidden reasoning rather than inflate the r32 Judge output budget');
+  assert.strictEqual(fullJudgeRequest.thinkingEnabled, false);
+  const deepseekFormattedJudge = new OpenAIAdapter('deepseek').formatMessages(
+    fullJudgeRequest.messages,
+    [],
+    {
+      maxTokens: fullJudgeRequest.maxTokens,
+      temperature: fullJudgeRequest.temperature,
+      thinkingEnabled: fullJudgeRequest.thinkingEnabled,
+      thinkingRequestParams: {
+        thinking: { type: 'enabled' },
+        reasoning_effort: 'high'
+      }
+    }
+  );
+  assert.deepStrictEqual(deepseekFormattedJudge.thinking, { type: 'disabled' },
+    'the actual DeepSeek adapter payload must disable native thinking for the Judge');
+  assert.strictEqual(deepseekFormattedJudge.reasoning_effort, undefined,
+    'the model default high reasoning effort must not leak back into the no-thinking Judge');
+
+  let terminalReserveTimeoutMs = 0;
+  const terminalReserveJudge = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    terminalQualityReserveMs: 20_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 105_000,
+    callJudge: async (request) => {
+      terminalReserveTimeoutMs = request.timeoutMs;
+      return {
+        content: JSON.stringify([
+          {
+            id: pending[0].id,
+            applicable: true,
+            score: 0.7,
+            confidence: 0.92,
+            reason: '主体力度不足',
+            diagnosis: buildDiagnosisRepairFixture()
+          },
+          { id: pending[1].id, applicable: true, score: 0.9, confidence: 0.9, reason: '当前关系稳定' }
+        ])
+      };
+    },
+    callDiagnosisRepair: async () => { throw new Error('terminal reserve fixture must not repair'); },
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(terminalReserveJudge.status, 'completed');
+  assert.strictEqual(terminalReserveTimeoutMs, 15_000,
+    'terminal quality reserve must use one shared absolute deadline beyond task soft time');
 
   let failedHistoryReads = 0;
   const failed = await runFinalQualityModelProtocol({
@@ -8717,6 +9759,272 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   );
   assert.deepStrictEqual(closedHistoryStateRef, historyStateRef);
   assert(finalSurface, 'final_summary must not report missing structure when same-revision dimensions and hierarchy both exist');
+
+  let automaticCanvasArguments;
+  let automaticCanvasResult;
+  let automaticJudgeCalls = 0;
+  const automaticSteps = [];
+  const misleadingBundleImageData = 'B'.repeat(800);
+  const automaticConfig = buildAgentTestConfig({
+    tools: [
+      requireAgentTool('getDocumentInfo'),
+      requireAgentTool('getAcceptanceSnapshot'),
+      requireAgentTool('getCanvasSnapshot')
+    ],
+    maxIterations: 4,
+    openingCanvasObservationMode: 'none',
+    performanceBudget: config.performanceBudget,
+    callbacks: { onStep: (step) => automaticSteps.push(step) }
+  });
+  automaticConfig.modelId = codexJudgeModelId;
+  automaticConfig.agenticArtifactContract = {
+    version: 'agentic-artifact-completion-contract/v0',
+    skillId: 'design.single_canvas_visual',
+    taskType: 'design.single_canvas_visual.v1',
+    workMode: 'create_new',
+    productionObligation: 'photoshop_mutation_with_readback',
+    deliveryOutputs: [
+      'editable_single_canvas_document',
+      'design_preview',
+      'delivery_record'
+    ],
+    exitCriteria: ['保存同一最终版本的可编辑文档与预览图。']
+  };
+  const automaticJudgeResponse = JSON.stringify(judgePending.map((assertion) => ({
+    id: assertion.id,
+    applicable: true,
+    score: 0.95,
+    confidence: 0.9,
+    reason: '完整画布中的主体、层级与可读性关系稳定。'
+  })));
+  const automaticAgent = new Agent(
+    automaticConfig,
+    async (_modelId, messages, _tools, options) => {
+      automaticJudgeCalls += 1;
+      const automaticContentBlocks = messages[1]?.contentBlocks || [];
+      assert(automaticContentBlocks.every(Boolean), JSON.stringify(automaticContentBlocks));
+      const automaticReviewImages = automaticContentBlocks.filter((block) => block?.type === 'image');
+      assert.strictEqual(
+        automaticReviewImages[0]?.data,
+        'A'.repeat(800),
+        'single-surface Final Judge must receive the independently captured whole canvas first'
+      );
+      assert(
+        !automaticReviewImages.some((block) => block.data === misleadingBundleImageData),
+        'a same-history supporting Bundle must not replace the single-canvas final artifact'
+      );
+      const serializedImages = messages
+        .flatMap((message) => Array.isArray(message.contentBlocks) ? message.contentBlocks : [])
+        .filter((block) => block?.type === 'image')
+        .map((block) => projectSerializedVisualImageDataUrl(
+          `data:${block.mediaType};base64,${block.data}`
+        ));
+      assert(serializedImages.every(Boolean), JSON.stringify(automaticContentBlocks));
+      const visualPresentationReceipt = buildModelVisualPresentationReceipt({
+        provider: 'openai-codex',
+        attemptId: 'e'.repeat(64),
+        candidateKeys: options?.visualPresentationCandidateKeys,
+        serializedImages
+      });
+      assert(visualPresentationReceipt);
+      assert(finalQualityJudgeVisualPresentationMatches({
+        receipt: visualPresentationReceipt,
+        successfulTransportReceiptRef: {
+          attemptId: visualPresentationReceipt.attemptId,
+          manifestSha256: visualPresentationReceipt.manifestSha256
+        },
+        candidateKeys: options?.visualPresentationCandidateKeys,
+        contentBlocks: automaticContentBlocks
+      }), 'automatic Final Judge fixture must bind the exact outgoing full-surface image');
+      return {
+        content: automaticJudgeResponse,
+        stopReason: 'end_turn',
+        visualPresentationReceipt,
+        transportAttempts: [{
+          durationMs: 1,
+          succeeded: true,
+          visualPresentationReceiptRef: {
+            attemptId: visualPresentationReceipt.attemptId,
+            manifestSha256: visualPresentationReceipt.manifestSha256
+          }
+        }]
+      };
+    },
+    async (toolName, toolArguments) => {
+      if (toolName === 'getAcceptanceSnapshot') {
+        return {
+          success: true,
+          hasDocument: true,
+          document: { id: documentId, width: 800, height: 800 },
+          historyStateRef,
+          summary: { totalLayers: layerHierarchy.length, truncated: false },
+          layers: layerHierarchy
+        };
+      }
+      if (toolName === 'getCanvasSnapshot') {
+        automaticCanvasArguments = toolArguments;
+        automaticCanvasResult = {
+          success: true,
+          activeDocumentId: documentId,
+          documentId,
+          historyStateId,
+          historyStateRef,
+          snapshot: {
+            base64: 'A'.repeat(800),
+            format: 'png',
+            width: 800,
+            height: 800
+          }
+        };
+        markExecutedToolResultProvenance('getCanvasSnapshot', automaticCanvasResult);
+        return automaticCanvasResult;
+      }
+      return {
+        success: true,
+        activeDocumentId: documentId,
+        documentId,
+        document: { id: documentId, width: 800, height: 800 },
+        historyStateRef
+      };
+    }
+  );
+  automaticAgent.currentTask = '帮我做一张商品主图';
+  automaticAgent.toolCallLog = [{
+    callId: 'automatic-compose',
+    name: 'composeDesign',
+    arguments: {},
+    result: {
+      success: true,
+      activeDocumentId: documentId,
+      documentId,
+      historyStateRef,
+      photoshopMutationCommit: mutationCommit
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'automatic-local-region-review',
+    name: 'getCanvasSnapshot',
+    arguments: { expectedDocumentId: documentId, region: { x: 400, y: 0, width: 400, height: 800 } },
+    result: { success: true, activeDocumentId: documentId, documentId, historyStateRef },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'automatic-save-editable',
+    name: 'saveDocument',
+    arguments: { format: 'psd', projectSubdir: '主图' },
+    result: {
+      success: true,
+      documentId,
+      sourceHistoryStateRef: historyStateRef,
+      savedPath: 'C:/fixture/主图/商品主图.psd',
+      editableDocumentArtifact: {
+        version: 'runtime-editable-document-artifact/v1',
+        basis: 'uxp_post_save_file_metadata',
+        path: 'C:/fixture/主图/商品主图.psd',
+        format: 'psd',
+        byteLength: 4096,
+        modifiedAt: 1,
+        documentId,
+        canvas: { width: 800, height: 800 }
+      }
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'automatic-export-preview',
+    name: 'quickExport',
+    arguments: { format: 'jpg', outputPath: 'C:/fixture/主图/商品主图.jpg' },
+    result: {
+      success: true,
+      documentId,
+      sourceHistoryStateRef: historyStateRef,
+      outputPath: 'C:/fixture/主图/商品主图.jpg',
+      format: 'jpg'
+    },
+    origin: 'model_tool_call'
+  }];
+  const misleadingBundle = buildDesignReviewSetFromBundle({
+    version: 'visual-observation-bundle/v1',
+    expectedObservationCount: 1,
+    expectedTargets: [{ sourceKind: 'project_asset', sourceId: 'flat-lay-source' }],
+    items: [{
+      identity: {
+        outer: 'recommendAssets',
+        resultPath: '$.visualObservationBundle.items[0]',
+        document: String(documentId),
+        history: String(historyStateId),
+        sourceKind: 'project_asset',
+        sourceId: 'flat-lay-source'
+      },
+      captured: true,
+      image: {
+        base64: misleadingBundleImageData,
+        mediaType: 'image/png',
+        format: 'png'
+      }
+    }]
+  });
+  assert.strictEqual(misleadingBundle.status, 'ready');
+  automaticAgent.latestDesignVisualJudgeBundleReviewSet = {
+    reviewSet: misleadingBundle.reviewSet,
+    images: [{ data: misleadingBundleImageData, mediaType: 'image/png' }],
+    historyStateRef: { ...historyStateRef },
+    receipt: {
+      version: 'visual-observation-receipt/v1',
+      document: String(documentId),
+      history: String(historyStateId),
+      sourceTool: 'recommendAssets'
+    },
+    sourceOutput: {}
+  };
+  assert.strictEqual(
+    automaticAgent.findLatestDesignVisualJudgeReviewSet(false),
+    null,
+    'single-surface terminal evidence must not fall back to a complete same-history Bundle'
+  );
+  automaticAgent.latestDesignVisualJudgeSingleReviewSet =
+    automaticAgent.latestDesignVisualJudgeBundleReviewSet;
+  assert.strictEqual(
+    automaticAgent.findLatestDesignVisualJudgeReviewSet(false),
+    null,
+    'a Bundle placed in the single slot must still fail its terminal source identity check'
+  );
+  automaticAgent.latestDesignVisualJudgeSingleReviewSet = undefined;
+  const automaticAssertions = await automaticAgent.evaluateDesignQualityVlmAssertions('final_response');
+  assert.strictEqual(automaticJudgeCalls, 1,
+    'a local region observation must lead to one independent whole-surface Final Judge call');
+  assert(
+    automaticCanvasResult && Array.isArray(automaticAssertions) && automaticAssertions.length > 0,
+    JSON.stringify({
+      canvasCaptured: Boolean(automaticCanvasResult),
+      assertions: automaticAssertions,
+      protocol: automaticAgent.finalQualityModelProtocolDigest,
+      steps: automaticSteps
+    })
+  );
+  assert.strictEqual(automaticCanvasArguments.expectedDocumentId, documentId);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(automaticCanvasArguments, 'region'), false,
+    'Harness final verification must acquire the full surface instead of repeating the Agent region crop');
+  assert.strictEqual(automaticAgent.finalQualityReviewedVisualBinding?.sourceOutput, automaticCanvasResult,
+    'the Final Judge binding must identify the exact full-surface Host result it consumed');
+  const automaticRunOwner = {};
+  automaticAgent.writeTrustedVisualReviewArtifactForRunResult(automaticRunOwner);
+  const trustedAutomaticArtifact = readTrustedVisualReviewArtifact(automaticRunOwner);
+  assert.strictEqual(
+    trustedAutomaticArtifact?.reviewSet.source,
+    'single_surface',
+    'the persisted run artifact must use the same single-surface terminal selection as the Judge'
+  );
+  const automaticDelivery = automaticAgent.projectDeliveryStageEvidence({
+    status: 'completed',
+    blockers: [],
+    taskCompletion: { required: [{ id: 'production-delivery', status: 'passed' }] },
+    designVerdict: { status: 'passed', blockers: [], warnings: [] }
+  });
+  assert.strictEqual(automaticDelivery.deliveryEvidencePassed, true,
+    'a receipt-bound Final Judge must close delivery without forging a primary-model review decision');
+  assert.deepStrictEqual(automaticDelivery.finalDeliveryResultRefs, [
+    'automatic-save-editable',
+    'automatic-export-preview'
+  ]);
   setDynamicModels(previousDynamicModels);
 }
 
@@ -8953,6 +10261,27 @@ function assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentative
   assert(
     !Array.from(families).some((family) => prompt.includes(`- ${family}.`)),
     'the compact prompt must not duplicate the complete capability directory'
+  );
+}
+
+function assertTaskClosureCapabilitiesOpenOnlyAfterArtifactLifecycleSignal() {
+  const session = createAgentCapabilitySession({
+    candidateTools: getDefaultAgentTools(),
+    baselineCapabilityIds: buildAgentCapabilityBaseline(true)
+  });
+  const before = session.activeTools.map((tool) => tool.name);
+  assert(!before.includes('saveDocument'));
+  assert(!before.includes('quickExport'));
+  const activated = session.activateTaskClosureCapabilities();
+  const after = session.activeTools.map((tool) => tool.name);
+  assert(activated.includes('delivery.saveDocument'));
+  assert(activated.includes('delivery.exportAsset'));
+  assert(after.includes('saveDocument'));
+  assert(after.includes('quickExport'));
+  assert.strictEqual(
+    session.activateTaskClosureCapabilities().length,
+    0,
+    'task closure activation must be idempotent within one Capability Session'
   );
 }
 
@@ -10373,6 +11702,7 @@ async function runBehaviorAssertions() {
   await assertPersistencePendingRetriesBeforeAgentResume();
   await assertToolResultRecoveryOptionsDoNotConstrainAgentToolChoice();
   assertDesignDirectionExplorationIsOptionalAndNonAuthoritative();
+  assertHarnessQualityVerificationBudgetCoversBoundedProtocol();
   assertExecutionSupplyReservePureAccounting();
   assertFinalQualityJudgeReservationRemovedButHardCapStays();
   await assertFinalQualityDiagnosisRepairModelProtocol();
@@ -10380,9 +11710,13 @@ async function runBehaviorAssertions() {
   await assertPlanNeutralReflexionCarriesRequestPerformanceUsage();
   assertRunLevelVisionPoolMergesKindBudgets();
   assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentatives();
+  assertTaskClosureCapabilitiesOpenOnlyAfterArtifactLifecycleSignal();
+  assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts();
   assertBareContinuationResumeDecision();
   assertExecutionAuthorizationBlockerCarriesUnlockOptions();
   await assertZeroProgressWriteAuthorizedStopIsPushedBackAndEndsHonestly();
+  await assertUnboundCreatedDesignRequiresPairedDeliveryInLiveLoop();
+  await assertUnsettledCreatedDocumentReplansToActiveRevisionInLiveLoop();
   await assertExecutionSupplyReserveGatesObservationInLiveLoop();
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();

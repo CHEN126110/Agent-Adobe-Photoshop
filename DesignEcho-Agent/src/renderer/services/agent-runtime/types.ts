@@ -8,6 +8,8 @@ import type { ChatComposerContentPart } from '../../../shared/chat-composer-cont
 import type { CurrentDocumentUseMode } from '../../../shared/design-document-role';
 import type { ModelReasoningEffort } from '../../../shared/config/models.config';
 import type { ModelProviderFailureKind } from '../../../shared/model-provider-failure';
+import type { ProviderReportedTokenUsage } from '../../../shared/provider-reported-token-usage';
+import type { ProviderTransportMetrics } from '../../../shared/provider-transport-metrics';
 import type {
     ModelVisualPresentationReceipt,
     ModelVisualPresentationReceiptRef
@@ -286,6 +288,12 @@ export interface AgentConfig {
     getActiveCapabilityIdsForTool?: (toolName: string) => string[];
     /** 当前 Session 内由模型显式按需激活的 Capability；只扩展 Stage 的模型可见 provider 面。 */
     getOnDemandActivatedCapabilityIds?: () => string[];
+    /**
+     * 已形成可看设计版本后，要求现有 Capability Session 原地开放通用交付能力。
+     * 回调只改变下一轮 Tool schema 可见性，不执行 Tool、不选择文件或路径、不授予权限，
+     * 也不把 agentic 任务改造成 staged 工作流。
+     */
+    activateTaskClosureCapabilities?: () => string[];
     /**
      * 由既有 Task Profile / Capability Session 生成的实时只读作业上下文。
      * Agent 每个模型轮次重新读取；它不授予权限、不执行 Tool，也不创建第二 Context owner。
@@ -691,11 +699,13 @@ export interface AgentRunResult {
 export interface ModelTransportAttemptAccounting {
     durationMs: number;
     succeeded: boolean;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: ProviderReportedTokenUsage;
     /** 失败尝试只保留有界结构身份；禁止保存错误正文、堆栈或请求载荷。 */
     failureKind?: ModelProviderFailureKind;
     providerCode?: string;
     status?: number;
+    /** Successful Main-process timing/size observation; absent when the transport is uninstrumented. */
+    providerTransportMetrics?: ProviderTransportMetrics;
     /** 成功 attempt 返回的有界视觉回执引用；不保存像素或 Provider 原始标识。 */
     visualPresentationReceiptRef?: ModelVisualPresentationReceiptRef;
 }
@@ -719,8 +729,9 @@ export type CallModelFn = (
     toolCalls?: ToolCall[];
     incompleteToolCallNames?: string[];
     thinking?: string;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: ProviderReportedTokenUsage;
     stopReason?: string;
+    providerTransportMetrics?: ProviderTransportMetrics;
     transportAttempts?: ModelTransportAttemptAccounting[];
     visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }>;
@@ -752,9 +763,10 @@ export type CallModelStreamFn = (
     toolCalls?: ToolCall[];
     incompleteToolCallNames?: string[];
     thinking?: string;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: ProviderReportedTokenUsage;
     stopReason?: string;
     streamMode?: 'stream' | 'fallback';
+    providerTransportMetrics?: ProviderTransportMetrics;
     transportAttempts?: ModelTransportAttemptAccounting[];
     visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }>;

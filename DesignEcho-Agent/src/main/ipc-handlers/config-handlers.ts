@@ -10,12 +10,11 @@ import type { ModelConfig } from '../../shared/config/models.config';
 import { CODEX_SUBSCRIPTION_PROVIDER } from '../../shared/codex-subscription-contract';
 import { getDynamicModels, setDynamicModels } from '../../shared/config/dynamic-model-registry';
 import { bflService } from '../services/bfl-service';
+import { syncImageProviderApiKeys } from '../services/image-provider-credential-sync';
 import { volcengineJimengInpaintingService } from '../services/volcengine-jimeng-inpainting-service';
 import { volcengineJimengImageService } from '../services/volcengine-jimeng-image-service';
 import { volcengineSeedreamService } from '../services/volcengine-seedream-service';
 import { volcengineTosUploadService } from '../services/volcengine-tos-upload-service';
-import { openRouterGeminiImageService } from '../services/openrouter-gemini-image-service';
-import { smileAiImageService } from '../services/smile-ai-image-service';
 import { serializedFileOperations } from '../services/serialized-file-operations';
 
 // 形态统一设置缓存
@@ -184,8 +183,11 @@ export function registerConfigHandlers(context: IPCContext): void {
                     : '[Config] Seedream API Key 已清空'
             );
         }
-        if (keys.openrouter !== undefined) {
-            openRouterGeminiImageService.setApiKey(keys.openrouter);
+        const synchronizedImageProviders = syncImageProviderApiKeys({
+            openrouter: keys.openrouter,
+            smileAi: keys.smileAi
+        });
+        if (synchronizedImageProviders.includes('openrouter')) {
             logService?.logAgent(
                 'info',
                 keys.openrouter
@@ -193,8 +195,7 @@ export function registerConfigHandlers(context: IPCContext): void {
                     : '[Config] OpenRouter API Key 已清空'
             );
         }
-        if (keys.smileAi !== undefined) {
-            smileAiImageService.setApiKey(keys.smileAi);
+        if (synchronizedImageProviders.includes('smileAi')) {
             logService?.logAgent(
                 'info',
                 keys.smileAi

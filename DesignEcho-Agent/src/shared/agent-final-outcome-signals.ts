@@ -31,6 +31,7 @@ export function projectAgentFinalOutcomeSignals(input: {
     const attempt = normalizeCounts(input.attempt);
     const terminalResponse = input.stopReason === 'final_response'
         || input.stopReason === 'tool_budget_final_response'
+        || input.stopReason === 'performance_budget'
         || input.stopReason === 'empty_final_response';
     const designVerdictAllowsCompletion = input.designVerdictDeliverable !== false;
     const verifiedTerminalEvidence = terminalResponse

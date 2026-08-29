@@ -19,6 +19,11 @@ import { exportSelectedLayersAsDesignAsset } from './core/design-asset-export';
 import { createTemplateLibraryStateCoordinator } from './core/template-library-state-coordinator';
 import { base64ToUint8Array } from './core/base64';
 import { forceRefreshCanvas } from './core/canvas-refresh';
+import { readActiveHistoryStateRef } from './core/photoshop-history-state-ref';
+import {
+    executeSkuPosePanelBatch,
+    type SkuPosePanelTarget
+} from './core/sku-pose-panel-workflow';
 import { getFriendlyProgressMessage } from './core/friendly-progress';
 import {
     buildImageToImageSelectionPayload,
@@ -552,10 +557,6 @@ async function handleWebViewAction(data: any) {
             await executeMorphingFromWebView(payload);
             break;
             
-        case 'morphRefShapeSelect':
-            morphSelectedRefShape = payload?.value ? parseInt(payload.value) : null;
-            break;
-            
         case 'morphLayerToggle':
             // 处理图层选择切换
             if (payload?.layerId) {
@@ -675,6 +676,7 @@ function updateConnectionStatus() {
  * 加载形态统一图层并发送到 WebView
  */
 async function loadMorphLayersForWebView() {
+    morphPanelDocumentId = null;
     if (!toolRegistry) {
         sendToWebView('morphLayers', { error: '工具未初始化' });
         return;
@@ -694,6 +696,11 @@ async function loadMorphLayersForWebView() {
             sendToWebView('morphLayers', { error: result?.error || '无法获取图层' });
             return;
         }
+        const documentId = Number(result?.historyStateRef?.documentId);
+        if (!Number.isSafeInteger(documentId) || documentId <= 0) {
+            sendToWebView('morphLayers', { error: '无法绑定当前 Photoshop 文档，请刷新后再试。' });
+            return;
+        }
         
         // getLayerHierarchy 返回 flatList（使用 flatList: true 时）或 hierarchy
         const allLayers = result.flatList || [];
@@ -701,17 +708,6 @@ async function loadMorphLayersForWebView() {
         // 调试：打印所有图层的类型
         console.log('[DesignEcho] 所有图层:', allLayers.map((l: any) => ({ name: l.name, kind: l.kind })));
         
-        // 分类图层 - 形状图层包括多种类型
-        // vector, shape, solidColor, gradient, pattern 都可以作为形状参考
-        const shapeLayers = allLayers.filter((l: any) => 
-            l.kind === 'vector' || 
-            l.kind === 'shape' || 
-            l.kind === 'solidColor' ||
-            l.kind === 'gradient' ||
-            l.kind === 'pattern' ||
-            // 也支持检测名称中包含 "形状" 或 "shape" 的图层
-            (l.name && (l.name.includes('形状') || l.name.toLowerCase().includes('shape')))
-        );
         // 产品图层包括像素层、智能对象，排除背景和组
         const productLayers = allLayers.filter((l: any) => 
             l.kind === 'pixel' || l.kind === 'smartObject'
@@ -719,25 +715,14 @@ async function loadMorphLayersForWebView() {
         
         // 调试：显示所有图层的类型
         console.log('[DesignEcho] 所有图层类型:', allLayers.map((l: any) => ({ name: l.name, kind: l.kind })));
-        console.log('[DesignEcho] 形状图层:', shapeLayers.map((l: any) => l.name));
         console.log('[DesignEcho] 产品图层:', productLayers.map((l: any) => l.name));
         
         // 保存到本地状态
-        morphShapeLayers = shapeLayers;
-        morphProductLayers = productLayers;
+        morphPanelDocumentId = documentId;
         morphSelectedLayers = [];
-        morphSelectedRefShape = null;
-
-        // 参考形态候选 = 矢量形状图层 + 像素/智能对象图层（按 alpha 轮廓提取）。
-        // 用户可直接选一张"标准袜子"图层作为目标形态，无需预先准备矢量形状。
-        const referenceOptions = [
-            ...shapeLayers.map((l: any) => ({ id: l.id, name: `${l.name}（形状）` })),
-            ...productLayers.map((l: any) => ({ id: l.id, name: `${l.name}（图层轮廓）` }))
-        ];
 
         // 发送到 WebView
         sendToWebView('morphLayers', {
-            shapeLayers: referenceOptions,
             productLayers: productLayers.map((l: any) => ({
                 id: l.id,
                 name: l.name,
@@ -1171,11 +1156,38 @@ async function selectLassoTool(options?: { notify?: boolean }) {
     }
 }
 
+function findSkuPosePanelLayer(container: any, layerId: number): any | null {
+    for (const layer of Array.from(container?.layers || []) as any[]) {
+        if (Number(layer?.id) === layerId) return layer;
+        if (layer?.layers) {
+            const nested = findSkuPosePanelLayer(layer, layerId);
+            if (nested) return nested;
+        }
+    }
+    return null;
+}
+
+function readCurrentSkuPosePanelTarget(layerId: number): SkuPosePanelTarget {
+    const { app } = require('photoshop');
+    const document = app.activeDocument;
+    const historyStateRef = readActiveHistoryStateRef(document);
+    if (!document || !historyStateRef) {
+        throw new Error('当前没有可读取版本的 Photoshop 文档。');
+    }
+    const layer = findSkuPosePanelLayer(document, layerId);
+    if (!layer) {
+        throw new Error(`当前文档中没有找到图层 ${layerId}，请刷新图层列表后再试。`);
+    }
+    return {
+        documentId: historyStateRef.documentId,
+        historyStateId: historyStateRef.historyStateId,
+        layerId,
+        layerName: String(layer.name || `图层 ${layerId}`)
+    };
+}
+
 /**
- * 执行形态统一 - 步骤 1：位置对齐
- * 
- * 唯一入口，无回退，无备用路径
- * 只调用 enhanced-shape-morph，只执行位置对齐
+ * 形态统一面板：逐层冻结当前 document/history/layer，并调用版本化 SKU Provider。
  */
 async function executeMorphingFromWebView(payload: any) {
     console.log('');
@@ -1206,28 +1218,18 @@ async function executeMorphingFromWebView(payload: any) {
     // ===== 2. 解析参数 =====
     console.log('[2] 解析参数...');
     console.log('  payload:', JSON.stringify(payload));
-    console.log('  morphSelectedRefShape:', morphSelectedRefShape);
     console.log('  morphSelectedLayers:', morphSelectedLayers);
     
-    const refShapeId = parseInt(String(payload?.refShapeId || morphSelectedRefShape), 10);
     const productLayerIds = (payload?.layerIds || morphSelectedLayers)
         .map((id: any) => parseInt(String(id), 10))
-        .filter((id: number) => !isNaN(id))
-        // 参考图层自身不参与变形（把自己变形到自己无意义）
-        .filter((id: number) => id !== refShapeId);
+        .filter((id: number) => !isNaN(id));
 
-    console.log('  解析后 - refShapeId:', refShapeId, 'productLayerIds:', productLayerIds);
+    console.log('  解析后 - productLayerIds:', productLayerIds);
     
     // ===== 3. 参数校验 =====
     console.log('[3] 参数校验...');
     sendToWebView('morphProgress', { progress: 15, message: '验证参数...' });
     
-    if (!refShapeId || isNaN(refShapeId)) {
-        console.error('  ✗ 参考形状 ID 无效:', refShapeId);
-        sendToWebView('hideMorphProgress', {});
-        sendToWebView('toast', { message: '请选择参考形状', type: 'error' });
-        return;
-    }
     if (productLayerIds.length === 0) {
         console.error('  ✗ 产品图层列表为空');
         sendToWebView('hideMorphProgress', {});
@@ -1238,67 +1240,36 @@ async function executeMorphingFromWebView(payload: any) {
     
     // ===== 4. 执行形态统一（唯一路径） =====
     console.log('[4] 发送请求到 Agent...');
-    console.log('  方法: enhanced-shape-morph');
-    console.log('  参数: { referenceShapeId:', refShapeId, ', productLayerIds:', productLayerIds, ', step: align }');
+    console.log('  方法: sku-pose-align-v1');
+    console.log('  参数: { productLayerIds:', productLayerIds, ' }');
     
-    sendToWebView('morphProgress', { progress: 20, message: '正在对齐主体位置...' });
+    sendToWebView('morphProgress', { progress: 10, message: '正在读取图层版本...' });
     
     try {
         const startTime = Date.now();
         
-        // 检查是否强制重新检测
-        const forceRedetect = payload?.forceRedetect === true;
-        // 获取执行步骤（默认 analyze，用于测试轮廓分析）
-        const step = payload?.step || 'morph';  // 默认执行完整变形流程
-        
-        // 获取开关控制
-        const preAlign = payload?.preAlign !== false;  // 默认开启
-        const shapeMatch = payload?.shapeMatch !== false;  // 默认开启
-        
-        // 获取变形强度参数
-        const edgeStrength = payload?.edgeStrength ?? 70;
-        const contentProtection = payload?.contentProtection ?? 80;
-        const smoothness = payload?.smoothness ?? 50;
-        
-        // 获取分区控制
-        const selectedRegions = payload?.selectedRegions || [];
-        
-        // 获取袜子款式信息
-        const sockStyle = payload?.sockStyle || 'crew';
-        const cuffType = payload?.cuffType || 'plain';
-        const cuffProtected = payload?.cuffProtected === true;
-        
-        console.log('  执行步骤:', step);
-        console.log('  强制重新检测:', forceRedetect);
-        console.log('  位置对齐:', preAlign, '形态吻合:', shapeMatch);
-        console.log('  边缘变形:', edgeStrength, '内容保护:', contentProtection, '变形平滑:', smoothness);
-        console.log('  分区控制:', selectedRegions);
-        console.log('  款式:', sockStyle, '袜口:', cuffType, '袜口保护:', cuffProtected);
-        
-        // 超时时间：每个图层约 15 秒，最少 60 秒
-        const timeoutMs = Math.max(60000, productLayerIds.length * 15000);
-        console.log(`  超时设置: ${timeoutMs / 1000} 秒`);
-        
-        const result = await wsClient.sendRequest('enhanced-shape-morph', {
-            referenceShapeId: refShapeId,
-            productLayerIds: productLayerIds,
-            step: step,
-            forceRedetect: forceRedetect,
-            useOptimizedMorphing: true,  // 启用 JFA + 稀疏位移场优化变形
-            // 开关控制
-            preAlign: preAlign,
-            shapeMatch: shapeMatch,
-            // 变形强度参数
-            edgeStrength: edgeStrength,
-            contentProtection: contentProtection,
-            smoothness: smoothness,
-            // 分区控制
-            selectedRegions: selectedRegions,
-            // 款式信息
-            sockStyle: sockStyle,
-            cuffType: cuffType,
-            cuffProtected: cuffProtected
-        }, timeoutMs);
+        const strengthPercent = Number(payload?.edgeStrength ?? 70);
+        const cuffLockRatio = payload?.cuffProtected === true ? 0.15 : 0;
+        const result = await executeSkuPosePanelBatch({
+            expectedDocumentId: morphPanelDocumentId,
+            layerIds: productLayerIds,
+            strength: strengthPercent / 100,
+            cuffLockRatio
+        }, {
+            readCurrentTarget: readCurrentSkuPosePanelTarget,
+            invokeWorkflow: async (params, timeoutMs) => {
+                return await wsClient!.sendRequest('sku-pose-align-v1', params, timeoutMs);
+            },
+            onProgress(progress) {
+                const completedRatio = progress.completed / Math.max(1, progress.total);
+                const progressPercent = Math.min(92, 12 + Math.round(completedRatio * 80));
+                const phaseLabel = progress.phase === 'starting' ? '正在处理' : '已处理';
+                sendToWebView('morphProgress', {
+                    progress: progressPercent,
+                    message: `${phaseLabel} ${progress.completed + (progress.phase === 'starting' ? 1 : 0)}/${progress.total}：${progress.layerName}`
+                });
+            }
+        });
         
         const duration = Date.now() - startTime;
         console.log('[5] 收到响应 (耗时:', duration, 'ms)');
@@ -1317,13 +1288,15 @@ async function executeMorphingFromWebView(payload: any) {
         console.log('[6] 分析结果...');
         const totalLayers = result?.totalLayers || productLayerIds.length;
         const successCount = result?.successCount || 0;
-        const allSuccess = successCount === totalLayers && successCount > 0;
-        const partialSuccess = successCount > 0 && successCount < totalLayers;
+        const appliedCount = Number(result?.appliedCount) || 0;
+        const notNeededCount = Number(result?.notNeededCount) || 0;
+        const stoppedOnUnknownMutation = result?.stoppedOnUnknownMutation === true;
         
         console.log('  totalLayers:', totalLayers);
         console.log('  successCount:', successCount);
-        console.log('  allSuccess:', allSuccess);
-        console.log('  partialSuccess:', partialSuccess);
+        console.log('  appliedCount:', appliedCount);
+        console.log('  notNeededCount:', notNeededCount);
+        console.log('  stoppedOnUnknownMutation:', stoppedOnUnknownMutation);
         
         // 收集错误信息
         let errorMessages: string[] = [];
@@ -1334,7 +1307,7 @@ async function executeMorphingFromWebView(payload: any) {
                 const status = r.success ? '✓' : '✗';
                 console.log(`    [${i}] ${status} layerId: ${r.layerId}, success: ${r.success}, error: ${r.error || 'none'}`);
                 if (!r.success && r.error) {
-                    errorMessages.push(`图层${r.layerId}: ${r.error}`);
+                    errorMessages.push(`${r.layerName || `图层 ${r.layerId}`}：${r.error}`);
                 }
             });
         }
@@ -1354,41 +1327,28 @@ async function executeMorphingFromWebView(payload: any) {
             warningMessages.forEach(msg => console.warn('    ! ' + msg));
         }
         
-        if (allSuccess) {
-            console.log('  ✓ 全部成功');
-            sendToWebView('toast', { 
-                message: warningMessages.length > 0
-                    ? `形态统一完成，但有 ${warningMessages.length} 项需要复核`
-                    : `形态统一完成，成功处理 ${successCount} 个图层`,
-                type: warningMessages.length > 0 ? 'warning' : 'success'
-            });
-            // 不返回主页，停留在当前页面
-        } else if (partialSuccess) {
-            console.log('  ⚠ 部分成功');
-            // 显示失败的图层错误
-            console.error('  失败的图层错误:');
-            errorMessages.forEach(msg => console.error('    - ' + msg));
-            sendToWebView('toast', { 
-                message: `部分完成: ${successCount}/${totalLayers} 个图层成功`,
-                type: 'warning' 
-            });
-            if (warningMessages.length > 0) {
-                sendToWebView('toast', {
-                    message: warningMessages[0],
-                    type: 'warning'
-                });
+        if (result?.success === true) {
+            let message = `已完成 ${appliedCount} 个图层的姿态统一。`;
+            if (appliedCount > 0 && notNeededCount > 0) {
+                message = `已调整 ${appliedCount} 个图层；另有 ${notNeededCount} 个已经较直，未重复修改。`;
+            } else if (appliedCount === 0 && notNeededCount > 0) {
+                message = `所选 ${notNeededCount} 个图层已经较直，没有重复修改。`;
             }
-        } else {
-            console.error('  ✗ 全部失败');
-            console.error('  错误列表:');
-            errorMessages.forEach(msg => console.error('    - ' + msg));
-            
-            // 使用第一个具体错误作为提示
-            const displayError = errorMessages[0] || warningMessages[0] || '形态统一失败，请检查图层选择';
-            sendToWebView('toast', { 
-                message: displayError,
-                type: 'error' 
+            sendToWebView('toast', { message, type: 'success' });
+        } else if (stoppedOnUnknownMutation) {
+            sendToWebView('toast', {
+                message: '有一项处理结果无法确认，已停止后续图层。请先查看当前画面，再决定是否继续。',
+                type: 'error'
             });
+        } else if (successCount > 0) {
+            const firstError = errorMessages[0] || '其余图层未通过安全检查。';
+            sendToWebView('toast', {
+                message: `已处理 ${successCount}/${totalLayers} 个图层。${firstError}`,
+                type: 'warning'
+            });
+        } else {
+            const displayError = errorMessages[0] || warningMessages[0] || '形态统一失败，请检查图层选择';
+            sendToWebView('toast', { message: displayError, type: 'error' });
         }
         
         console.log('╔════════════════════════════════════════════════════╗');
@@ -1549,6 +1509,11 @@ async function initializeConnection() {
         if (removeBackgroundTool) {
             removeBackgroundTool.setWebSocketClient(wsClient);
             console.log('[DesignEcho] RemoveBackgroundTool 已配置二进制传输');
+        }
+        const captureLayerPixelsTool = toolRegistry?.getCaptureLayerPixelsTool();
+        if (captureLayerPixelsTool) {
+            captureLayerPixelsTool.setWebSocketClient(wsClient);
+            console.log('[DesignEcho] CaptureLayerPixelsTool 已配置二进制传输');
         }
         
         await wsClient.connect();
@@ -3666,6 +3631,7 @@ async function handleOpenMorphingPanel() {
 
 // 存储形态统一相关状态（产品图层选择）
 let morphSelectedLayers: number[] = [];
+let morphPanelDocumentId: number | null = null;
 
 /**
  * 切换页面

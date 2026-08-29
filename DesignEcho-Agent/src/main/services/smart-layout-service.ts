@@ -13,6 +13,7 @@
  * - 前景有效性检测 - 防止抠图失败导致异常
  */
 
+import type { SharpConstructor } from 'sharp';
 import { MattingService } from './matting-service';
 
 // ==================== 类型定义 ====================
@@ -102,7 +103,7 @@ const DEFAULT_CONFIG: Required<SmartScaleConfig> = {
 
 export class SmartLayoutService {
     private mattingService: MattingService;
-    private sharp: typeof import('sharp') | null = null;
+    private sharp: SharpConstructor | null = null;
     private initialized: boolean = false;
 
     constructor(mattingService?: MattingService) {

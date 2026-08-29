@@ -14,6 +14,7 @@ import {
     isHarnessManagedSubscriptionTimeout,
     shouldRetryAutonomousModelTransport
 } from '../../../shared/model-provider-transport-policy';
+import { readProviderTransportMetrics } from '../../../shared/provider-transport-metrics';
 import { buildConversationalUnavailableMessage } from '../../../shared/conversational-unavailable-message';
 import { sanitizeUserVisibleDiagnosticText } from '../../../shared/chat-response-cleaner';
 import { buildCancelledAutonomousAgentResult } from './autonomous-agent-result-projection';
@@ -95,6 +96,7 @@ import {
     type ExactPropertyExecutionScope,
     type AgentToolExecutionTargetGuard
 } from '../../../shared/agent-tool-execution-preflight';
+import { buildAgentOperationLedger } from '../../../shared/agent-operation-ledger';
 import {
     createGuardedAtomicToolExecutor,
     resolveSkillWorkflowTargetRebinding,
@@ -446,9 +448,10 @@ type ModelErrorWithTransportAttempts = Error & {
 function buildModelTransportAttempt(
     startedAtMs: number,
     succeeded: boolean,
-    usage?: { inputTokens: number; outputTokens: number },
+    usage?: ModelTransportAttemptAccounting['usage'],
     failure?: ModelProviderFailure,
-    visualPresentationReceipt?: unknown
+    visualPresentationReceipt?: unknown,
+    providerTransportMetrics?: unknown
 ): ModelTransportAttemptAccounting {
     const providerCode = String(failure?.providerCode || '').trim().slice(0, 120);
     const numericStatus = Number(failure?.status);
@@ -461,6 +464,9 @@ function buildModelTransportAttempt(
         succeeded,
         receipt: visualPresentationReceipt
     });
+    const transportMetrics = succeeded
+        ? readProviderTransportMetrics(providerTransportMetrics)
+        : undefined;
     return {
         durationMs: Math.max(0, Math.floor(Date.now() - startedAtMs)),
         succeeded,
@@ -470,6 +476,7 @@ function buildModelTransportAttempt(
             ...(providerCode ? { providerCode } : {}),
             ...(status ? { status } : {})
         } : {}),
+        ...(transportMetrics ? { providerTransportMetrics: transportMetrics } : {}),
         ...(receiptRef ? { visualPresentationReceiptRef: receiptRef } : {})
     };
 }
@@ -591,7 +598,8 @@ function createCallModelViaIPC(
                     true,
                     response?.usage,
                     undefined,
-                    response?.visualPresentationReceipt
+                    response?.visualPresentationReceipt,
+                    response?.providerTransportMetrics
                 ));
                 break;
             } catch (error) {
@@ -709,7 +717,8 @@ function createCallModelStreamViaIPC(
                     true,
                     response?.usage,
                     undefined,
-                    response?.visualPresentationReceipt
+                    response?.visualPresentationReceipt,
+                    response?.providerTransportMetrics
                 ));
                 break;
             } catch (error) {
@@ -5430,6 +5439,12 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     capabilitySession.buildPromptSection(),
                     buildDynamicDesignTaskOperatingContext(runtimeParams, context)
                 ].filter(Boolean).join('\n\n'),
+                // 通用交付能力在真实设计版本形成后才进入下一轮 Tool schema。它不绑定
+                // Manifest、不替模型选择保存/导出动作，也不授予文件写入权限；只避免
+                // Agent 到收尾阶段再额外消耗两轮搜索与装载能力。
+                activateTaskClosureCapabilities: () => (
+                    capabilitySession.activateTaskClosureCapabilities()
+                ),
                 // 无论 Manifest 是否已经绑定，Project State / reviewed memory 都由同一个
                 // Runtime Context Compiler 注入；带 applicableStages 的知识仍只在真实 Stage 可见。
                 runtimeStageContextItems,
@@ -5714,6 +5729,8 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     break;
                 }
                 if (completedAestheticImprovementReentryUsed) break;
+                const currentPerformanceUsage = activeAutonomousAgent
+                    ?.readRequestPerformanceUsageSnapshot();
                 const reentryDecision = decideQualityAwareReflexionReentry({
                     handoff: reflexionHandoff,
                     priorReentryCount: reflexionReentryCount,
@@ -5722,7 +5739,16 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     scorecardHistory: designScorecardHistory,
                     stopReason: result.stopReason,
                     ...(isCompletedAestheticImprovement ? {
-                        constraintMode: 'handoff_only' as const
+                        constraintMode: 'handoff_only' as const,
+                        ...(currentPerformanceUsage && autonomousPerformancePolicy ? {
+                            performanceCapacity: {
+                                usage: currentPerformanceUsage,
+                                budget: {
+                                    ...autonomousPerformancePolicy.budget,
+                                    maxIterations
+                                }
+                            }
+                        } : {})
                     } : {})
                 });
                 if (!reentryDecision.shouldReenter || !reflexionHandoff) {
@@ -5757,7 +5783,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 // Agent 的 canonical PerformanceLedger 取得只读累计投影。缺身份才停止，不能为
                 // 了返工新建第二 Runtime 或把模型的 VLM 建议变成新的写入授权。
                 if (!runtimeContractBundle) {
-                    if (!runtimeSessionIdentity || !activeAutonomousAgent) {
+                    if (!runtimeSessionIdentity || !activeAutonomousAgent || !currentPerformanceUsage) {
                         qualityHaltNotice = '当前版本已保留，但本次运行缺少可承接同一请求预算的 TaskRun 身份。为避免自动返工重复计费，已停止继续修改。';
                         qualityHaltUserNotice = '这次处理已经有画面改动，但现在无法安全承接后续调整。我保留了当前版本。';
                         agentCallbacks.onStep?.({
@@ -5771,8 +5797,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                         });
                         break;
                     }
-                    requestPerformanceUsageSeed = activeAutonomousAgent
-                        .readRequestPerformanceUsageSnapshot();
+                    requestPerformanceUsageSeed = currentPerformanceUsage;
                 }
 
                 reflexionReentryCount = reentryDecision.reentryCount;
@@ -5833,7 +5858,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     taskRunDocumentCreationEvidence = extendTaskRunDocumentCreationEvidence({
                         previous: taskRunDocumentCreationEvidence,
                         identity: runtimeSessionIdentity,
-                        toolCallLog: result.toolCallLog || []
+                        toolCallLog: buildAgentOperationLedger(result.toolCallLog || [])
                     });
                 }
                 // 被复盘取代的这一轮也要留档（失败轨迹是 Eval 的原料），并把 runId 链给下一轮

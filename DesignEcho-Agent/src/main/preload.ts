@@ -69,6 +69,9 @@ import type { ProjectSelectionResolution } from '../shared/project-selection-res
 
 const chatTestFakePhotoshopEnabled = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
     && process.env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP === '1';
+const debugBridgeLaunchProjectPath = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
+    ? String(process.env.DESIGNECHO_CHAT_TEST_PROJECT_PATH || '').trim()
+    : '';
 
 /**
  * Sandbox preload 必须保持单文件运行时边界，不能 import 相对本地模块。
@@ -816,14 +819,15 @@ const api = {
         ipcRenderer.invoke('matting:getModelsStatus'),
     
     // 检查分割模型文件是否存在
-    checkSegmentModelExists: (folder: string, fileName: string) =>
-        ipcRenderer.invoke('model:checkModelFile', folder, fileName),
+    checkSegmentModelExists: (folder: string, fileName: string, expectedSha256?: string) =>
+        ipcRenderer.invoke('model:checkModelFile', folder, fileName, expectedSha256),
     
     // 下载分割模型
     downloadSegmentModel: (params: {
         url: string;
         folder: string;
         fileName: string;
+        expectedSha256?: string;
         onProgress?: (progress: number) => void;
     }) => {
         // 使用 IPC 事件传递下载进度
@@ -833,7 +837,14 @@ const api = {
                 params.onProgress!(progress);
             });
         }
-        return ipcRenderer.invoke('model:downloadToModels', params.url, params.folder, params.fileName, channel)
+        return ipcRenderer.invoke(
+            'model:downloadToModels',
+            params.url,
+            params.folder,
+            params.fileName,
+            channel,
+            params.expectedSha256
+        )
             .finally(() => {
                 ipcRenderer.removeAllListeners(channel);
             });
@@ -977,6 +988,7 @@ const api = {
     },
 
     // ===== Debug Bridge 运行窗口调试 =====
+    getDebugBridgeLaunchProjectPath: (): string | null => debugBridgeLaunchProjectPath || null,
     onDebugBridgeChatPreflight: (callback: (
         request: DebugBridgeChatPreflightRequest
     ) => Promise<DebugBridgeChatPreflightSnapshot> | DebugBridgeChatPreflightSnapshot) => {
@@ -1027,7 +1039,7 @@ const api = {
         expectedProvider?: string;
         expectedModelId?: string;
         requireCleanRuntimeGitState?: boolean;
-        requireNoOpenPhotoshopDocuments?: boolean;
+        requireNoOpenFixtureDocuments?: boolean;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;

@@ -263,7 +263,7 @@ export class EagleLibraryService {
             }
             const maxSize = clampInteger(input?.maxSize, 256, 1600, 1024);
             const output = await sharp(item.previewPath, {
-                failOnError: false,
+                failOn: 'none',
                 animated: false,
                 limitInputPixels: 120_000_000
             })
@@ -451,7 +451,7 @@ export class EagleLibraryService {
             if (cached) return cached;
 
             const output = await sharp(item.previewPath, {
-                failOnError: false,
+                failOn: 'none',
                 animated: false,
                 limitInputPixels: 120_000_000
             })

@@ -10,6 +10,11 @@ import {
 import { canAgentToolStartWithoutOpenDocument } from './document-optional-tools';
 import { getSkillById } from './skills/skill-declarations';
 import {
+    projectTaskRunCreatedDocumentLifecycle,
+    type TaskRunDocumentCreationEvidence,
+    type TaskRunCreatedDocumentDeliveryRequirement
+} from './task-run-document-creation-evidence';
+import {
     readPhotoshopHistoryStateRef,
     readPhotoshopHistoryTransition,
     readPhotoshopMutationCommit,
@@ -81,6 +86,18 @@ export interface AgentToolExecutionPreflightInput {
     toolCalls: Array<{ name: string; arguments?: any }>;
     verificationToolCalls?: Array<{ name: string; arguments?: any }>;
     completedToolCalls?: AgentToolExecutionPreflightLogEntry[];
+    /**
+     * 当前 TaskRun 新建文档的内部生命周期上下文。只用于阻止在旧候选未交付 /未关闭时
+     * 再次新建；不授权 Tool、不选择候选，也不改变明确单格式交付范围。
+     */
+    taskRunCreatedDocumentLifecycle?: {
+        taskRunId?: string;
+        generation?: number;
+        previous?: TaskRunDocumentCreationEvidence;
+        deliveryRequirement: TaskRunCreatedDocumentDeliveryRequirement;
+        /** 复合 Workflow 展开后的同一有序 operation ledger；省略时使用顶层日志。 */
+        toolCallLog?: readonly AgentToolExecutionPreflightLogEntry[];
+    };
     requiresUserVisiblePreActionRationale?: boolean;
     /** @deprecated use requiresUserVisiblePreActionRationale */
     requiresPublicPlan?: boolean;
@@ -409,13 +426,27 @@ function createsOwnedDocumentBeforeWriting(
     return String(call?.arguments?.document?.mode || '').trim().toLowerCase() === 'new';
 }
 
+function createsNewTaskDocument(call: { name?: unknown; arguments?: any }): boolean {
+    const name = normalizeToolName(call?.name);
+    if (name === 'createDocument') return true;
+    return name === 'composeDesign'
+        && String(call?.arguments?.document?.mode || '').trim().toLowerCase() === 'new';
+}
+
 function isPriorDocumentReadTool(name: string): boolean {
     return PRIOR_DOCUMENT_READ_TOOLS.has(name);
 }
 
 function isFreshDocumentCreationResult(entry: AgentToolExecutionPreflightLogEntry): boolean {
-    if (normalizeToolName(entry.name) !== 'createDocument') return false;
     if (!toolSucceeded(entry)) return false;
+    const name = normalizeToolName(entry.name);
+    if (name === 'composeDesign'
+        && String(entry.arguments?.document?.mode || '').trim().toLowerCase() === 'new') {
+        const mutationCommit = readPhotoshopMutationCommit(entry.result);
+        return mutationCommit?.changeKind === 'document_creation'
+            && mutationCommit.toolActionCompleted;
+    }
+    if (name !== 'createDocument') return false;
     const result = entry.result || {};
     if (result?.acceptance?.after?.hasDocument === true) return true;
     if (result?.document && typeof result.document === 'object') return true;
@@ -580,12 +611,19 @@ function resolveLatestToolExecutionTargetGuard(
         const crossedDocument = historyTransition?.documentChanged === true
             || mutationCommit?.documentChanged === true;
         if (crossedDocument) {
-            const createdDocumentAfter = name === 'createDocument' && toolSucceeded(entry)
-                ? (historyTransition?.after || mutationCommit?.after)
+            const composeCreatedDocument = name === 'composeDesign'
+                && String(entry.arguments?.document?.mode || '').trim().toLowerCase() === 'new'
+                && mutationCommit?.changeKind === 'document_creation'
+                && mutationCommit.toolActionCompleted;
+            const createdDocumentAfter = toolSucceeded(entry)
+                ? (name === 'createDocument'
+                    ? (historyTransition?.after || mutationCommit?.after)
+                    : (composeCreatedDocument ? mutationCommit.after : undefined))
                 : undefined;
             if (!createdDocumentAfter) {
                 // 失败写、关闭/打开或外部切换不能把旧文档的“已读”资格搬到新文档。
-                // 只有成功 createDocument 是受控的新目标生产者；其余必须重新观察。
+                // 只有成功 createDocument 或带严格 document_creation commit 的 composeDesign(new)
+                // 是受控的新目标生产者；其余必须重新观察。
                 return { logIndex: index };
             }
             return {
@@ -1853,6 +1891,7 @@ export function buildAgentToolExecutionPreflight(
     }
 
     const blockers: string[] = [];
+    let createdDocumentLifecycleBlocked = false;
     // 表达类要求降级为提醒，不再阻断执行。
     //
     // 这两条判的不是「会不会做错」，而是「有没有把话说对」——助手内容要 ≥12 字且命中
@@ -1870,6 +1909,23 @@ export function buildAgentToolExecutionPreflight(
     }
     if (!hasVerificationTarget && !hasOnlySimpleMechanicalGuardedTools) {
         expressionWarnings.push('没有说明执行后如何复核，改完记得回读或截图确认。');
+    }
+    if (input.taskRunCreatedDocumentLifecycle
+        && (input.toolCalls || []).some(createsNewTaskDocument)) {
+        const lifecycle = projectTaskRunCreatedDocumentLifecycle({
+            previous: input.taskRunCreatedDocumentLifecycle.previous,
+            taskRunId: input.taskRunCreatedDocumentLifecycle.taskRunId,
+            generation: input.taskRunCreatedDocumentLifecycle.generation,
+            toolCallLog: input.taskRunCreatedDocumentLifecycle.toolCallLog
+                || completedToolCalls,
+            deliveryRequirement: input.taskRunCreatedDocumentLifecycle.deliveryRequirement
+        });
+        if (lifecycle.unsettledDocumentCount > 0) {
+            createdDocumentLifecycleBlocked = true;
+            blockers.push(
+                `本 TaskRun 已新建文档 ${lifecycle.unsettledDocumentIds.join(', ')}，但其最新 Photoshop revision 尚未按当前交付范围取得文件收据，也没有通过精确 documentId 显式关闭。若是在修订当前候选，请继续修改活动文档；若确需多文档交付，请先完成或明确关闭前一文档。`
+            );
+        }
     }
     const guardedToolCanStartWithoutOpenDocument = canAgentToolStartWithoutOpenDocument(guardedTool.name)
         || createsOwnedDocumentBeforeWriting(input.toolCalls || [], guardedTool.name);
@@ -1897,7 +1953,9 @@ export function buildAgentToolExecutionPreflight(
         return {
             status: 'blocked',
             ready: false,
-            issue: 'agent_tool_execution_preflight_blocked',
+            issue: createdDocumentLifecycleBlocked
+                ? 'task_run_created_document_unsettled'
+                : 'agent_tool_execution_preflight_blocked',
             message: [
                 `已阻止工具执行：${guardedTool.name}。`,
                 ...blockers,

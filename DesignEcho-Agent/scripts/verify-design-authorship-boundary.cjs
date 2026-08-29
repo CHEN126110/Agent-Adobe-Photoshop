@@ -136,6 +136,10 @@ const { OllamaAdapter } = require(path.join(root, 'src/main/services/provider-ad
 const { BaseStreamAdapter } = require(path.join(root, 'src/main/services/stream-adapter.ts'));
 const { ProviderSseDecoder } = require(path.join(root, 'src/main/services/provider-sse-decoder.ts'));
 const {
+    buildProviderTransportMetrics,
+    readProviderTransportMetrics
+} = require(path.join(root, 'src/shared/provider-transport-metrics.ts'));
+const {
     buildRuntimeAccountingDigest,
     createRuntimeAccountingLedger,
     measureRuntimePromptShape,
@@ -246,6 +250,10 @@ const streamChatSource = source('src/renderer/services/stream-chat.service.ts');
 const agentToolStreamSource = source('src/renderer/services/agent-tool-stream.service.ts');
 const streamAdapterSource = source('src/main/services/stream-adapter.ts');
 const modelServiceSource = source('src/main/services/model-service.ts');
+const openAiCompatibleToolStreamSource = modelServiceSource.slice(
+    modelServiceSource.indexOf('private async streamOpenAICompatibleWithTools'),
+    modelServiceSource.indexOf('private streamOpenRouterWithTools')
+);
 const skuRetouchServiceSource = source('src/main/services/sku-retouch-service.ts');
 const skuRetouchContractSource = source('src/shared/sku-retouch-contract.ts');
 const claudeSubscriptionSource = source('src/main/services/claude-subscription-service.ts');
@@ -1894,6 +1902,73 @@ const openAiRefusalTerminal = new OpenAIAdapter('openai').parseResponse({
     }],
     usage: { prompt_tokens: 11, completion_tokens: 3 }
 });
+const deepSeekCacheUsage = new OpenAIAdapter('deepseek').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 75,
+        prompt_cache_miss_tokens: 25
+    }
+});
+const deepSeekPartialCacheUsage = new OpenAIAdapter('deepseek').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 75
+    }
+});
+const deepSeekInconsistentCacheUsage = new OpenAIAdapter('deepseek').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 80,
+        prompt_cache_miss_tokens: 25
+    }
+});
+const openAiNamedCacheUsage = new OpenAIAdapter('openai').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 75,
+        prompt_cache_miss_tokens: 25
+    }
+});
+const validProviderTransportMetrics = buildProviderTransportMetrics({
+    startedAtMs: 1_000,
+    serializedRequestBytes: 120_000,
+    imageDataUrlBytes: 80_000,
+    adapterFormatMs: 4,
+    payloadMeasurementMs: 2,
+    streamOpenedAtMs: 1_120,
+    firstChunkAtMs: 1_180,
+    firstSemanticDeltaAtMs: 1_240,
+    completedAtMs: 2_500
+});
+const nonMonotonicProviderTransportMetrics = readProviderTransportMetrics({
+    ...validProviderTransportMetrics,
+    firstSemanticDeltaMs: 100,
+    firstChunkMs: 180
+});
+const unknownProviderTransportMetrics = readProviderTransportMetrics({
+    ...validProviderTransportMetrics,
+    rawRequest: 'must-not-cross-boundary'
+});
 check(
     '各 Provider 非完整终态优先隔离残缺 Tool，不能被句号或已解析参数升级为成功',
     openAiUnknownTerminal.stopReason === 'stream_incomplete'
@@ -1920,6 +1995,43 @@ check(
         && openAiRefusalTerminal.usage.outputTokens === 3
         && agentRuntime.includes('(response.incompleteToolCallNames || [])')
         && agentRuntime.includes('.filter((name) => visibleToolNames.has(name))')
+);
+check(
+    'DeepSeek 缓存用量只在完整守恒时贯穿普通与流式模型传输',
+    deepSeekCacheUsage.usage.inputTokens === 100
+        && deepSeekCacheUsage.usage.outputTokens === 10
+        && deepSeekCacheUsage.usage.cacheHitInputTokens === 75
+        && deepSeekCacheUsage.usage.cacheMissInputTokens === 25
+        && deepSeekPartialCacheUsage.usage.cacheHitInputTokens === undefined
+        && deepSeekPartialCacheUsage.usage.cacheMissInputTokens === undefined
+        && deepSeekInconsistentCacheUsage.usage.cacheHitInputTokens === undefined
+        && deepSeekInconsistentCacheUsage.usage.cacheMissInputTokens === undefined
+        && openAiNamedCacheUsage.usage.cacheHitInputTokens === undefined
+        && openAiNamedCacheUsage.usage.cacheMissInputTokens === undefined
+        && (modelServiceSource.match(/readOpenAICompatibleTokenUsage\(/g) || []).length === 2
+        && openAiCompatibleToolStreamSource.includes("provider === 'deepseek' ? {")
+        && openAiCompatibleToolStreamSource.includes('stream_options: { include_usage: true }')
+        && openAiCompatibleToolStreamSource.indexOf('if (chunk.usage) {')
+            < openAiCompatibleToolStreamSource.indexOf('if (!delta) continue;')
+);
+check(
+    'Provider transport 只保存单调时间与有界负载规模，Main 流式边界真实采集后随终态返回',
+    validProviderTransportMetrics?.serializedRequestBytes === 120_000
+        && validProviderTransportMetrics.imageDataUrlBytes === 80_000
+        && validProviderTransportMetrics.streamOpenMs === 120
+        && validProviderTransportMetrics.firstChunkMs === 180
+        && validProviderTransportMetrics.firstSemanticDeltaMs === 240
+        && validProviderTransportMetrics.completedMs === 1_500
+        && nonMonotonicProviderTransportMetrics === undefined
+        && unknownProviderTransportMetrics === undefined
+        && openAiCompatibleToolStreamSource.includes('const requestBody = {')
+        && openAiCompatibleToolStreamSource.includes('measureProviderRequestPayload(requestBody, formatted)')
+        && openAiCompatibleToolStreamSource.indexOf('firstChunkAtMs = firstChunkAtMs ?? chunkObservedAtMs')
+            < openAiCompatibleToolStreamSource.indexOf('if (chunk.usage) {')
+        && openAiCompatibleToolStreamSource.includes('hasOpenAICompatibleSemanticDelta(choice)')
+        && openAiCompatibleToolStreamSource.includes('buildProviderTransportMetrics({')
+        && openAiCompatibleToolStreamSource.includes('...(providerTransportMetrics ? { providerTransportMetrics } : {})'),
+    JSON.stringify(validProviderTransportMetrics)
 );
 let providerRecoveryLedger = recordRuntimeProviderOutputRecoveryAttempt(
     createRuntimeAccountingLedger('2026-08-26T00:00:00.000Z'),
@@ -4029,6 +4141,27 @@ const completedAestheticScorecard = scoreDesignAssertions(
         minCoverage: 0.8
     }
 );
+const completedAestheticPerformanceCapacity = {
+    usage: {
+        modelCalls: 2,
+        toolCalls: 3,
+        iterations: 2,
+        visionCandidates: 0,
+        visualAnalyses: 0,
+        activeElapsedMs: 1_000,
+        observationKeys: []
+    },
+    budget: {
+        maxModelCalls: 10,
+        maxToolCalls: 12,
+        maxIterations: 10,
+        maxVisionCandidates: 4,
+        maxInitialVisionCandidates: 0,
+        maxVisualAnalyses: 3,
+        maxFullResolutionImageReads: 0,
+        softTimeBudgetMs: 1_000_000
+    }
+};
 const completedAestheticDecision = decideQualityAwareReflexionReentry({
     handoff: {
         status: 'reflexion_required',
@@ -4053,7 +4186,8 @@ const completedAestheticDecision = decideQualityAwareReflexionReentry({
     priorReentryCount: 0,
     scorecardHistory: [completedAestheticScorecard],
     stopReason: 'final_response',
-    constraintMode: 'handoff_only'
+    constraintMode: 'handoff_only',
+    performanceCapacity: completedAestheticPerformanceCapacity
 });
 check(
     '已完成版本的可靠审美观察只唤醒 Agent 一次，不由 Harness 选择或扩大修改内容',

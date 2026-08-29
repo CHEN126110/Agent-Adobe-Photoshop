@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "main-image-pink-coffee-unseen-v1",
-  "revision": 3,
-  "caseDigest": "sha256:338b13bfcc9f29bbad12572ea03ef9da77b2abaec84ad6460ff2c72d2f4a35e3",
+  "revision": 4,
+  "caseDigest": "sha256:b6b804fb6f4c356b8936adcc35b14c26d05d6db66e76c3bb81a532bcc51b5800",
   "status": "active",
   "taskFamily": "main_image",
   "executionModel": "agentic",
@@ -101,8 +101,9 @@
   "oracle": {
     "rubricId": "main-image-commercial-v1",
     "outputContract": {
-      "version": "design-reliability-output-contract/v1",
-      "canvas": { "width": 800, "height": 800 },
+      "version": "design-reliability-output-contract/v2",
+      "canvas": { "width": 1440, "height": 1440 },
+      "canvasAuthority": "runtime_setting",
       "exactRasterExports": 1,
       "exactEditableDocuments": 1
     },

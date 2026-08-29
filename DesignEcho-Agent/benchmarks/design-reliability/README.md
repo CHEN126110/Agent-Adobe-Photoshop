@@ -115,11 +115,19 @@ npm run maintenance:business-skills-live-e2e:require-live
 临时状态，不改用户正常 DesignEcho 配置，也不会输出 Provider 凭据：
 
 ```bash
-node scripts/launch-chat-ui-debug-window.cjs --port auto --use-default-runtime-ports --seed-user-state --model codex-subscription-gpt-5-6-sol --project <一次性目录>
+node scripts/launch-chat-ui-debug-window.cjs --port auto --use-default-runtime-ports --seed-user-state --reuse-codex-subscription-session --model codex-subscription-gpt-5-6-sol --project <一次性目录>
 ```
+
+`--reuse-codex-subscription-session` 只允许用于已经停止普通 DesignEcho Runtime 的隔离实机窗口：
+Renderer 项目、对话和偏好仍位于 OS Temp，订阅模型则直接使用正常 DesignEcho 已有的安全会话目录，
+不会复制、输出或写入明文凭据。隔离 seed 会保留经过字段白名单清洗的设计尺寸，避免固定 Case
+在 1440×1440 预期下退回 800×800 默认值。
 
 `preflight` 会从 Renderer 实时读回脱敏的 provider、内部 model ID、API model ID、项目和 busy 状态；
 不匹配会在 Attempt `armed` 之前阻止 `run-live`，不会先写入 Photoshop 再报告模型用错。
+正式运行前的 `maintenance:photoshop-uxp-plugin:load:check` 会按 UXP Developer Tools 的
+plugin session 身份先卸载当前同 ID 实例、再从当前 checkout 加载并核对 live build identity；
+不能把“load 命令返回成功”误当成 Photoshop 已经换到新代码。
 
 当套件包含多个独立输入源时，准备或检查 fixture 必须显式指定 `--case` 或 `--fixture-id`，避免把两个商品目录混成一个测试项目。
 如果同一个 `fixtureId` 被主图、详情页、SKU 等多个 Case 共用，`prepare-fixture` 必须使用

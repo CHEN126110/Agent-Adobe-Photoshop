@@ -134,7 +134,7 @@ export class AssetSubjectBoxService {
     private async resolveFromSharpInput(input: string | Buffer): Promise<AssetSubjectBoxResult> {
         const attempts: string[] = [];
         try {
-            const metadata = await sharp(input, { failOnError: false }).metadata();
+            const metadata = await sharp(input, { failOn: 'none' }).metadata();
             const width = metadata.width || 0;
             const height = metadata.height || 0;
             if (width <= 0 || height <= 0) {
@@ -143,7 +143,7 @@ export class AssetSubjectBoxService {
             const scale = Math.min(1, ANALYSIS_MAX_EDGE / Math.max(width, height));
             const analysisWidth = Math.max(1, Math.round(width * scale));
             const analysisHeight = Math.max(1, Math.round(height * scale));
-            const raw = await sharp(input, { failOnError: false })
+            const raw = await sharp(input, { failOn: 'none' })
                 .resize(analysisWidth, analysisHeight, { fit: 'fill' })
                 .ensureAlpha()
                 .raw()
@@ -164,7 +164,7 @@ export class AssetSubjectBoxService {
                 return { success: true, resolution: trim, imageWidth: width, imageHeight: height, attempts: [...attempts, 'trim：命中'] };
             }
             attempts.push('trim：边框不是均匀纯色或整图都是内容，跳过');
-            const jpeg = await sharp(input, { failOnError: false })
+            const jpeg = await sharp(input, { failOn: 'none' })
                 .resize(analysisWidth, analysisHeight, { fit: 'fill' })
                 .flatten({ background: '#ffffff' })
                 .jpeg({ quality: 88 })

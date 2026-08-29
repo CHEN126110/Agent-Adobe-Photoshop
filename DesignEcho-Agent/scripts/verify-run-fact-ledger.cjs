@@ -23,12 +23,14 @@ const {
     recordRuntimeToolCall
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-accounting.ts'));
 const {
+    advanceRuntimeSessionIdentity,
     buildRuntimeSessionDigest,
     createRuntimeSession,
     createRuntimeSessionIdentity
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-session.ts'));
 const {
-    extendTaskRunDocumentCreationEvidence
+    extendTaskRunDocumentCreationEvidence,
+    projectTaskRunCreatedDocumentLifecycle
 } = require(path.join(root, 'src/shared/task-run-document-creation-evidence.ts'));
 const {
     MAIN_IMAGE_EVALUATION_PROFILE_ID,
@@ -38,6 +40,9 @@ const {
 const {
     ActiveRuntimeAccounting
 } = require(path.join(root, 'src/renderer/services/agent-runtime/active-runtime-accounting.ts'));
+const {
+    buildProviderTransportMetrics
+} = require(path.join(root, 'src/shared/provider-transport-metrics.ts'));
 const {
     buildRuntimeContractStatus
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-selected-skill-handoff.ts'));
@@ -1094,6 +1099,176 @@ check(
     readProductionDocumentRequirement(childWithForgedEvidence).status === 'failed',
     '序列化 Run Record /项目记忆形状不能冒充 Runtime-owned 创建收据'
 );
+const parentRasterDelivery = {
+    name: 'saveDocument',
+    arguments: { documentId: createdDocumentId, format: 'jpg' },
+    result: {
+        success: true,
+        documentId: createdDocumentId,
+        sourceHistoryStateRef: { documentId: createdDocumentId, historyStateId: 160 },
+        format: 'jpg',
+        savedPath: 'C:/fixture/parent-preview.jpg'
+    }
+};
+const childEditableDelivery = {
+    name: 'saveDocument',
+    arguments: { documentId: createdDocumentId, format: 'psd' },
+    result: {
+        success: true,
+        documentId: createdDocumentId,
+        sourceHistoryStateRef: { documentId: createdDocumentId, historyStateId: 160 },
+        savedPath: 'C:/fixture/parent-source.psd',
+        editableDocumentArtifact: {
+            version: 'runtime-editable-document-artifact/v1',
+            basis: 'uxp_post_save_file_metadata',
+            path: 'C:/fixture/parent-source.psd',
+            format: 'psd',
+            byteLength: 4096,
+            modifiedAt: 1,
+            documentId: createdDocumentId,
+            canvas: { width: 1440, height: 1440 }
+        }
+    }
+};
+const partialLifecycleEvidence = extendTaskRunDocumentCreationEvidence({
+    identity: taskRunIdentity,
+    toolCallLog: [...parentCreationLog, parentRasterDelivery]
+});
+const partialLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: partialLifecycleEvidence,
+    taskRunId: taskRunIdentity.sessionId,
+    generation: taskRunIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    partialLifecycle.unsettledDocumentCount === 1
+        && partialLifecycle.documents[0].rasterDelivered === true
+        && partialLifecycle.documents[0].editableDelivered === false,
+    '跨代创建证据保留当前 revision 的部分交付，不把单格式误报为已结算',
+    JSON.stringify(partialLifecycle)
+);
+const childLifecycleIdentity = advanceRuntimeSessionIdentity({
+    previous: taskRunIdentity,
+    now: '2026-08-24T12:01:00.000Z',
+    nonce: 'completion-chain-child'
+});
+const pairedLifecycleEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: partialLifecycleEvidence,
+    identity: childLifecycleIdentity,
+    toolCallLog: [childEditableDelivery]
+});
+const pairedLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: pairedLifecycleEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    pairedLifecycle.deliveredDocumentCount === 1
+        && pairedLifecycle.unsettledDocumentCount === 0,
+    '同 TaskRun 跨 Reflexion 的同 revision 源稿 /预览部分收据可以组成已结算文档',
+    JSON.stringify(pairedLifecycle)
+);
+const noFileRequirementLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: pairedLifecycleEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: false, editableRequired: false }
+});
+check(
+    noFileRequirementLifecycle.unsettledDocumentCount === 1,
+    '没有文件要求时不能用布尔真空把新建文档伪装成已交付；只能显式关闭',
+    JSON.stringify(noFileRequirementLifecycle)
+);
+const revisedLifecycleIdentity = advanceRuntimeSessionIdentity({
+    previous: childLifecycleIdentity,
+    now: '2026-08-24T12:02:00.000Z',
+    nonce: 'completion-chain-revised'
+});
+const revisionAfterDelivery = {
+    name: 'createRectangle',
+    arguments: { documentId: createdDocumentId, x: 0, y: 0, width: 1440, height: 1440 },
+    result: {
+        success: true,
+        documentId: createdDocumentId,
+        photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before: { documentId: createdDocumentId, historyStateId: 160, activeLayerId: 1 },
+            after: { documentId: createdDocumentId, historyStateId: 161, activeLayerId: 2 },
+            toolActionCompleted: false,
+            mutationObserved: true,
+            documentChanged: false
+        }
+    }
+};
+const revisedLifecycleEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: pairedLifecycleEvidence,
+    identity: revisedLifecycleIdentity,
+    toolCallLog: [revisionAfterDelivery]
+});
+const revisedLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: revisedLifecycleEvidence,
+    taskRunId: revisedLifecycleIdentity.sessionId,
+    generation: revisedLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    revisedLifecycle.unsettledDocumentCount === 1
+        && revisedLifecycle.documents[0].latestHistoryStateRef.historyStateId === 161
+        && revisedLifecycle.documents[0].rasterDelivered === false
+        && revisedLifecycle.documents[0].editableDelivered === false,
+    '交付后即使动作未完整结束，只要 Host revision 已变化，旧文件收据也会失效',
+    JSON.stringify(revisedLifecycle)
+);
+const exactCloseEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: taskRunCreationEvidence,
+    identity: childLifecycleIdentity,
+    toolCallLog: [{
+        name: 'closeDocument',
+        arguments: { documentId: createdDocumentId, save: false },
+        result: { success: true, closedDocument: 'TaskRun 候选' }
+    }]
+});
+const exactCloseLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: exactCloseEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    exactCloseLifecycle.closedDocumentCount === 1
+        && exactCloseLifecycle.unsettledDocumentCount === 0,
+    '成功的精确 documentId 关闭可以结算弃用候选',
+    JSON.stringify(exactCloseLifecycle)
+);
+const nameOnlyCloseEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: taskRunCreationEvidence,
+    identity: childLifecycleIdentity,
+    toolCallLog: [{
+        name: 'closeDocument',
+        arguments: { documentName: 'TaskRun 候选', save: false },
+        result: { success: true, closedDocument: 'TaskRun 候选' }
+    }]
+});
+const nameOnlyCloseLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: nameOnlyCloseEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    nameOnlyCloseLifecycle.unsettledDocumentCount === 1,
+    '按名称模糊关闭不能冒充精确 TaskRun 文档终态',
+    JSON.stringify(nameOnlyCloseLifecycle)
+);
 check(
     childWithSameTargetEvidence.status !== 'completed'
         && childWithSameTargetEvidence.completion.artifactStatus === 'artifact_incomplete',
@@ -2007,19 +2182,36 @@ check(
     '公开 history 只按精确原文同步，不用 trim 误命中另一版本'
 );
 
+const providerTransportMetrics = buildProviderTransportMetrics({
+    startedAtMs: 10_000,
+    serializedRequestBytes: 150_000,
+    imageDataUrlBytes: 90_000,
+    adapterFormatMs: 5,
+    payloadMeasurementMs: 3,
+    streamOpenedAtMs: 10_120,
+    firstChunkAtMs: 10_180,
+    firstSemanticDeltaAtMs: 10_240,
+    completedAtMs: 11_100
+});
 let unboundAccounting = createRuntimeAccountingLedger('2026-08-24T00:00:00.000Z');
 unboundAccounting = recordRuntimeModelCall({
     ledger: unboundAccounting,
     durationMs: 1200,
     succeeded: true,
-    usage: { inputTokens: 321, outputTokens: 45 },
+    usage: {
+        inputTokens: 321,
+        outputTokens: 45,
+        cacheHitInputTokens: 200,
+        cacheMissInputTokens: 121
+    },
     promptShape: {
         systemChars: 100,
         historyChars: 200,
         messageCount: 3,
         imageBlocks: 1,
         toolCount: 2,
-        toolSchemaChars: 300
+        toolSchemaChars: 300,
+        providerTransportMetrics
     },
     now: '2026-08-24T00:00:01.200Z'
 });
@@ -2060,14 +2252,50 @@ const unboundAccountingDigest = buildRuntimeAccountingDigest({
     ledger: unboundAccounting,
     now: '2026-08-24T00:00:01.580Z'
 });
+check(
+    unboundAccounting.promptShapeSamples[0].cacheHitInputTokens === 200
+        && unboundAccounting.promptShapeSamples[0].cacheMissInputTokens === 121
+        && unboundAccountingDigest.promptShapeSamples[0].cacheHitInputTokens === 200
+        && unboundAccountingDigest.promptShapeSamples[0].cacheMissInputTokens === 121
+        && unboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100
+        && unboundAccountingDigest.promptShapeSamples[0].providerTransportMetrics.serializedRequestBytes === 150_000,
+    'Provider 缓存与 transport 指标写入同一活动账本和 digest'
+);
+const fractionalInputCacheLedger = recordRuntimeModelCall({
+    ledger: createRuntimeAccountingLedger('2026-08-24T00:00:02.000Z'),
+    durationMs: 10,
+    succeeded: true,
+    usage: {
+        inputTokens: 321.5,
+        outputTokens: 1,
+        cacheHitInputTokens: 200,
+        cacheMissInputTokens: 121
+    },
+    promptShape: {
+        systemChars: 1,
+        historyChars: 1,
+        messageCount: 1,
+        imageBlocks: 0,
+        toolCount: 0,
+        toolSchemaChars: 0
+    },
+    now: '2026-08-24T00:00:02.010Z'
+});
+check(
+    fractionalInputCacheLedger.promptShapeSamples[0].cacheHitInputTokens === undefined
+        && fractionalInputCacheLedger.promptShapeSamples[0].cacheMissInputTokens === undefined,
+    'Runtime Accounting 不会把非法 inputTokens 归一化后伪造成缓存守恒'
+);
 const clonedUnboundAccounting = cloneRuntimeAccountingLedger(unboundAccounting);
 clonedUnboundAccounting.stageBuckets[0].modelCallCount = 999;
 clonedUnboundAccounting.performanceUsage.observationKeys.push('visual:clone-only');
 clonedUnboundAccounting.promptShapeSamples[0].systemChars = 999;
+clonedUnboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs = 999;
 check(
     unboundAccounting.stageBuckets[0].modelCallCount === 2
         && !unboundAccounting.performanceUsage.observationKeys.includes('visual:clone-only')
-        && unboundAccounting.promptShapeSamples[0].systemChars === 100,
+        && unboundAccounting.promptShapeSamples[0].systemChars === 100
+        && unboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100,
     'Runtime Accounting 转移使用深拷贝，不让旧 owner 与新 Session 并行共享可变引用'
 );
 const accountingSeedIdentity = createRuntimeSessionIdentity({
@@ -2113,6 +2341,14 @@ activeAccounting.recordModelCall(undefined, {
     durationMs: 420,
     succeeded: true,
     usage: { inputTokens: 40, outputTokens: 8 },
+    outcome: {
+        transportAttempts: [{
+            durationMs: 420,
+            succeeded: true,
+            usage: { inputTokens: 40, outputTokens: 8 },
+            providerTransportMetrics
+        }]
+    },
     promptShape: {
         systemChars: 20,
         historyChars: 60,
@@ -2147,6 +2383,7 @@ const lifecycleDigest = activeAccounting.readDigest(lifecycleSession);
 check(
     lifecycleTransferSeed?.modelCallCount === 1
         && lifecycleTransferSeed.toolCallCount === 0
+        && lifecycleTransferSeed.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100
         && activeAccounting.readUnboundLedgerForTransfer() === undefined
         && lifecycleSession?.accounting.modelCallCount === 2
         && lifecycleSession.accounting.modelFailureCount === 1
@@ -2208,6 +2445,32 @@ check(
 check(
     validateAgentRunRecordForPersist(unboundAccountingRecord).ok,
     '合法的 plan-neutral Runtime Accounting 通过持久化校验'
+);
+const accountingWithPartialCacheUsage = JSON.parse(JSON.stringify(unboundAccountingRecord));
+delete accountingWithPartialCacheUsage.runtimeAccounting.promptShapeSamples[0].cacheMissInputTokens;
+check(
+    !validateAgentRunRecordForPersist(accountingWithPartialCacheUsage).ok,
+    'runtimeAccounting 拒绝只包含单边字段的 Provider 缓存用量'
+);
+const accountingWithInconsistentCacheUsage = JSON.parse(JSON.stringify(unboundAccountingRecord));
+accountingWithInconsistentCacheUsage.runtimeAccounting.promptShapeSamples[0].cacheMissInputTokens = 120;
+check(
+    !validateAgentRunRecordForPersist(accountingWithInconsistentCacheUsage).ok,
+    'runtimeAccounting 拒绝与 inputTokens 不守恒的 Provider 缓存用量'
+);
+const accountingWithNonMonotonicTransport = JSON.parse(JSON.stringify(unboundAccountingRecord));
+accountingWithNonMonotonicTransport.runtimeAccounting.promptShapeSamples[0]
+    .providerTransportMetrics.firstSemanticDeltaMs = 100;
+check(
+    !validateAgentRunRecordForPersist(accountingWithNonMonotonicTransport).ok,
+    'runtimeAccounting 拒绝非单调 Provider transport 时间'
+);
+const accountingWithRawProviderPayload = JSON.parse(JSON.stringify(unboundAccountingRecord));
+accountingWithRawProviderPayload.runtimeAccounting.promptShapeSamples[0]
+    .providerTransportMetrics.rawRequest = 'must-not-persist';
+check(
+    !validateAgentRunRecordForPersist(accountingWithRawProviderPayload).ok,
+    'runtimeAccounting 拒绝 Provider transport 未知字段和原始载荷'
 );
 
 const resolvedAgenticRuntimeContractStatus = buildRuntimeContractStatus({

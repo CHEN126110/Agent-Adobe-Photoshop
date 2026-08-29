@@ -40,6 +40,7 @@ import { GetCanvasSnapshotTool, GetElementMappingTool, AnalyzeLayoutTool } from 
 import { GetScreenSnapshotsTool, GetScreenSnapshotsWithOverlayTool } from './canvas/screen-snapshot';
 import { GetAnnotatedSnapshotTool } from './canvas/get-annotated-snapshot';
 import { RemoveBackgroundTool, ApplyMattingResultTool, ApplyMultiMattingResultTool } from './image/remove-background';
+import { CaptureLayerPixelsTool } from './image/capture-layer-pixels';
 import { PlaceImageTool } from './image/place-image';
 import { GetSelectionMaskTool, ApplyRasterImageResultTool, GetSelectionBoundsTool } from './image/inpainting';
 import { CreateRectangleTool, CreateEllipseTool } from './canvas/create-shape';
@@ -114,6 +115,7 @@ import {
     ExportToSkuDirTool 
 } from './sku';
 import { SockLayoutConfigTool } from './sku/sock-layout-config-tool';
+import { ApplySkuPoseAlignmentTool } from './sku/apply-pose-alignment';
 // 导出目录服务已简化，使用 getEntryWithUrl 解析项目路径入口，无需工具类
 // 详情页设计工具
 import { DetailPageParserTool } from './layout/detail-page-parser';
@@ -144,6 +146,7 @@ export class ToolRegistry {
     
     // 保存特定工具实例的引用（用于二进制传输等场景）
     private removeBackgroundTool: RemoveBackgroundTool | null = null;
+    private captureLayerPixelsTool: CaptureLayerPixelsTool | null = null;
     private applyMattingResultTool: ApplyMattingResultTool | null = null;
     private applyMultiMattingResultTool: ApplyMultiMattingResultTool | null = null;
 
@@ -156,6 +159,10 @@ export class ToolRegistry {
      */
     getRemoveBackgroundTool(): RemoveBackgroundTool | null {
         return this.removeBackgroundTool;
+    }
+
+    getCaptureLayerPixelsTool(): CaptureLayerPixelsTool | null {
+        return this.captureLayerPixelsTool;
     }
 
     /**
@@ -271,6 +278,8 @@ export class ToolRegistry {
         // 保存 RemoveBackgroundTool 实例引用（用于二进制图像传输）
         this.removeBackgroundTool = new RemoveBackgroundTool();
         this.register(this.removeBackgroundTool);
+        this.captureLayerPixelsTool = new CaptureLayerPixelsTool();
+        this.register(this.captureLayerPixelsTool);
         // 保存 ApplyMattingResultTool 实例引用（用于二进制蒙版传输）
         this.applyMattingResultTool = new ApplyMattingResultTool(this.mattingBinaryMaskStore);
         this.register(this.applyMattingResultTool);
@@ -390,6 +399,7 @@ export class ToolRegistry {
         // SKU 配置工具
         this.registerMany([
             new SockLayoutConfigTool(),
+            new ApplySkuPoseAlignmentTool(),
             new ExportColorConfigTool(),
             new CreateSkuPlaceholdersTool(),
             new GetSkuPlaceholdersTool(),

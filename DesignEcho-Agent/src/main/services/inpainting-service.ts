@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import {
     assertInpaintingMaskHasEditablePixels,
     clampSoftenedMaskToSelection
@@ -374,8 +374,8 @@ export class InpaintingService {
         model: InpaintingModel,
         provider: InpaintingProvider,
         region: RegionBounds,
-        fullImage: sharp.Sharp,
-        fullMask: sharp.Sharp,
+        fullImage: Sharp,
+        fullMask: Sharp,
         referenceImages: Buffer[],
         onProgress?: InpaintingProgressCallback
     ): Promise<Buffer> {
@@ -495,8 +495,8 @@ export class InpaintingService {
         request: InpaintingRequest,
         promptPlan: { originalPrompt: string; effectivePrompt: string; intent: InpaintingPromptIntent },
         model: InpaintingModel,
-        fullImage: sharp.Sharp,
-        fullMask: sharp.Sharp,
+        fullImage: Sharp,
+        fullMask: Sharp,
         onProgress?: InpaintingProgressCallback
     ): Promise<Buffer> {
         this.emitProgress(onProgress, {
@@ -802,7 +802,7 @@ export class InpaintingService {
         height: number,
         channels: number,
         format: 'raw' | 'png' | 'jpeg'
-    ): Promise<sharp.Sharp> {
+    ): Promise<Sharp> {
         const normalized = base64.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Buffer.from(normalized, 'base64');
         if (format === 'raw') {
@@ -828,7 +828,7 @@ export class InpaintingService {
         height: number,
         channels: number,
         format: 'raw' | 'png' | 'jpeg'
-    ): Promise<sharp.Sharp> {
+    ): Promise<Sharp> {
         const normalized = base64.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Buffer.from(normalized, 'base64');
         if (format === 'raw') {
@@ -850,7 +850,7 @@ export class InpaintingService {
 
     private async resolveRegion(
         request: InpaintingRequest,
-        fullMask: sharp.Sharp,
+        fullMask: Sharp,
         intent: InpaintingPromptIntent
     ): Promise<RegionBounds> {
         const rawBounds = request.selectionBounds || {};

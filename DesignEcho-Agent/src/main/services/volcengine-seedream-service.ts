@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { getAxiosProxyConfig } from './network-proxy';
-import sharp from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 
 export type SeedreamModel =
     | 'doubao-seedream-5-0-pro-260628'
@@ -819,7 +819,7 @@ export class VolcengineSeedreamService {
             throw new SeedreamInputError(`${role} image decoded to 0 bytes`, role);
         }
 
-        let metadata: sharp.Metadata;
+        let metadata: Metadata;
         try {
             metadata = await sharp(buffer).metadata();
         } catch (metaError) {

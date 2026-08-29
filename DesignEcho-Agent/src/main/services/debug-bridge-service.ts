@@ -125,14 +125,8 @@ export interface DebugBridgeChatSubmitInput {
     expectedModelId?: string;
     /** 正式成功率样本不接受从 dirty worktree 启动的 Runtime。 */
     requireCleanRuntimeGitState?: boolean;
-    /** 从零创作的隔离 Case 要求提交时 Photoshop 没有任何既有文档。 */
-    requireNoOpenPhotoshopDocuments?: boolean;
-    /**
-     * 外部脏文档隔离 Case：提交时恰好打开 1 个带未保存修改的外部文档，
-     * 全程不被触碰（history 身份与未保存状态在完成侧逐项复核）。
-     * 与 requireNoOpenPhotoshopDocuments 互斥，二者必须恰好声明一个。
-     */
-    requireExternalDirtyDocumentUntouched?: boolean;
+    /** 隔离 Case 允许保留路径明确的外部文档，但提交时不能已有当前 fixture 文档或未知归属文档。 */
+    requireNoOpenFixtureDocuments?: boolean;
     publicPlanConfirmationSourceMessageId?: string;
     publicPlanConfirmationRequestId?: string;
     publicPlanDisposableLiveAdapter?: boolean;
@@ -735,9 +729,7 @@ export class DebugBridgeService {
                 && typeof body.expectedWorkspaceSemanticDigest === 'string'
                 && /^sha256:[0-9a-f]{64}$/.test(body.expectedWorkspaceSemanticDigest.trim())
                 && body.requireCleanRuntimeGitState === true
-                // 文档基线必须恰好声明一种：零文档隔离，或外部脏文档不被触碰。
-                && ((body.requireNoOpenPhotoshopDocuments === true)
-                    !== (body.requireExternalDirtyDocumentUntouched === true));
+                && body.requireNoOpenFixtureDocuments === true;
             if (!hasFormalWriteGuard) {
                 sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
                     stage: 'bridge_preflight',
@@ -830,8 +822,7 @@ export class DebugBridgeService {
                     ? body.expectedModelId.trim().slice(0, 256)
                     : undefined,
                 requireCleanRuntimeGitState: body.requireCleanRuntimeGitState === true,
-                requireNoOpenPhotoshopDocuments: body.requireNoOpenPhotoshopDocuments === true,
-                requireExternalDirtyDocumentUntouched: body.requireExternalDirtyDocumentUntouched === true,
+                requireNoOpenFixtureDocuments: body.requireNoOpenFixtureDocuments === true,
                 publicPlanConfirmationSourceMessageId: typeof body.publicPlanConfirmationSourceMessageId === 'string'
                     ? body.publicPlanConfirmationSourceMessageId
                     : undefined,

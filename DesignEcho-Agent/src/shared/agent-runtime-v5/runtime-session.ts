@@ -2616,7 +2616,7 @@ export function recordRuntimeSessionModelCall(input: {
     session: RuntimeSession;
     durationMs: number;
     succeeded: boolean;
-    usage?: { inputTokens?: number; outputTokens?: number };
+    usage?: Parameters<typeof recordRuntimeModelCall>[0]['usage'];
     failureKind?: Parameters<typeof recordRuntimeModelCall>[0]['failureKind'];
     providerCode?: string;
     status?: number;

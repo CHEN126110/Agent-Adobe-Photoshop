@@ -13,12 +13,18 @@ const {
     normalizeMattingOutputFormat,
     validateSemanticBaseExportReceipt,
     validateMattingMutationReceipt,
+    validateExpectedMattingTargetIdentity,
     validateMattingTargetIdentityReceipt,
     validateSemanticDetectionCompleteness,
     validateSemanticRegionExportReceipt,
     validateSemanticTargetLifecycle
 } = require(path.join(agentRoot, 'src/main/uxp-handlers/visual-handlers.ts'));
 const { MattingService } = require(path.join(agentRoot, 'src/main/services/matting-service.ts'));
+const {
+    bindSemanticMattingGuidanceToDetectionBoxes,
+    normalizeSemanticMattingGuidance,
+    selectSemanticMattingDetectionInstances
+} = require(path.join(agentRoot, 'src/shared/semantic-matting-guidance.ts'));
 
 const photoshopMock = {
     app: { activeDocument: null },
@@ -75,6 +81,141 @@ function makeLifecycle(overrides = {}) {
 }
 
 async function run() {
+    const guidanceValidation = normalizeSemanticMattingGuidance({
+        version: 'semantic-matting-guidance/v1',
+        sets: [{
+            foregroundPoints: [{ x: 0.2, y: 0.3 }],
+            backgroundPoints: [{ x: 0.3, y: 0.5 }]
+        }]
+    });
+    check('语义引导只接受版本化的归一化正负点', guidanceValidation.valid === true);
+    check(
+        '语义引导拒绝越界坐标与静默附加字段',
+        normalizeSemanticMattingGuidance({
+            version: 'semantic-matting-guidance/v1',
+            sets: [{ foregroundPoints: [{ x: 1.2, y: 0.3, role: 'guess' }] }]
+        }).valid === false
+    );
+    check(
+        '语义引导拒绝字符串坐标，不做隐式数值转换',
+        normalizeSemanticMattingGuidance({
+            version: 'semantic-matting-guidance/v1',
+            sets: [{ foregroundPoints: [{ x: '0.2', y: 0.3 }] }]
+        }).valid === false
+    );
+    const guidanceBinding = bindSemanticMattingGuidanceToDetectionBoxes({
+        guidance: guidanceValidation.guidance,
+        boxes: [
+            { x1: 10, y1: 10, x2: 40, y2: 50 },
+            { x1: 60, y1: 10, x2: 90, y2: 50 }
+        ],
+        outputWidth: 1000,
+        outputHeight: 800,
+        baseRegionInOutput: { x1: 0, y1: 0, x2: 1000, y2: 800 },
+        detectWidth: 100,
+        detectHeight: 80
+    });
+    check(
+        'Harness 仅按坐标把 Agent 引导唯一绑定到检测框',
+        guidanceBinding.valid === true
+            && JSON.stringify(guidanceBinding.guidedBoxIndexes) === '[0]'
+            && JSON.stringify(guidanceBinding.pointsByBox[0])
+                === JSON.stringify([{ x: 20, y: 24, label: 1 }, { x: 30, y: 40, label: 0 }]),
+        JSON.stringify(guidanceBinding)
+    );
+    const ambiguousBinding = bindSemanticMattingGuidanceToDetectionBoxes({
+        guidance: {
+            version: 'semantic-matting-guidance/v1',
+            sets: [{ foregroundPoints: [{ x: 0.25, y: 0.25 }], backgroundPoints: [] }]
+        },
+        boxes: [
+            { x1: 10, y1: 10, x2: 35, y2: 35 },
+            { x1: 20, y1: 20, x2: 45, y2: 45 }
+        ],
+        outputWidth: 100,
+        outputHeight: 100,
+        baseRegionInOutput: { x1: 0, y1: 0, x2: 100, y2: 100 },
+        detectWidth: 100,
+        detectHeight: 100
+    });
+    check('前景点归属不唯一时停止，不由 Harness 猜实例', ambiguousBinding.valid === false);
+
+    const exactGuidanceValidation = normalizeSemanticMattingGuidance({
+        version: 'semantic-matting-guidance/v1',
+        instanceSelectionMode: 'exact_guided_instances',
+        sets: [
+            { foregroundPoints: [{ x: 0.75, y: 0.30 }] },
+            { foregroundPoints: [{ x: 0.30, y: 0.30 }, { x: 0.30, y: 0.50 }] }
+        ]
+    });
+    const exactCandidateBoxes = [
+        { phrase: 'sock', x1: 60, y1: 10, x2: 90, y2: 80 },
+        { phrase: 'sock', x1: 10, y1: 10, x2: 50, y2: 80 },
+        { phrase: 'sock', x1: 5, y1: 60, x2: 50, y2: 95 }
+    ];
+    const exactBinding = bindSemanticMattingGuidanceToDetectionBoxes({
+        guidance: exactGuidanceValidation.guidance,
+        boxes: exactCandidateBoxes,
+        outputWidth: 100,
+        outputHeight: 100,
+        baseRegionInOutput: { x1: 0, y1: 0, x2: 100, y2: 100 },
+        detectWidth: 100,
+        detectHeight: 100
+    });
+    const exactSelection = exactBinding.valid
+        ? selectSemanticMattingDetectionInstances({
+            guidance: exactGuidanceValidation.guidance,
+            boxes: exactCandidateBoxes,
+            pointsByBox: exactBinding.pointsByBox,
+            guidedBoxIndexes: exactBinding.guidedBoxIndexes,
+            requestedPhrases: ['sock']
+        })
+        : exactBinding;
+    check(
+        'exact_guided_instances 只消费 Agent 明确绑定的实例并保留候选差额收据',
+        exactSelection.valid === true
+            && exactSelection.mode === 'exact_guided_instances'
+            && exactSelection.candidateRegionCount === 3
+            && exactSelection.selectedRegionCount === 2
+            && exactSelection.unselectedCandidateCount === 1,
+        JSON.stringify(exactSelection)
+    );
+    const defaultSelection = exactBinding.valid
+        ? selectSemanticMattingDetectionInstances({
+            guidance: {
+                ...exactGuidanceValidation.guidance,
+                instanceSelectionMode: 'refine_detected_candidates'
+            },
+            boxes: exactCandidateBoxes,
+            pointsByBox: exactBinding.pointsByBox,
+            guidedBoxIndexes: exactBinding.guidedBoxIndexes,
+            requestedPhrases: ['sock']
+        })
+        : exactBinding;
+    check(
+        '默认 refine 模式不因引导组较少就让 Harness 擅自丢候选',
+        defaultSelection.valid === true
+            && defaultSelection.mode === 'all_detected'
+            && defaultSelection.selectedRegionCount === 3
+            && defaultSelection.unselectedCandidateCount === 0,
+        JSON.stringify(defaultSelection)
+    );
+    const missingPhraseSelection = exactBinding.valid
+        ? selectSemanticMattingDetectionInstances({
+            guidance: exactGuidanceValidation.guidance,
+            boxes: exactCandidateBoxes,
+            pointsByBox: exactBinding.pointsByBox,
+            guidedBoxIndexes: exactBinding.guidedBoxIndexes,
+            requestedPhrases: ['sock', 'shoe']
+        })
+        : exactBinding;
+    check(
+        'exact 模式没有覆盖全部点名短语时整体停止',
+        missingPhraseSelection.valid === false
+            && missingPhraseSelection.code === 'SEMANTIC_GUIDANCE_TARGET_COVERAGE_INCOMPLETE',
+        JSON.stringify(missingPhraseSelection)
+    );
+
     // ========== Main：区域几何必须来自实际收据 ==========
     const requestedSourceBounds = { left: -50, top: 20, right: 150, bottom: 220 };
     const targetIdentity = {
@@ -92,6 +233,37 @@ async function run() {
         targetIdentity,
         sourceHistoryStateRef: { documentId: 11, historyStateId: 101 }
     });
+    check(
+        '外部工作流绑定同一 document/history 时允许继续',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 11,
+            expectedHistoryStateId: 101
+        }).valid
+    );
+    check(
+        '外部工作流绑定错误 document 时在推理前拒绝',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 12,
+            expectedHistoryStateId: 101
+        }).code === 'expected_document_changed'
+    );
+    check(
+        '外部工作流绑定过期 history 时在推理前拒绝',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 11,
+            expectedHistoryStateId: 102
+        }).code === 'expected_history_state_changed'
+    );
+    check(
+        '外部工作流的非法目标身份断言不能被当作未提供',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 0
+        }).code === 'expected_document_id_invalid'
+    );
     const offCanvasReceipt = validateSemanticRegionExportReceipt({
         requestedSourceBounds,
         expectedMode: 'layer-region',
@@ -171,7 +343,9 @@ async function run() {
             sourceExportReceiptSchema: 'matting-source-export/v1',
             sourceRegionApplied: false,
             sourceExportMode: 'layer-full',
-            actualSourceBounds: { left: 0, top: 0, right: 900, bottom: 800 }
+            actualSourceBounds: { left: 0, top: 0, right: 900, bottom: 800 },
+            docWidth: 1000,
+            docHeight: 800
         }
     });
     check('首次 off-canvas 导出也必须返回实际 bounds', baseReceipt.valid, JSON.stringify(baseReceipt));
@@ -179,6 +353,24 @@ async function run() {
         '首次导出实际范围映射到完整图层输出坐标',
         baseReceipt.regionInOutput?.x1 === 100 && baseReceipt.regionInOutput?.x2 === 1000,
         JSON.stringify(baseReceipt.regionInOutput)
+    );
+    const providerSpaceBaseReceipt = validateSemanticBaseExportReceipt({
+        expectedMode: 'layer-full',
+        outputGeometry: { left: 1, top: 1, width: 4671, height: 7006 },
+        exportResult: {
+            sourceExportReceiptSchema: 'matting-source-export/v1',
+            sourceRegionApplied: false,
+            sourceExportMode: 'layer-full',
+            actualSourceBounds: { left: 0, top: 0, right: 2336, bottom: 3503 },
+            docWidth: 4672,
+            docHeight: 7008
+        }
+    });
+    check(
+        '首次整层收据不能把 Provider 内部 sourceBounds 冒充文档坐标',
+        !providerSpaceBaseReceipt.valid
+            && providerSpaceBaseReceipt.code === 'semantic_base_coordinate_space_mismatch',
+        JSON.stringify(providerSpaceBaseReceipt)
     );
 
     const changedRevisionReceipt = validateSemanticRegionExportReceipt({
@@ -232,6 +424,30 @@ async function run() {
         !validateSemanticTargetLifecycle(makeLifecycle({ segmentationCompletedRegionCount: 2 }), 'pre-apply').valid
     );
     check('完整目标收据允许进入 apply', validateSemanticTargetLifecycle(makeLifecycle(), 'pre-apply').valid);
+    const exactLifecycle = makeLifecycle({
+        candidateRegionCount: 4,
+        detectedRegionCount: 3,
+        unselectedCandidateCount: 1,
+        instanceSelectionMode: 'exact_guided_instances'
+    });
+    check(
+        'exact 实例选择允许候选数大于选中数，但差额必须进入收据',
+        validateSemanticTargetLifecycle(exactLifecycle, 'pre-apply').valid
+    );
+    check(
+        'all_detected 模式不能隐藏未选择候选',
+        !validateSemanticTargetLifecycle({
+            ...exactLifecycle,
+            instanceSelectionMode: 'all_detected'
+        }, 'pre-apply').valid
+    );
+    check(
+        'candidate / selected / unselected 数量不守恒时拒绝',
+        !validateSemanticTargetLifecycle({
+            ...exactLifecycle,
+            unselectedCandidateCount: 0
+        }, 'pre-apply').valid
+    );
     check(
         'apply 成功但缺 applied 数量收据时不报成功',
         !validateSemanticTargetLifecycle(makeLifecycle(), 'post-apply').valid
@@ -377,6 +593,67 @@ async function run() {
         JSON.stringify(perTargetFailure.targetCompleteness)
     );
 
+    const guidedService = new MattingService({ gpuMode: 'cpu' });
+    guidedService.initialized = true;
+    guidedService.loadBiRefNetModel = async () => false;
+    guidedService.decodeImageInput = async () => ({
+        buffer: Buffer.from('semantic-guidance-fixture'),
+        width: 20,
+        height: 10
+    });
+    const guidedMask = Buffer.alloc(20 * 10, 0);
+    for (let y = 2; y < 8; y++) {
+        for (let x = 4; x < 16; x++) guidedMask[y * 20 + x] = 255;
+    }
+    let capturedGuidance = null;
+    guidedService.setBoxSegmenter({
+        isReady() { return true; },
+        async segmentWithBox(_buffer, _box, guidancePoints) {
+            capturedGuidance = guidancePoints;
+            return { success: true, mask: guidedMask, maskWidth: 20, maskHeight: 10 };
+        }
+    });
+    const guidedResult = await guidedService.segmentHighResRegions([{
+        imageInput: 'fixture',
+        regionInOutput: { x1: 0, y1: 0, x2: 20, y2: 10 },
+        boxesInRegion: [{ x1: 2, y1: 1, x2: 18, y2: 9 }],
+        guidancePointsByBox: [[
+            { x: 8, y: 4, label: 1 },
+            { x: 15, y: 7, label: 0 }
+        ]]
+    }], {
+        outputWidth: 20,
+        outputHeight: 10,
+        binaryMaskOutput: true,
+        requireVerifiedSemanticScope: true
+    });
+    check(
+        'MattingService 将同一目标的正负点原样交给 BoxSegmenter',
+        guidedResult.success === true
+            && JSON.stringify(capturedGuidance) === JSON.stringify([
+                { x: 8, y: 4, label: 1 },
+                { x: 15, y: 7, label: 0 }
+            ]),
+        JSON.stringify({ success: guidedResult.success, capturedGuidance })
+    );
+    const mismatchedGuidance = await guidedService.segmentHighResRegions([{
+        imageInput: 'fixture',
+        regionInOutput: { x1: 0, y1: 0, x2: 20, y2: 10 },
+        boxesInRegion: [{ x1: 2, y1: 1, x2: 18, y2: 9 }],
+        guidancePointsByBox: [[], []]
+    }], {
+        outputWidth: 20,
+        outputHeight: 10,
+        binaryMaskOutput: true,
+        requireVerifiedSemanticScope: true
+    });
+    check(
+        '引导集合与目标框数量不一致时失败，不错绑到相邻实例',
+        mismatchedGuidance.success === false
+            && mismatchedGuidance.targetCompleteness?.complete === false,
+        JSON.stringify(mismatchedGuidance.targetCompleteness)
+    );
+
     const legacyBoxService = new MattingService({ gpuMode: 'cpu' });
     legacyBoxService.initialized = true;
     legacyBoxService.loadBiRefNetModel = async () => false;
@@ -445,6 +722,10 @@ async function run() {
 
     check('UXP 接受完整的 pre-apply 契约', validateSemanticMattingApplyContract(makeLifecycle()));
     check(
+        'UXP 接受带候选差额的 exact pre-apply 契约',
+        validateSemanticMattingApplyContract(exactLifecycle)
+    );
+    check(
         'UXP 在 Photoshop mutation 前拒绝部分分割契约',
         !validateSemanticMattingApplyContract(makeLifecycle({ segmentationCompletedTargetCount: 2 }))
     );
@@ -500,7 +781,9 @@ async function run() {
         'UXP 目标身份同时绑定 document/history/layer identity',
         validateMattingTargetIdentity(targetIdentity, photoshopMock.app.activeDocument).valid
     );
-    photoshopMock.action.batchPlay = async (descriptors) => {
+    // Photoshop 在 synchronousExecution=true 时可以同步返回数组；mock 必须覆盖
+    // 真实 Host 形态，不能用 async Promise 把 `.catch()` 误用伪装成兼容。
+    photoshopMock.action.batchPlay = (descriptors) => {
         if (descriptors?.[0]?._obj === 'get' && descriptors?.[0]?._target?.[0]?._ref === 'layer') {
             return [{ userMaskEnabled: true }];
         }
@@ -658,7 +941,7 @@ async function run() {
     );
     check('UXP 区域导出失败没有调用任何整层回退', wholeLayerFallbackCalls === 0, String(wholeLayerFallbackCalls));
 
-    // ========== UXP：Photoshop 返回的 sourceBounds 原样进入收据 ==========
+    // ========== UXP：隐式整层取像使用文档图层 bounds；显式区域保留 Photoshop 实际收据 ==========
     photoshopMock.imaging.getPixels = async () => ({
         sourceBounds: { left: 0, top: 20, right: 150, bottom: 220 },
         imageData: {
@@ -677,10 +960,10 @@ async function run() {
         { expectedTargetIdentity: targetIdentity }
     );
     check(
-        'UXP 首次整层 getPixels 也返回实际 sourceBounds/mode',
+        'UXP 首次整层 getPixels 不把 Provider 内部 sourceBounds 冒充文档坐标',
         binaryFullExport.sourceRegionApplied === false
             && binaryFullExport.sourceExportMode === 'layer-full'
-            && JSON.stringify(binaryFullExport.actualSourceBounds) === JSON.stringify({ left: 0, top: 20, right: 150, bottom: 220 }),
+            && JSON.stringify(binaryFullExport.actualSourceBounds) === JSON.stringify({ left: 0, top: 0, right: 900, bottom: 800 }),
         JSON.stringify(binaryFullExport)
     );
     const binaryRegion = await receiptTool.getLayerImageDataBinary(

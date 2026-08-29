@@ -7,6 +7,7 @@
 
 import { classifyAgentToolExecution } from '../../../shared/agent-tool-execution-preflight';
 import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
+import { PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE } from '../../../shared/agent-performance-policy';
 import type { AgentConfig } from './types';
 
 /**
@@ -16,8 +17,14 @@ import type { AgentConfig } from './types';
 export const MAX_FINAL_QUALITY_JUDGE_CALLS = 1;
 /** 终局 Judge 已给出可靠非通过分数但漏掉诊断时，只允许补一次诊断协议。 */
 export const MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS = 1;
-/** Host 质量版本复核（harness_quality_verification）每轮上限。 */
-export const MAX_HARNESS_QUALITY_VERIFICATION_CALLS = 3;
+/**
+ * Host 质量版本复核（harness_quality_verification）必须覆盖完整的有界质量协议：
+ * Judge 前的结构快照与全画布快照各一次，并在每个允许的质量模型事件后读回一次
+ * Photoshop history state。这里约束的是事实一致性，不增加 Harness 的审美决策权。
+ */
+export const MAX_HARNESS_QUALITY_VERIFICATION_CALLS = 2
+    + MAX_FINAL_QUALITY_JUDGE_CALLS
+    + MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS;
 // 执行供给预留（切片 2，治理切片 1 合并为单一 owner）：已授权写入的自主制作任务，
 // 尾部工具预算为「至少一次写入 + 同目标读回 + 评价」保留的调用数；探索观察不得耗尽它。
 export const EXECUTION_VERIFICATION_TOOL_RESERVE = 6;
@@ -162,9 +169,13 @@ export function shouldIssuePerformanceBudgetDisciplineDirective(input: {
     const activeElapsedMs = Math.max(0, Math.floor(Number(input.activeElapsedMs) || 0));
     const requestTimeoutMs = Math.max(1, Math.floor(Number(input.requestTimeoutMs) || 1));
     const remainingTimeMs = budget.softTimeBudgetMs - activeElapsedMs;
+    const closureTimeReserveMs = Math.min(
+        requestTimeoutMs * PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE,
+        Math.max(1, Math.floor(budget.softTimeBudgetMs * 0.5))
+    );
     const timeBudgetDue = budget.softTimeBudgetMs >= 0
         && remainingTimeMs > 0
-        && remainingTimeMs <= requestTimeoutMs;
+        && remainingTimeMs <= closureTimeReserveMs;
     return callBudgetDue || timeBudgetDue;
 }
 
@@ -437,25 +448,32 @@ export function applyPerformanceModelBudgetClassAllowance(
     budgetClass: PerformanceModelBudgetClass,
     exhaustion: PerformanceBudgetExhaustion | undefined
 ): PerformanceBudgetExhaustion | undefined {
-    if (exhaustion?.dimension !== 'model_calls') return exhaustion;
-    if (budgetClass === 'final_quality_judge'
-        && ledger.finalQualityJudgeCallCount < MAX_FINAL_QUALITY_JUDGE_CALLS) {
+    if (!exhaustion) return undefined;
+    const finalQualityJudgeAllowed = budgetClass === 'final_quality_judge'
+        && ledger.finalQualityJudgeCallCount < MAX_FINAL_QUALITY_JUDGE_CALLS;
+    const diagnosisRepairAllowed = budgetClass === 'final_quality_diagnosis_repair'
+        && ledger.finalQualityDiagnosisRepairCallCount < MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS;
+    // 普通执行软时限结束后，终局 Judge 仍使用自己的固定事件槽；物理截止时间由
+    // final-quality-model-protocol 的独立 terminal reserve 负责，不能在这里再用任务软时限
+    // 把已经预留的质量结算机会抹掉。
+    if ((exhaustion.dimension === 'model_calls' || exhaustion.dimension === 'soft_time')
+        && finalQualityJudgeAllowed) {
         return undefined;
     }
-    if (budgetClass === 'final_quality_diagnosis_repair'
-        && ledger.finalQualityDiagnosisRepairCallCount < MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS) {
+    if ((exhaustion.dimension === 'model_calls' || exhaustion.dimension === 'soft_time')
+        && diagnosisRepairAllowed) {
         return undefined;
     }
     return exhaustion;
 }
 
 export function buildPerformanceBudgetExhaustionMessage(
-    hasObservedTaskMutation: boolean,
+    hasViewableDesignChange: boolean,
     _dimension: 'model_calls' | 'tool_calls' | 'soft_time',
     _limit: number,
     _used: number
 ): string {
-    const outcome = hasObservedTaskMutation
+    const outcome = hasViewableDesignChange
         ? '当前制作暂时停下，已经做出的画面改动会保留，但这还不是完整成品。'
         : '当前处理停在查看和判断阶段，还没有做出可以看的设计版本。';
     return `${outcome}尚未完成的内容需要从当前状态继续。`;
@@ -479,23 +497,26 @@ export function readPerformanceBudgetExhaustion(input: {
     budget: PerformanceBudget | undefined;
     elapsedMs: number;
     scope?: 'all' | 'model' | 'tool';
-    hasObservedTaskMutation?: boolean;
+    hasViewableDesignChange?: boolean;
+    /** 模型请求已在软时限内获准；只允许结算该响应已经产生的 Tool Call。 */
+    settlingAdmittedModelToolCall?: boolean;
 }): PerformanceBudgetExhaustion | undefined {
     const { ledger, budget } = input;
     if (!budget) return undefined;
-    const hasObservedTaskMutation = input.hasObservedTaskMutation === true;
+    const hasViewableDesignChange = input.hasViewableDesignChange === true;
     const scope = input.scope ?? 'all';
     // 普通任务预算不为终局质量 Judge 事前扣减；Judge 的独立单次验收 allowance 与硬上限
     // 由 Agent 调用点按 budgetClass 处理，本纯账本函数仍只报告普通预算的真实耗尽状态。
     const effectiveSoftTimeBudgetMs = budget.softTimeBudgetMs;
-    if (effectiveSoftTimeBudgetMs >= 0
+    if (!input.settlingAdmittedModelToolCall
+        && effectiveSoftTimeBudgetMs >= 0
         && ledger.runStartedAtMs > 0
         && input.elapsedMs >= effectiveSoftTimeBudgetMs) {
         return {
             dimension: 'soft_time',
             code: 'agent_soft_time_budget_exhausted',
             message: buildPerformanceBudgetExhaustionMessage(
-                hasObservedTaskMutation,
+                hasViewableDesignChange,
                 'soft_time',
                 effectiveSoftTimeBudgetMs,
                 input.elapsedMs
@@ -512,7 +533,7 @@ export function readPerformanceBudgetExhaustion(input: {
             dimension: 'model_calls',
             code: 'agent_model_call_budget_exhausted',
             message: buildPerformanceBudgetExhaustionMessage(
-                hasObservedTaskMutation,
+                hasViewableDesignChange,
                 'model_calls',
                 effectiveModelCallLimit,
                 ledger.modelCallCount
@@ -528,7 +549,7 @@ export function readPerformanceBudgetExhaustion(input: {
             dimension: 'tool_calls',
             code: 'agent_tool_call_budget_exhausted',
             message: buildPerformanceBudgetExhaustionMessage(
-                hasObservedTaskMutation,
+                hasViewableDesignChange,
                 'tool_calls',
                 budget.maxToolCalls,
                 ledger.toolCallCount
@@ -568,8 +589,10 @@ export interface PerformanceToolConsumeContext {
     authorizedMutationExpectation: boolean;
     /** 本轮是否已真实尝试过交付类工具（写/保存/导出/外部生成）。 */
     attemptedDeliveryAction: boolean;
-    /** 与 Agent.buildPerformanceBudgetExhaustionMessage 同口径的画面改动事实。 */
+    /** 任意已观测 Photoshop mutation；供执行供给预留判断真实进展。 */
     hasObservedTaskMutation: boolean;
+    /** 排除仅建空白文档后的用户可见设计改动；只用于诚实终态文案。 */
+    hasViewableDesignChange: boolean;
 }
 
 export function consumePerformanceToolCallBudget(input: {
@@ -585,7 +608,10 @@ export function consumePerformanceToolCallBudget(input: {
         budget,
         elapsedMs: readPerformanceActiveElapsedMs(ledger),
         scope: 'tool',
-        hasObservedTaskMutation: input.reserveContext.hasObservedTaskMutation
+        hasViewableDesignChange: input.reserveContext.hasViewableDesignChange,
+        // Tool 调用来自本轮已经获准并成功返回的模型响应。软时限只阻止下一轮模型请求，
+        // 不能让本轮思考产生的动作在执行点失效；工具调用数硬上限仍照常检查。
+        settlingAdmittedModelToolCall: true
     });
     if (exhaustion) {
         return {

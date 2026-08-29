@@ -7,6 +7,28 @@ import type { UXPContext } from './types';
 
 // 剪贴板参考图最长边上限：够模型看清画面，同时控制 WS 消息体积
 const CLIPBOARD_IMAGE_MAX_EDGE = 1600;
+const CLIPBOARD_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg'] as const;
+
+type ClipboardImageItem = Pick<Electron.ClipboardItem, 'types' | 'getType'>;
+
+/**
+ * Electron 44 起 clipboard.readImage() 已移除，图片必须从 ClipboardItem 的
+ * MIME 表示读取。优先 PNG 以保留透明通道；只有 PNG 不存在时才读取 JPEG。
+ */
+export async function decodeClipboardImageItems(
+    items: readonly ClipboardImageItem[]
+): Promise<Electron.NativeImage | null> {
+    for (const mimeType of CLIPBOARD_IMAGE_MIME_TYPES) {
+        for (const item of items) {
+            if (!item.types.includes(mimeType)) continue;
+            const payload = await item.getType(mimeType);
+            if (!(payload instanceof Blob)) continue;
+            const image = nativeImage.createFromBuffer(Buffer.from(await payload.arrayBuffer()));
+            if (!image.isEmpty()) return image;
+        }
+    }
+    return null;
+}
 
 /**
  * 把带透明通道的图合成到白底。
@@ -14,7 +36,7 @@ const CLIPBOARD_IMAGE_MAX_EDGE = 1600;
  * 与 webview 粘贴路径的白底行为保持一致，避免同一素材两条入口产出黑底/白底两种参考图。
  * toBitmap 返回预乘 BGRA，白底合成即每通道加 (255 - alpha)。
  */
-function flattenImageToWhite(image: Electron.NativeImage): Electron.NativeImage {
+export function flattenImageToWhite(image: Electron.NativeImage): Electron.NativeImage {
     const size = image.getSize();
     if (!size.width || !size.height) return image;
     const bitmap = Buffer.from(image.toBitmap());
@@ -54,7 +76,7 @@ export function registerWebViewHandlers(context: UXPContext): void {
     // UXP 自身的 clipboard API 只支持文本，图片必须由 Agent(Electron) 主进程代读。
     wsServer.registerHandler('read-clipboard-image', async () => {
         try {
-            const image = clipboard.readImage();
+            const image = await decodeClipboardImageItems(await clipboard.read());
             if (!image || image.isEmpty()) {
                 return {
                     success: false,

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import sharp from 'sharp';
+import sharp, { type Metadata, type Sharp } from 'sharp';
 import { getAxiosProxyConfig } from './network-proxy';
 
 /**
@@ -87,8 +87,13 @@ const TIMEOUT_BY_SIZE: Record<SmileAiImageSize, number> = {
     '4K': 300_000
 };
 
-/** 单次请求体上限的保守取值；超过时降低源图编码质量而不是直接失败。 */
+/** 单次请求体上限的保守取值。内联图像会在发送前按总预算做无损降采样。 */
 const MAX_REQUEST_BYTES = 40 * 1024 * 1024;
+/** 4K PNG 以 base64 放进 JSON 后可能超过请求体大小，响应预算必须单独计算。 */
+const MAX_RESPONSE_BYTES = 96 * 1024 * 1024;
+/** 预留约 30% 给 base64 膨胀、prompt 和 JSON/multipart 边界。 */
+const MAX_INLINE_IMAGE_BYTES = Math.floor(MAX_REQUEST_BYTES * 0.68);
+const MIN_TIMEOUT_MS = 30_000;
 
 export interface SmileAiImageProgressEvent {
     progress: number;
@@ -112,14 +117,37 @@ export interface SmileAiImageResult {
     imageSize: SmileAiImageSize;
     actualWidth: number;
     actualHeight: number;
-    /** 实际分辨率明显低于所请求档位时的人话说明；档位如实生效时为 undefined */
-    sizeDowngradeNotice?: string;
+    /** 上游输出与请求档位或比例不一致时的人话说明；一致时为 undefined。 */
+    providerNotice?: string;
 }
 
 /** 图像源：已编码字节，或未编码 raw RGBA（UXP 直传形态，省一次编解码往返）。 */
 export type SmileAiImageSource =
     | Buffer
     | { raw: Buffer; width: number; height: number; channels: 1 | 2 | 3 | 4 };
+
+export interface SmileAiImageOptions {
+    model?: SmileAiImageModel | string;
+    timeoutMs?: number;
+    referenceImages?: Buffer[];
+    signal?: AbortSignal;
+    aspectRatio?: string;
+    imageSize?: SmileAiImageSize;
+}
+
+export interface SmileAiImageBatchOptions extends SmileAiImageOptions {
+    count?: number;
+}
+
+interface PreparedSmileAiImageRequest {
+    model: SmileAiImageModel;
+    prompt: string;
+    images: Buffer[];
+    aspectRatio: string;
+    imageSize: SmileAiImageSize;
+    timeoutMs: number;
+    signal?: AbortSignal;
+}
 
 type ServiceError = Error & {
     errorStage?: string;
@@ -135,13 +163,28 @@ const EXPECTED_LONG_EDGE: Record<SmileAiImageSize, number> = {
     '4K': 4096
 };
 
-function openSource(source: SmileAiImageSource): sharp.Sharp {
+function openSource(source: SmileAiImageSource): Sharp {
     if (Buffer.isBuffer(source)) {
         return sharp(source);
     }
     return sharp(source.raw, {
         raw: { width: source.width, height: source.height, channels: source.channels }
     });
+}
+
+function hasValidImageSource(source: SmileAiImageSource | undefined): boolean {
+    if (Buffer.isBuffer(source)) return source.length > 0;
+    if (!source || !Buffer.isBuffer(source.raw) || source.raw.length === 0) return false;
+    const width = Number(source.width);
+    const height = Number(source.height);
+    const channels = Number(source.channels);
+    const expectedBytes = width * height * channels;
+    return Number.isSafeInteger(expectedBytes)
+        && width > 0
+        && height > 0
+        && channels >= 1
+        && channels <= 4
+        && source.raw.length === expectedBytes;
 }
 
 export function isSmileAiImageModelId(model?: string): boolean {
@@ -168,57 +211,11 @@ export class SmileAiImageService {
     async generateFromImage(
         prompt: string,
         sourceImage: SmileAiImageSource,
-        options?: {
-            model?: SmileAiImageModel | string;
-            timeoutMs?: number;
-            referenceImages?: Buffer[];
-            signal?: AbortSignal;
-            aspectRatio?: string;
-            imageSize?: SmileAiImageSize;
-        },
+        options?: SmileAiImageOptions,
         onProgress?: SmileAiImageProgressCallback
     ): Promise<SmileAiImageResult> {
-        if (!this.hasApiKey()) {
-            throw this.createStageError('Smile AI Studio API Key 未配置', 'provider-validate');
-        }
-
-        const cleanPrompt = String(prompt || '').trim();
-        if (!cleanPrompt) {
-            throw this.createStageError('提示词不能为空', 'provider-validate');
-        }
-
-        const model = this.normalizeModel(options?.model);
-
-        onProgress?.({ progress: 20, stage: 'provider-validate', message: '正在准备生成请求' });
-
-        const image = openSource(sourceImage);
-        const metadata = await image.metadata();
-        const width = Math.max(1, metadata.width || 1024);
-        const height = Math.max(1, metadata.height || 1024);
-
-        const aspectRatio = this.resolveAspectRatio(options?.aspectRatio, width, height);
-        const imageSize = options?.imageSize || this.inferImageSize(width, height);
-        const timeoutMs = options?.timeoutMs || TIMEOUT_BY_SIZE[imageSize];
-
-        const sourcePng = await image.png().toBuffer();
-        const references = Array.isArray(options?.referenceImages)
-            ? options!.referenceImages!.filter((buffer) => buffer instanceof Buffer && buffer.length > 0)
-            : [];
-
-        onProgress?.({ progress: 45, stage: 'provider-submit', message: '正在请求生成' });
-
-        const resolved = await this.requestImage({
-            model,
-            prompt: cleanPrompt,
-            images: [sourcePng, ...references],
-            aspectRatio,
-            imageSize,
-            timeoutMs,
-            signal: options?.signal,
-            onProgress
-        });
-
-        return this.describeResult(resolved, model, aspectRatio, imageSize);
+        const prepared = await this.prepareFromImageRequest(prompt, sourceImage, options, onProgress);
+        return this.executePreparedRequest(prepared, onProgress);
     }
 
     /**
@@ -226,40 +223,25 @@ export class SmileAiImageService {
      */
     async generateImage(
         prompt: string,
-        options?: {
-            model?: SmileAiImageModel | string;
-            timeoutMs?: number;
-            referenceImages?: Buffer[];
-            signal?: AbortSignal;
-            aspectRatio?: string;
-            imageSize?: SmileAiImageSize;
-        },
+        options?: SmileAiImageOptions,
         onProgress?: SmileAiImageProgressCallback
     ): Promise<SmileAiImageResult> {
-        if (!this.hasApiKey()) {
-            throw this.createStageError('Smile AI Studio API Key 未配置', 'provider-validate');
-        }
-
-        const cleanPrompt = String(prompt || '').trim();
-        if (!cleanPrompt) {
-            throw this.createStageError('提示词不能为空', 'provider-validate');
-        }
-
+        const cleanPrompt = this.requirePromptAndCredentials(prompt);
         const model = this.normalizeModel(options?.model);
         const aspectRatio = this.normalizeAspectRatio(options?.aspectRatio) || '1:1';
-        const imageSize = options?.imageSize || '2K';
-        const timeoutMs = options?.timeoutMs || TIMEOUT_BY_SIZE[imageSize];
-
+        const imageSize = this.normalizeImageSize(options?.imageSize, '2K');
+        const timeoutMs = this.resolveTimeoutMs(imageSize, options?.timeoutMs);
         const references = Array.isArray(options?.referenceImages)
             ? options!.referenceImages!.filter((buffer) => buffer instanceof Buffer && buffer.length > 0)
             : [];
+        const images = await this.prepareInputImages(references, 'reference');
 
         onProgress?.({ progress: 40, stage: 'provider-submit', message: '正在请求生成' });
 
         const resolved = await this.requestImage({
             model,
             prompt: cleanPrompt,
-            images: references,
+            images,
             aspectRatio,
             imageSize,
             timeoutMs,
@@ -280,34 +262,17 @@ export class SmileAiImageService {
     async generateBatchFromImage(
         prompt: string,
         sourceImage: SmileAiImageSource,
-        options: {
-            model?: SmileAiImageModel | string;
-            count?: number;
-            timeoutMs?: number;
-            referenceImages?: Buffer[];
-            signal?: AbortSignal;
-            aspectRatio?: string;
-            imageSize?: SmileAiImageSize;
-        } | undefined,
+        options: SmileAiImageBatchOptions | undefined,
         onProgress?: SmileAiImageProgressCallback
     ): Promise<{ results: SmileAiImageResult[]; failures: Array<{ index: number; message: string }> }> {
         const requested = Number(options?.count);
         const count = Number.isFinite(requested) && requested > 1 ? Math.min(Math.floor(requested), 4) : 1;
-
-        if (count === 1) {
-            const single = await this.generateFromImage(prompt, sourceImage, options, onProgress);
-            return { results: [single], failures: [] };
-        }
-
-        // 源图只编码一次，N 个请求共用——避免把 4K 源图重复编 N 遍。
-        const prepared = await openSource(sourceImage).png().toBuffer();
+        const prepared = await this.prepareFromImageRequest(prompt, sourceImage, options, onProgress);
 
         const settled = await Promise.allSettled(
             Array.from({ length: count }, (_unused, index) =>
-                this.generateFromImage(
-                    prompt,
+                this.executePreparedRequest(
                     prepared,
-                    options,
                     // 只让第一路上报进度，避免 N 路进度互相覆盖导致进度条跳动
                     index === 0 ? onProgress : undefined
                 )
@@ -316,25 +281,111 @@ export class SmileAiImageService {
 
         const results: SmileAiImageResult[] = [];
         const failures: Array<{ index: number; message: string }> = [];
+        let firstFailure: unknown;
         settled.forEach((entry, index) => {
             if (entry.status === 'fulfilled') {
                 results.push(entry.value);
                 return;
             }
+            firstFailure ??= entry.reason;
             failures.push({ index, message: entry.reason?.message || String(entry.reason) });
         });
+
+        // 全部失败时保留第一条 Provider 错误的 stage/code/detail。把它压成“空结果”
+        // 会让取消、鉴权与渠道故障全都失去可行动信息。
+        if (results.length === 0 && firstFailure) {
+            throw firstFailure;
+        }
 
         return { results, failures };
     }
 
     // ────────────────────────── 内部实现 ──────────────────────────
 
+    private requirePromptAndCredentials(prompt: string): string {
+        if (!this.hasApiKey()) {
+            throw this.createStageError('Smile AI Studio API Key 未配置', 'provider-validate');
+        }
+        const cleanPrompt = String(prompt || '').trim();
+        if (!cleanPrompt) {
+            throw this.createStageError('提示词不能为空', 'provider-validate');
+        }
+        return cleanPrompt;
+    }
+
+    private async prepareFromImageRequest(
+        prompt: string,
+        sourceImage: SmileAiImageSource,
+        options?: SmileAiImageOptions,
+        onProgress?: SmileAiImageProgressCallback
+    ): Promise<PreparedSmileAiImageRequest> {
+        const cleanPrompt = this.requirePromptAndCredentials(prompt);
+        if (!hasValidImageSource(sourceImage)) {
+            throw this.createStageError('源图像素数据无效或为空', 'provider-validate');
+        }
+
+        const model = this.normalizeModel(options?.model);
+        onProgress?.({ progress: 20, stage: 'provider-validate', message: '正在准备生成请求' });
+
+        let metadata: Metadata;
+        try {
+            metadata = await openSource(sourceImage).rotate().metadata();
+        } catch (error: any) {
+            throw this.createStageError(
+                '源图无法读取，已在发送前停止',
+                'provider-validate',
+                error?.message || String(error),
+                'invalid_source_image'
+            );
+        }
+        const width = Math.max(1, metadata.width || 1024);
+        const height = Math.max(1, metadata.height || 1024);
+        const aspectRatio = this.resolveAspectRatio(options?.aspectRatio, width, height);
+        const inferredSize = this.inferImageSize(width, height);
+        const imageSize = this.normalizeImageSize(options?.imageSize, inferredSize);
+        const timeoutMs = this.resolveTimeoutMs(imageSize, options?.timeoutMs);
+        const references = Array.isArray(options?.referenceImages)
+            ? options.referenceImages.filter((buffer) => Buffer.isBuffer(buffer) && buffer.length > 0)
+            : [];
+        const images = await this.prepareInputImages([sourceImage, ...references], 'source');
+
+        return {
+            model,
+            prompt: cleanPrompt,
+            images,
+            aspectRatio,
+            imageSize,
+            timeoutMs,
+            signal: options?.signal
+        };
+    }
+
+    private async executePreparedRequest(
+        prepared: PreparedSmileAiImageRequest,
+        onProgress?: SmileAiImageProgressCallback
+    ): Promise<SmileAiImageResult> {
+        onProgress?.({ progress: 45, stage: 'provider-submit', message: '正在请求生成' });
+        const resolved = await this.requestImage({ ...prepared, onProgress });
+        return this.describeResult(
+            resolved,
+            prepared.model,
+            prepared.aspectRatio,
+            prepared.imageSize
+        );
+    }
+
     private normalizeModel(model?: string): SmileAiImageModel {
         const normalized = String(model || '').trim();
+        if (!normalized) return DEFAULT_MODEL;
         if (SUPPORTED_MODELS.includes(normalized as SmileAiImageModel)) {
             return normalized as SmileAiImageModel;
         }
-        return DEFAULT_MODEL;
+        throw this.createStageError(
+            `不支持的 Smile AI 图像模型「${normalized}」，已停止请求，未自动替换模型`,
+            'provider-validate',
+            normalized,
+            'unsupported_model'
+        );
     }
 
     private isBananaModel(model: SmileAiImageModel): boolean {
@@ -358,9 +409,15 @@ export class SmileAiImageService {
     private normalizeAspectRatio(value?: string): string | undefined {
         const normalized = String(value || '').trim();
         if (!normalized || normalized === 'auto') return undefined;
-        return (SMILE_AI_IMAGE_ASPECT_RATIOS as readonly string[]).includes(normalized)
-            ? normalized
-            : undefined;
+        if ((SMILE_AI_IMAGE_ASPECT_RATIOS as readonly string[]).includes(normalized)) {
+            return normalized;
+        }
+        throw this.createStageError(
+            `Smile AI 不支持输出比例「${normalized}」`,
+            'provider-validate',
+            normalized,
+            'unsupported_aspect_ratio'
+        );
     }
 
     /** 用户显式指定优先；否则按源图实际长宽比吸附到最近的支持档位。 */
@@ -387,6 +444,117 @@ export class SmileAiImageService {
         if (longEdge > 3000) return '4K';
         if (longEdge > 1500) return '2K';
         return '1K';
+    }
+
+    private normalizeImageSize(
+        value: SmileAiImageSize | undefined,
+        fallback: SmileAiImageSize
+    ): SmileAiImageSize {
+        const normalized = String(value || '').trim().toUpperCase();
+        if (!normalized) return fallback;
+        if (normalized === '1K' || normalized === '2K' || normalized === '4K') {
+            return normalized;
+        }
+        throw this.createStageError(
+            `Smile AI 不支持分辨率档位「${normalized}」`,
+            'provider-validate',
+            normalized,
+            'unsupported_image_size'
+        );
+    }
+
+    private resolveTimeoutMs(imageSize: SmileAiImageSize, requestedMs?: number): number {
+        if (Number.isFinite(requestedMs) && Number(requestedMs) > 0) {
+            return Math.max(MIN_TIMEOUT_MS, Number(requestedMs));
+        }
+        return TIMEOUT_BY_SIZE[imageSize];
+    }
+
+    /**
+     * 所有源图和参考图都先转成真实 PNG，再按整次请求预算做无损降采样。
+     *
+     * 旧实现把 JPEG/WebP 参考图的原始字节标成 image/png 发送；网关可能拒绝，也可能把图
+     * 当损坏输入静默忽略。这里只改变像素尺寸，不用有损编码换通过率。
+     */
+    private async prepareInputImages(
+        sources: SmileAiImageSource[],
+        firstRole: 'source' | 'reference'
+    ): Promise<Buffer[]> {
+        if (sources.length === 0) return [];
+        const perImageBudget = Math.max(
+            256 * 1024,
+            Math.floor(MAX_INLINE_IMAGE_BYTES / sources.length)
+        );
+        const prepared: Buffer[] = [];
+        for (let index = 0; index < sources.length; index += 1) {
+            const source = sources[index];
+            try {
+                prepared.push(await this.encodePngWithinBudget(source, perImageBudget));
+            } catch (error: any) {
+                if (error?.provider === 'smile-ai') throw error;
+                const referenceIndex = firstRole === 'source' ? index : index + 1;
+                const role = firstRole === 'source' && index === 0
+                    ? '源图'
+                    : `第 ${referenceIndex} 张参考图`;
+                throw this.createStageError(
+                    `${role}无法读取，已在发送前停止`,
+                    'provider-validate',
+                    error?.message || String(error),
+                    'invalid_input_image'
+                );
+            }
+        }
+        return prepared;
+    }
+
+    private async encodePngWithinBudget(
+        source: SmileAiImageSource,
+        budgetBytes: number
+    ): Promise<Buffer> {
+        const metadata = await openSource(source).rotate().metadata();
+        const originalWidth = Math.max(1, metadata.width || 1);
+        const originalHeight = Math.max(1, metadata.height || 1);
+        const originalPixels = originalWidth * originalHeight;
+        const fullSizePng = await openSource(source)
+            .rotate()
+            .png({ compressionLevel: 6, adaptiveFiltering: true })
+            .toBuffer();
+        if (fullSizePng.length <= budgetBytes) return fullSizePng;
+
+        let targetPixels = Math.floor(originalPixels * (budgetBytes / fullSizePng.length) * 0.88);
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const scale = Math.sqrt(targetPixels / originalPixels);
+            const width = Math.max(16, Math.round(originalWidth * Math.min(scale, 0.98)));
+            const height = Math.max(16, Math.round(originalHeight * Math.min(scale, 0.98)));
+            const resized = await openSource(source)
+                .rotate()
+                .resize(width, height, {
+                    fit: 'inside',
+                    kernel: 'lanczos3',
+                    withoutEnlargement: true
+                })
+                .png({ compressionLevel: 6, adaptiveFiltering: true })
+                .toBuffer();
+            if (resized.length <= budgetBytes) {
+                console.log(
+                    `[SmileAI] 输入图无损降采样 ${originalWidth}×${originalHeight} → ${width}×${height}，`
+                    + `${Math.round(resized.length / 1024)}KB`
+                );
+                return resized;
+            }
+            targetPixels = Math.max(
+                16 * 16,
+                Math.floor(targetPixels * (budgetBytes / resized.length) * 0.9)
+            );
+        }
+
+        throw this.createStageError(
+            `输入图无法压进 Smile AI 请求预算（原图 ${originalWidth}×${originalHeight}，`
+            + `单图预算 ${Math.round(budgetBytes / 1024 / 1024)}MB）`,
+            'provider-validate',
+            undefined,
+            'image_budget_exceeded'
+        );
     }
 
     private async requestImage(input: {
@@ -524,12 +692,7 @@ export class SmileAiImageService {
             return { image: Buffer.from(first.b64_json, 'base64'), mimeType: 'image/png' };
         }
         if (first?.url) {
-            const download = await axios.get<ArrayBuffer>(first.url, {
-                responseType: 'arraybuffer',
-                timeout: input.timeoutMs,
-                ...getAxiosProxyConfig()
-            });
-            return { image: Buffer.from(download.data), mimeType: 'image/png' };
+            return this.downloadImage(first.url, input.timeoutMs, input.signal);
         }
         throw this.createStageError(
             '网关返回成功但响应中没有图像数据',
@@ -564,20 +727,24 @@ export class SmileAiImageService {
         signal?: AbortSignal,
         extraHeaders?: Record<string, string>
     ): Promise<Record<string, unknown>> {
-        const response = await axios.post(url, body, {
-            timeout: timeoutMs,
-            signal,
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.apiKey}`,
-                ...(extraHeaders || {})
-            },
-            maxBodyLength: MAX_REQUEST_BYTES,
-            maxContentLength: MAX_REQUEST_BYTES,
-            validateStatus: () => true,
-            ...getAxiosProxyConfig()
-        });
-        return this.unwrapResponse(response.status, response.data);
+        try {
+            const response = await axios.post(url, body, {
+                timeout: timeoutMs,
+                signal,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${this.apiKey}`,
+                    ...(extraHeaders || {})
+                },
+                maxBodyLength: MAX_REQUEST_BYTES,
+                maxContentLength: MAX_RESPONSE_BYTES,
+                validateStatus: () => true,
+                ...getAxiosProxyConfig()
+            });
+            return this.unwrapResponse(response.status, response.data);
+        } catch (error: any) {
+            throw this.wrapRequestError(error, signal, 'provider-submit');
+        }
     }
 
     private async postForm(
@@ -586,16 +753,114 @@ export class SmileAiImageService {
         timeoutMs: number,
         signal?: AbortSignal
     ): Promise<Record<string, unknown>> {
-        const response = await axios.post(url, form, {
-            timeout: timeoutMs,
-            signal,
-            headers: { Authorization: `Bearer ${this.apiKey}` },
-            maxBodyLength: MAX_REQUEST_BYTES,
-            maxContentLength: MAX_REQUEST_BYTES,
-            validateStatus: () => true,
-            ...getAxiosProxyConfig()
-        });
-        return this.unwrapResponse(response.status, response.data);
+        try {
+            const response = await axios.post(url, form, {
+                timeout: timeoutMs,
+                signal,
+                headers: { Authorization: `Bearer ${this.apiKey}` },
+                maxBodyLength: MAX_REQUEST_BYTES,
+                maxContentLength: MAX_RESPONSE_BYTES,
+                validateStatus: () => true,
+                ...getAxiosProxyConfig()
+            });
+            return this.unwrapResponse(response.status, response.data);
+        } catch (error: any) {
+            throw this.wrapRequestError(error, signal, 'provider-submit');
+        }
+    }
+
+    private async downloadImage(
+        rawUrl: string,
+        timeoutMs: number,
+        signal?: AbortSignal
+    ): Promise<{ image: Buffer; mimeType: string }> {
+        let url: URL;
+        try {
+            url = new URL(String(rawUrl || '').trim());
+        } catch {
+            throw this.createStageError(
+                '网关返回了无效的结果图地址',
+                'provider-ready',
+                String(rawUrl || '').slice(0, 200),
+                'invalid_result_url'
+            );
+        }
+        if (url.protocol !== 'https:') {
+            throw this.createStageError(
+                '网关返回的结果图地址不是 HTTPS，已拒绝下载',
+                'provider-ready',
+                url.protocol,
+                'unsafe_result_url'
+            );
+        }
+
+        try {
+            const response = await axios.get<ArrayBuffer>(url.toString(), {
+                responseType: 'arraybuffer',
+                timeout: timeoutMs,
+                signal,
+                maxContentLength: MAX_RESPONSE_BYTES,
+                validateStatus: () => true,
+                ...getAxiosProxyConfig()
+            });
+            if (response.status < 200 || response.status >= 300) {
+                throw this.createStageError(
+                    `Smile AI 结果图下载失败（HTTP ${response.status}）`,
+                    'provider-download',
+                    undefined,
+                    String(response.status)
+                );
+            }
+            const contentType = String(response.headers?.['content-type'] || '').split(';')[0].trim();
+            if (contentType && !contentType.startsWith('image/')) {
+                throw this.createStageError(
+                    'Smile AI 结果地址没有返回图片内容',
+                    'provider-download',
+                    contentType,
+                    'unexpected_content_type'
+                );
+            }
+            return {
+                image: Buffer.from(response.data),
+                mimeType: contentType || 'image/png'
+            };
+        } catch (error: any) {
+            throw this.wrapRequestError(error, signal, 'provider-download');
+        }
+    }
+
+    private wrapRequestError(
+        error: any,
+        signal: AbortSignal | undefined,
+        stage: 'provider-submit' | 'provider-download'
+    ): ServiceError {
+        if (error?.provider === 'smile-ai') return error as ServiceError;
+        if (signal?.aborted || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') {
+            return this.createStageError('已停止本次生成', 'provider-canceled', undefined, 'canceled');
+        }
+        const detail = String(
+            error?.response?.data?.error?.message
+            || error?.response?.data?.message
+            || error?.message
+            || 'network request failed'
+        ).trim();
+        const code = String(error?.code || error?.response?.status || '').trim() || undefined;
+        if (code === 'ECONNABORTED' || /timeout/i.test(detail)) {
+            return this.createStageError(
+                'Smile AI Studio 等待超时，当前请求已停止',
+                stage,
+                detail,
+                code || 'timeout'
+            );
+        }
+        return this.createStageError(
+            stage === 'provider-download'
+                ? 'Smile AI Studio 结果图下载失败'
+                : '无法连接 Smile AI Studio',
+            stage,
+            detail,
+            code
+        );
     }
 
     /**
@@ -621,30 +886,39 @@ export class SmileAiImageService {
             throw this.createStageError(
                 'Smile AI Studio API Key 无效或已过期，请在设置中更新',
                 'provider-validate',
-                message
+                message,
+                code || String(status)
             );
         }
         if (/get_channel_failed|可用渠道不存在/i.test(`${code} ${message}`)) {
             throw this.createStageError(
                 '当前 Key 的分组下没有该模型的可用渠道。请在网关控制台把该 Key 切换到支持此模型的分组，重试无法解决',
                 'provider-submit',
-                message
+                message,
+                code || 'get_channel_failed'
             );
         }
         if (/quota|余额|额度不足/i.test(`${code} ${message}`)) {
-            throw this.createStageError('Smile AI Studio 账户余额不足，请充值后重试', 'provider-submit', message);
+            throw this.createStageError(
+                'Smile AI Studio 账户余额不足，请充值后重试',
+                'provider-submit',
+                message,
+                code || 'insufficient_quota'
+            );
         }
         if (/deadlock/i.test(message)) {
             throw this.createStageError(
                 '网关侧数据库繁忙（deadlock），稍后重试即可',
                 'provider-submit',
-                message
+                message,
+                code || 'deadlock'
             );
         }
         throw this.createStageError(
             `Smile AI Studio 请求失败（HTTP ${status}）`,
             'provider-submit',
-            message
+            message,
+            code || String(status)
         );
     }
 
@@ -677,20 +951,64 @@ export class SmileAiImageService {
         aspectRatio: string,
         imageSize: SmileAiImageSize
     ): Promise<SmileAiImageResult> {
-        const metadata = await sharp(resolved.image).metadata();
-        const actualWidth = metadata.width || 0;
-        const actualHeight = metadata.height || 0;
+        let metadata: Metadata;
+        try {
+            metadata = await sharp(resolved.image).metadata();
+        } catch (error: any) {
+            throw this.createStageError(
+                'Smile AI Studio 返回的内容不是可读取的图片',
+                'provider-ready',
+                error?.message || String(error),
+                'invalid_image_payload'
+            );
+        }
+        const actualWidth = Math.max(0, metadata.width || 0);
+        const actualHeight = Math.max(0, metadata.height || 0);
+        if (actualWidth === 0 || actualHeight === 0) {
+            throw this.createStageError(
+                'Smile AI Studio 返回的图片缺少有效尺寸',
+                'provider-ready',
+                `${actualWidth}x${actualHeight}`,
+                'invalid_image_dimensions'
+            );
+        }
+
         const longEdge = Math.max(actualWidth, actualHeight);
         const expected = EXPECTED_LONG_EDGE[imageSize];
+        const notices: string[] = [];
+        // gpt-image-2 没有 1K/2K/4K 档位，不能把 UI 的单一占位档误报成上游降级。
+        if (this.isBananaModel(model) && longEdge < expected * 0.75) {
+            notices.push(
+                `请求 ${imageSize} 档，实际输出 ${actualWidth}×${actualHeight}，上游未按档位出图`
+            );
+        }
 
-        // 0.75 倍的放宽，避免不同比例下的正常尺寸差异被误报成降级
-        const sizeDowngradeNotice = longEdge > 0 && longEdge < expected * 0.75
-            ? `请求 ${imageSize} 档，实际输出 ${actualWidth}×${actualHeight}，上游未按档位出图`
-            : undefined;
+        const [ratioWidth, ratioHeight] = aspectRatio.split(':').map(Number);
+        const expectedRatio = ratioWidth / ratioHeight;
+        const actualRatio = actualWidth / actualHeight;
+        if (
+            Number.isFinite(expectedRatio)
+            && expectedRatio > 0
+            && Math.abs(actualRatio - expectedRatio) / expectedRatio > 0.08
+        ) {
+            notices.push(
+                `请求比例 ${aspectRatio}，实际输出约为 ${actualWidth}:${actualHeight}，置入前请复核裁切`
+            );
+        }
 
-        const mimeType = resolved.mimeType === 'image/jpeg' || resolved.mimeType === 'image/webp'
-            ? resolved.mimeType
-            : 'image/png';
+        let mimeType: SmileAiImageResult['mimeType'];
+        switch (String(metadata.format || '').toLowerCase()) {
+            case 'jpeg':
+            case 'jpg':
+                mimeType = 'image/jpeg';
+                break;
+            case 'webp':
+                mimeType = 'image/webp';
+                break;
+            default:
+                mimeType = 'image/png';
+                break;
+        }
 
         return {
             image: resolved.image,
@@ -700,14 +1018,20 @@ export class SmileAiImageService {
             imageSize,
             actualWidth,
             actualHeight,
-            sizeDowngradeNotice
+            providerNotice: notices.length > 0 ? notices.join('；') : undefined
         };
     }
 
-    private createStageError(message: string, stage: string, detail?: string): ServiceError {
+    private createStageError(
+        message: string,
+        stage: string,
+        detail?: string,
+        code?: string
+    ): ServiceError {
         const error = new Error(message) as ServiceError;
         error.errorStage = stage;
         error.provider = 'smile-ai';
+        if (code) error.errorCode = code;
         if (detail) error.errorDetail = detail;
         return error;
     }

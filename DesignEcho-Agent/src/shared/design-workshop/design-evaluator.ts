@@ -70,8 +70,6 @@ export function buildDesignEvaluationPrompt(input: {
     /** 与同项目近期稿的雷同点（配方 / 底色 / 标题 / 照片 / 角度），计入原创性 */
     sameness?: string[];
     calibration?: DesignEvaluationCalibrationSample[];
-    /** 自主沉淀 P2：行为验证晋升的试用经验（非用户拍板，仅作观察线索，不据此定分）。 */
-    provisionalNotes?: string[];
     /** 对照参考：有它评审进入对照模式（2026-08-23 盲评实验：模型成对比较 4/4 判对且理由具体，单图打分全挤 6-7 分）。 */
     reference?: { kind: 'user_reference' | 'previous_version'; note?: string };
     /** 是否附带当前稿的列表尺寸缩略图（多尺度复核：主图的真实使用场景就是搜索列表缩略）。 */
@@ -123,12 +121,6 @@ export function buildDesignEvaluationPrompt(input: {
         lines.push('', '这位用户的品味校准样本（他觉得好 / 不好的原因，评审口味要向它靠）：');
         for (const sample of input.calibration.slice(0, 10)) {
             lines.push(`- ${sample.kind === 'good' ? '好' : '差'}：${sample.why}${sample.ref ? `（${sample.ref}）` : ''}`);
-        }
-    }
-    if (input.provisionalNotes && input.provisionalNotes.length > 0) {
-        lines.push('', '行为验证的试用经验（多次任务反复出现且关联稿件已交付；非用户拍板——只作观察线索提醒你留意同类问题，不得据此直接扣分或当成用户口味）：');
-        for (const note of input.provisionalNotes.slice(0, 3)) {
-            lines.push(`- ${note}`);
         }
     }
     if (input.reference) {

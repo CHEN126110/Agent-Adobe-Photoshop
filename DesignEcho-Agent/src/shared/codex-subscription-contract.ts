@@ -2,6 +2,7 @@ import type { ModelConfig } from './config/models.config';
 
 export const CODEX_SUBSCRIPTION_PROVIDER = 'openai-codex' as const;
 export const CODEX_SUBSCRIPTION_RUNTIME_VERSION = '0.149.0';
+export const CODEX_SUBSCRIPTION_MODEL_ID_PREFIX = 'codex-subscription-';
 
 export type CodexSubscriptionAuthMode = 'none' | 'chatgpt' | 'api_key' | 'unsupported';
 
@@ -90,12 +91,19 @@ export function isCodexSubscriptionModel(model: Pick<ModelConfig, 'provider'> | 
     return model?.provider === CODEX_SUBSCRIPTION_PROVIDER;
 }
 
+export function isCodexSubscriptionModelId(modelId: unknown): boolean {
+    if (typeof modelId !== 'string') return false;
+    const normalized = modelId.trim().toLowerCase();
+    return normalized.length > CODEX_SUBSCRIPTION_MODEL_ID_PREFIX.length
+        && normalized.startsWith(CODEX_SUBSCRIPTION_MODEL_ID_PREFIX);
+}
+
 export function buildCodexSubscriptionModelId(apiModelId: string): string {
     const slug = String(apiModelId || '')
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '');
-    return `codex-subscription-${slug}`;
+    return `${CODEX_SUBSCRIPTION_MODEL_ID_PREFIX}${slug}`;
 }
 
 export function isGpt56CodexModelId(apiModelId: string): boolean {

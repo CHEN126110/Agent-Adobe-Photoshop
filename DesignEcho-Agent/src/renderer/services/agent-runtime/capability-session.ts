@@ -112,6 +112,12 @@ export interface AgentCapabilitySession {
     searchCapabilities(query: string, limit?: number): AgentCapabilitySearchResult;
     requestCapabilities(capabilityIds: readonly string[]): AgentCapabilityActivationResult;
     /**
+     * 当同一运行已经形成可看的设计版本时，原地开放当前会话仍可装载的通用交付能力。
+     * 这里只改变下一轮 schema 可见性：不执行保存/导出、不选择路径、不授予权限，
+     * 也不把 agentic 路径绑定成 staged Workflow。
+     */
+    activateTaskClosureCapabilities(): string[];
+    /**
      * Skill 交接声明了后续原子 Tool 时，仅把其中仍属于本会话 on-demand 候选的 schema
      * 暴露给下一轮模型。它不执行 Tool、不授予权限，也不能越过 deny / Manifest ceiling。
      */
@@ -532,6 +538,32 @@ export function createAgentCapabilitySession(
             resolution = activation.resolution;
             refreshActiveTools();
             return activation;
+        },
+        activateTaskClosureCapabilities(): string[] {
+            const deliveryCapabilityIds = resolution.onDemandCapabilityIds.filter((capabilityId) => (
+                capabilityId.startsWith('delivery.')
+            ));
+            const activatedCapabilityIds: string[] = [];
+            for (let index = 0;
+                index < deliveryCapabilityIds.length;
+                index += MAX_ON_DEMAND_CAPABILITY_REQUESTS) {
+                const activation = expandAgentCapabilities({
+                    resolution,
+                    inventory,
+                    requestedCapabilityIds: deliveryCapabilityIds.slice(
+                        index,
+                        index + MAX_ON_DEMAND_CAPABILITY_REQUESTS
+                    ),
+                    additionalCapabilityProviders: input.additionalCapabilityProviders
+                });
+                activation.activatedCapabilityIds.forEach((capabilityId) => {
+                    onDemandActivatedCapabilityIds.add(capabilityId);
+                    activatedCapabilityIds.push(capabilityId);
+                });
+                resolution = activation.resolution;
+            }
+            refreshActiveTools();
+            return unique(activatedCapabilityIds);
         },
         activateToolsForContinuation(toolNames: readonly string[]): string[] {
             const requestedToolNames = new Set(unique(toolNames));

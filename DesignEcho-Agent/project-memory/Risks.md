@@ -6,6 +6,71 @@
 
 ## 当前高风险
 
+### R-060 首写基线 producer 漏字段会让真实成功被 Reliability 恒定拒绝
+
+- 事实：r35 的首写前 Runtime、6 个前置对象 revision、唯一 createDocument、完成对账和双格式交付均真实通过；但 `assessGuardedPhotoshopDocuments()` 计算的 `preexistingDocumentRevisionsUnchanged` 没有进入 baseline state /v2 receipt，Reliability consumer 对 passed receipt 要求该值为 true，结果恒为 undefined 并把已写状态归类 unknown。
+- 影响：Agent、Photoshop 和交付都正确时仍会浪费约 11 分钟模型 /Tool 成本、fixture 与人工现场恢复；若用删除断言、默认 true 或改账绕过，又会失去外部用户文档 revision 保护。分开的 producer /consumer 绿色测试会继续掩盖同类协议漂移。
+- 处理：D-114 只在 baseline owner 保存并投影真实 comparison 值；非写可恢复拒绝清空，真实漂移投影 false。producer 的实际完成收据必须直接通过 Reliability consumer，另有漂移攻击证明不能伪造。专项、类型、两端 production build 与唯一完整核心 65/65 通过，独立提交 /clean identities /r36 待完成。
+- 关闭条件：独立提交、clean Agent /UXP identities 和 fresh r36 正常 terminal 通过；r36 首写 proof 显式为 true、完成对账通过、6 个用户文档 history 不变。一次 r36 只关闭本协议风险，不代表多样本稳定率或视觉质量达标。
+
+### R-059 自动 VLM 评分会高估文案错误与过重构图
+
+- 事实：r35 自动 Scorecard 对 16 项统一给出 0.9、总分 90，并声称标题对齐与商品表达全部通过；原图独立复核可见标题面积过大并压住腿部，更有“木耳边”被写成“木耳耳边”的明确文案错误。Agent 最终正文也重复该错误。
+- 影响：若把模型自评当质量 Gate，技术文件齐全会被误报为专业设计达标；错误卖点可直接进入商业交付，均匀高分又无法提供有效修订优先级。反过来把固定字号 /配方写进 Harness 也会侵占 Agent 作者权并制造新的品类补丁。
+- 处理：r35 视觉状态保持 `needs_fix`。本轮 D-114 不改 Evaluation；后续独立切片要把 Brief 中的事实文案一致性与真正视觉判断分轴，使用 Eagle /用户成稿盲评和多 Case 校准自动 Judge，只对有证据的诊断修订，不用固定版式处方。
+- 关闭条件：固定未见 Case 的多次盲评证明自动 verdict 与人工排序达到预设一致性；明显错字 /重复卖点能在发布前被事实 owner 检出；质量提高且 TaskRun、交付、人工介入与速度均不回退。单张修好或调低分数不能关闭。
+
+### R-058 本 TaskRun 创建集合存在未交付 /未关闭的孤立 Photoshop 文档
+
+- 事实：fresh r34 的真实 DeepSeek Agent 在主图 `create_new` 任务中成功创建 v1 文档 5939，发现对比度问题后又新建 v2 文档 5968；只为 v2 生成同 revision PSD/JPG。Profile Completion 因“已创建文档 + 最终交付”通过，但 v1 仍 `unsaved + dirty`，外层 Attempt 只能以 `new_outside_document_opened` 拒绝。人工关闭 v1 才恢复现场，因此零人工介入失败。
+- 影响：模型把“修订”实现成“另建候选”时，会留下无法归属的活动文档；即使最终文件正确，Attempt 仍失败，用户需人工判断保留 /丢弃。若 Harness 自动关闭或静默改成活动文档写入，又会越过 Agent 作者权和破坏性操作授权。
+- 处理：D-113 已复用 TaskRun 创建证据，按每个 document/latest-history 记录 editable、raster 与显式 close 终态。未结算对象存在时只阻止下一次新建，允许当前文档修订与交付；Completion 在现有 owner 中核对全创建集合。多文档任务以前一对象已结算作为后续新建条件，不用关键词或固定数量限制。专项、边界审计、简化棘轮、类型、Agent build 与唯一完整核心 65/65 已通过，独立提交 /clean identities /r35 尚未完成。
+- 关闭条件：可复用攻击测试覆盖同形双新建、active 修订、旧 revision /跨文档交付、失败 /模糊 close、显式单格式、顺序多文档与跨 Reflexion；唯一完整核心、独立提交和 clean identities 通过；fresh r35 中 DeepSeek 不留下 orphan、无需人工关闭、6 个用户文档不变且 Attempt 正常终态。视觉质量单独评估。
+
+### R-057 未绑定 creative Completion 丢失同版本可编辑源稿 /预览交付义务
+
+- 事实：fresh r33 的真实 AgentTaskPlan 为 `scenario=unknown /deliverables=[agent_resolved_result] /skillId=autonomous-agent`，模型未调用 `declareDesignIntent`，因此没有 `agenticArtifactContract`。Agent 创建并完成 9 层主图、两次成功导出 JPG，但活动文档保持 `unsaved + dirty`；`taskCompletion.kind=creative_design` 没有任何 delivery requirement，直到 Debug completion baseline 以 `new_outside_document_opened` 拒绝。显式 PSD 人工恢复成功，证明不是 UXP 保存 Provider 失效。
+- 影响：自然语言开放设计即使真实制作、看图和导出，也可能只留下扁平图、无可编辑源稿；Agent 用户正文会错误声称已交付，外层才把运行改成 unknown-write。正式成功率下降、人工介入增加，且交付缺口被误归因成模型慢或 Photoshop 故障。
+- 处理：D-112 已复用现有 TaskCompletion 与 `agentic-final-delivery-evidence`。对本 TaskRun 受信任 `document_creation` commit 新建的 creative document，按最后内容 mutation 的同一 document/history 要求 editable + raster 收据集合；用户明确单格式 /export-only 不扩张。Harness 只给缺失事实、收集全部 refs，不调用保存、不选路径、不推断品类。纯契约、旧 revision 攻击、双 refs E2、真实 Agent remediation 循环、Main /Renderer 类型、Agent production build、三类边界审计与唯一完整核心 65/65 已通过。Task Profile 未绑定率和上下文膨胀另立切片。
+- 关闭状态：D-112 已提交 `8604c6f6`，clean identities、65/65 和 r34 同一 Agent 自主同 revision PSD/JPG 已验证，说明 paired-delivery 本身闭合；r34 因另一个创建文档未结算而失败，已转入 R-058。R-057 保留为回归风险，不再是当前根因；单次技术交付仍不等于商业质量通过。
+
+### R-056 live preflight 并发 Photoshop 读取会制造 Runtime identity 假缺失
+
+- 事实：`inspectLiveEnvironment` 原先用同一个 `Promise.all` 并发提交 `diagnoseState` 与 `listDocuments`，每项默认 5 秒超时。当前 Photoshop 27.9.1 /UXP 9.3 真机顺序计时约 3075ms 与 4513ms，总计 7588ms；两个读取最终进入同一 Photoshop modal 队列，第二项可能尚未执行就耗尽从提交时开始的 5 秒计时。r32 reconciliation 与只读 preflight 都因此返回 `photoshop_runtime_identity_unavailable`，而独立读回同一时刻可取得 clean UXP identity。
+- 影响：Harness 会把“读取排队超时”误判为“Runtime 身份不存在”，阻断合法 reconciliation 与后续正式 Case；反复重试会形成偶发绿，简单抬所有超时又会扩大未知等待并掩盖真正慢点。
+- 处理：D-111 复用现有 `photoshop.tools.batch_call`，把两项绑定为 `allowWrites=false` 的单一串行批次，50ms 间隔、15 秒批次总预算；批次缺项或任何单项失败仍 fail closed。纯契约、真实 dirty-slice preflight 与唯一完整核心 65/65 已证明 identity 恢复且其它安全 blocker 保持；待独立提交、exact clean Runtime 与 canonical r32 reconciliation 收口。
+- 关闭条件：D-111 完整核心与 clean 双 Runtime identity 通过；同一 r32 fixture /6 个外部文档条件下 reconciliation 只追加一次合法 04 事件，安全账本降为 0，所有文档 history 不变；后续至少一次 fresh r33 preflight 不再出现该假 blocker。其它 Photoshop 版本若持续超过 15 秒，应保留失败并单独诊断，不能继续无界抬预算。
+
+### R-055 非 Codex 主模型也在启动期拉起 Codex model-bridge Runtime
+
+- 事实：普通 PID 36604 的正式模型是 DeepSeek，但应用启动 21 秒后出现受限 `codex.exe app-server`。Main /Renderer 都会无条件恢复 ChatGPT 订阅目录，而状态读取内部执行 `ensureStarted()`；因此未调用 Codex 模型也会创建进程。第二个 image-generation Runtime 是数分钟后的显式能力路径，不属于本次冷启动 owner。
+- 影响：非 Codex 用户承担额外进程、初始化和潜在故障面；同时“正式模型是 DeepSeek”与进程列表中的 Codex 容易造成模型边界误判。仅隐藏进程或删除订阅 Provider 会破坏真实功能，都不是根因修复。
+- 处理：D-108 用共享模型 ID 契约把 Main /Renderer 启动恢复绑定到当前 Codex 主模型；设置、登录、目录、订阅对话 /生图继续显式按需启动。同构无凭据 canary 已证明 DeepSeek 为 0 个 Codex 子进程、显式 Codex 为 1 个 model-bridge 子进程；专项、唯一完整核心 63/63、独立提交 `16db25ec` 与 exact clean packaged identity 已通过。
+- 关闭条件：D-108 完整核心、独立提交与 exact clean packaged identity 通过；普通用户下次自然重启加载新构建后，DeepSeek 状态在稳定窗口内无 model-bridge Codex 子进程；显式打开订阅设置或选择订阅主模型仍能启动并取得真实账户状态。启动耗时 /内存改善若要声明，必须另做重复测量，不能由进程数推断。
+
+### R-054 Electron /OpenAI SDK 基线已迁移，Provider /图像 /构建链动态安全债务尚未收口
+
+- 事实：D-106 已把 Electron 28.3.3 /Node 18 单变量迁移到 [Electron 44.0.0](https://releases.electronjs.org/release/v44.0.0) /Node 24.18.1，并通过 clean install、ClipboardItem /sRGB Runtime 契约、preload、production build、旧 builder x64 打包及 source /app.asar 隔离启动。Electron npm 二进制显式安装和 3 个 Main runtime import 漏声明均已按根因修复；新增 import→manifest 审计防止 dev 子树偶然满足生产依赖。
+- 事实：D-107 已升级 OpenAI SDK 7.8.0、ws 8.21.3 与 undici 7.29.0，保留 Zod 4.4.3 并删除旧 override；OpenAI 7 的 Fetch dispatcher 迁移通过本地真实代理、DeepSeek 扩展 /Tool /stream cache /timeout /abort、现有模型边界、production build、最小真实 exact-model DeepSeek Tool canary 与 dirty app.asar 启动。OpenAI SDK 不再依赖未声明的 Zod 兼容 seam。
+- 事实：D-109 已把根 Axios 升到 1.20.0，并以两个官方 SDK 子树的显式安全覆盖取得 OpenAPI JSON/multipart、TOS putObject、protobuf /UUID 本地协议证据；Volcengine/TOS/Axios/protobuf/UUID/form-data/lodash/proxy finding 已为 0。唯一完整核心 64/64、独立提交 `45e15560`、clean identities 和 exact clean app.asar 均完成。
+- 事实：D-110 已把 Sharp 0.34.5 升到 0.35.4 /libvips 8.18.6，按原语义迁移 13 处已删除参数和 7 个服务的 ESM named types；fast-uri 3.1.6、picomatch 2.3.2 与 once 2.0.1 同时在合法 semver 内更新。真实原生 codec /operation 与相邻图像链专项通过，生产 audit 6→2，当前只剩 ONNX/adm-zip；全量构建链仍为 23 项，UXP 仍为 7 项。
+- 影响：核心闸门绿色只能证明当前冻结 lock 的工程一致性，不能证明没有已知安全风险。整体执行 `npm audit fix --force` 会同时跨 Electron Runtime、Provider、图像处理与构建系统抬 major，破坏真实应用兼容和回滚边界；继续长期不处理则让用户输入图像、本地 WebSocket、Provider 凭据、打包与 Electron 漏洞暴露面累积。
+- 处理：① Electron Runtime `6a37acb9`、OpenAI /Zod `f3742497`、Volcengine /TOS `45e15560` 已分别用独立提交和 clean app.asar 收口；② D-110 Sharp 片保持参数语义，真实 libvips 专项、Agent /UXP production build、dirty packaged Sharp 探针 /启动与唯一完整核心 65/65 已通过，待提交与 clean identity；③ 默认端口若继续空闲，D-110 后优先回到 r32；否则下一片治理 ONNX/adm-zip，之后才独立处理 Agent /UXP 构建链。每片只改自己的 package /lock 与必要适配，不以 audit 数量归零代替运行证据。
+- 关闭条件：当前直接生产依赖的 high /critical finding 均已被安全版本消除、证明不可达并形成可审计 containment，或由上游无修复事实明确接受；Electron 运行于仍受支持的 Node /Chromium 线；OpenAI /Zod 不再依赖未声明兼容 override；两仓 clean install、构建、桌面启动、DeepSeek 正式模型链和 Photoshop E2E 均无回退。动态公告会变化，关闭必须绑定当时 lock 与 audit 时间戳。
+
+### R-053 共享 Photoshop 的 UXP plugin session 可被其它开发会话替换
+
+- 事实：r32 提交时 UXP 为 clean D-094 build `designecho-uxp-production-eb40a93c9b17-35053c988e2a`，但运行到 05:04:18 后变成旧工作树 `designecho-uxp-production-de628ade831d-77193162309f-dirty`。同一时段还有其它 Codex 任务在共享 `C:\UXP\2.0` 启动 DesignEcho 调试窗口；当前机器只有一个 Photoshop /UXP Host，插件 ID 也唯一。现有 runtime binding 在完成态正确拒绝漂移，但不能阻止外部 UDT load 替换当前 session。
+- 影响：正式 Attempt 即使 Agent 与 Photoshop 动作正确，也会因运行时代际变化成为 unknown write state；继续在共享加载会话上盲重跑会反复消耗模型与 fixture，且可能把另一个开发任务的文档活动混进基线。
+- 处理：D-096 已把正式 `run-live` 与官方 `load-photoshop-uxp-plugin.cjs` 接到仓库外同一合作式 Runtime lease；采集在任何 Attempt Event 前取得租约并复验 binding，loader 在连接 UDT 与任何 load /unload 前取得，冲突时结构化拒绝。存活 owner 不因 TTL 被误删，死亡 owner 可回收，释放必须匹配 leaseId。现有提交 /首次写 /完成 binding 继续 fail closed，因为用户在 UDT UI 手动 reload 或第三方直连仍无法由脚本租约阻止。
+- 关闭条件：完整核心闸门和独立提交通过；r33 全窗口内另一 worktree 的官方 loader 确实被拒绝；模拟持有进程崩溃后下一次 loader 能回收；手动 UDT reload 仍被完整 binding 识别并诚实终止。当前专项与双进程 canary 只证明合作式脚本路径，风险仍为部分缓解。
+
+### R-052 终局视觉证据类型偷换导致 Judge 看错图、交付无法闭合
+
+- 事实：r24 的真实 Photoshop 成品包含完整主体、标题和四色陈列，但 Final Judge 的文字诊断描述成了平铺素材；Trace 中不存在 Harness 全画布采集，同时 `finalArtifactObserved=true`、生产交付检查通过和安全 `finalArtifactRefs` 为空并存。代码核对确认单画布 selector 仍使用 `single || bundle`，与同文件“单画布选 full-canvas”的注释和 E2 full-surface 要求矛盾。
+- 影响：模型可能准确评价了错误图片，视觉分数、诊断、Reflexion 和跨代恢复 Artifact 全部失真；磁盘文件虽真实存在，技术 Attempt 仍无法形成可信交付。若只改 Prompt 或补文件扫描，会隐藏对象身份错误并扩大多套真相。
+- 处理：按 D-090 把 ReviewSet source 设为终局身份，单画布与多画面互不降级；Judge、E2 和可信 Artifact 共用唯一选择 Owner。攻击型回归、边界审计、Renderer 类型检查、完整核心闸门 58/58 与 Agent production build 已通过。关闭本风险仍需提交后 r25 真实证明自动 full-canvas Tool entry、Judge 精确出站收据、同 revision PSD/JPG 与非空安全 `finalArtifactRefs`；未完成前不得把 r24 的错误 69 分当真实视觉评价。
+
 ### R-051 R3 把 Agent 自有工艺误报为用户输入，导致确定性任务盲搜和零写入
 
 - 事实：真实白底图 Run Record `run-20260803115420027-31eea942.json` 中，用户已经要求从项目选择一张图片、置入、抠图并输出 800×800 白底图；Agent 在 11 轮内反复读取文档、项目资源、Project State、缩略图和图层，0 次 mutation，最终把“透明商品素材”误报为唯一 blocker 并进入 `waiting_user`。根因不是缺少白底图 Skill，而是 R3 runtime 把 blocking missing input 再次开放成 observation / knowledge recovery、普通写入请求首轮未稳定获得通用设计工艺能力，以及基于回复文案猜 Tool 的第二 recovery owner。

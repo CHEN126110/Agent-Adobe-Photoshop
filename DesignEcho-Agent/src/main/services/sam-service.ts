@@ -48,6 +48,40 @@ export interface SAMResult {
 
 const SAM_INPUT_SIZE = 1024;  // SAM 标准输入尺寸
 
+/**
+ * SAM 在语义抠图链路中只拥有“目标范围”，不拥有最终 alpha 边缘。
+ * 官方 SAM mask threshold 是 logit > 0；负 logit 不能因为 Sigmoid 后仍大于 0
+ * 就被转换成半透明前景，否则会把邻近皮肤、鞋和背景重新开放给细节模型。
+ */
+export function createSemanticScopeMaskFromLogits(
+    logits: Float32Array,
+    width: number,
+    height: number
+): Buffer {
+    const expectedLength = width * height;
+    if (!Number.isSafeInteger(width) || width <= 0
+        || !Number.isSafeInteger(height) || height <= 0
+        || logits.length !== expectedLength) {
+        throw new Error(`SAM 语义范围尺寸无效：${width}x${height}, logits=${logits.length}`);
+    }
+    const mask = Buffer.alloc(expectedLength, 0);
+    for (let index = 0; index < expectedLength; index++) {
+        if (Number.isFinite(logits[index]) && logits[index] > 0) mask[index] = 255;
+    }
+    return mask;
+}
+
+export function resolveDecoderMaskCandidateCount(outputMetadata: unknown): number {
+    const entries = Array.isArray(outputMetadata)
+        ? outputMetadata
+        : Object.entries(outputMetadata && typeof outputMetadata === 'object' ? outputMetadata : {})
+            .map(([name, metadata]) => ({ ...(metadata as Record<string, unknown>), name }));
+    const iouOutput = entries.find((entry: any) => String(entry?.name || '').includes('iou'));
+    const shape = Array.isArray(iouOutput?.shape) ? iouOutput.shape : [];
+    const candidateCount = shape.length > 0 ? Number(shape[shape.length - 1]) : 0;
+    return Number.isSafeInteger(candidateCount) && candidateCount > 0 ? candidateCount : 0;
+}
+
 // ==================== SAM 服务类 ====================
 
 export class SAMService {
@@ -67,6 +101,7 @@ export class SAMService {
      */
     private quietDepth: number = 0;
     private decoderSession: any = null;
+    private decoderMaskCandidateCount: number = 0;
     
     // 图像嵌入缓存（同一图像多次选区可复用）
     private imageEmbeddingCache: Map<string, {
@@ -149,6 +184,20 @@ export class SAMService {
                 logSeverityLevel: 3  // 抑制警告，只显示错误
             });
             console.log(`[SAMService] ✅ Decoder 加载完成 (${Date.now() - decoderStart}ms)`);
+
+            if (this.modelType === 'mobile_sam') {
+                this.decoderMaskCandidateCount = resolveDecoderMaskCandidateCount(
+                    this.decoderSession.outputMetadata
+                );
+                if (this.decoderMaskCandidateCount < 4) {
+                    console.error(
+                        `[SAMService] MobileSAM Decoder 只有 ${this.decoderMaskCandidateCount || '未知'} 个候选，`
+                        + '语义范围需要配套的 4 候选 decoder。'
+                    );
+                    await this.disposeSessions();
+                    return false;
+                }
+            }
             
             // 启动缓存清理定时器
             this.startCacheCleanup();
@@ -186,12 +235,12 @@ export class SAMService {
      * 
      * @param imageBuffer - 输入图像 (PNG/JPEG Buffer)
      * @param box - 边界框提示 [x1, y1, x2, y2]
-     * @param centerPoint - 可选的中心点提示，增强分割精度
+     * @param guidancePoints - 可选的前景/背景点提示；单点形状为历史兼容，多点用于 Agent 视觉引导
      */
     async segmentWithBox(
         imageBuffer: Buffer,
         box: BoxPrompt,
-        centerPoint?: PointPrompt
+        guidancePoints?: PointPrompt | PointPrompt[]
     ): Promise<SAMResult> {
         if (!this.isReady()) {
             return { success: false, error: 'SAM 模型未加载' };
@@ -233,7 +282,7 @@ export class SAMService {
             }
 
             // 4. 准备 Prompt 输入
-            const prompts = this.preparePrompts(box, centerPoint, originalWidth, originalHeight, promptScale);
+            const prompts = this.preparePrompts(box, guidancePoints, originalWidth, originalHeight, promptScale);
             
             // 5. 运行 Decoder
             console.log('[SAMService] 运行 Mask Decoder...');
@@ -241,19 +290,12 @@ export class SAMService {
             const maskData = await this.decodeMask(encoderOutputs, prompts, originalWidth, originalHeight);
             console.log(`[SAMService] Decoder 完成 (${Date.now() - decodeStart}ms)`);
             
-            // 6. 边缘清理：使用概率阈值而非形态学操作
-            // 形态学开运算会导致边界收缩，改用更精细的阈值处理
-            console.log('[SAMService] 边缘清理（概率阈值）...');
-            const refineStart = Date.now();
-            const refinedMask = this.refineMaskWithProbabilityThreshold(maskData.mask, originalWidth, originalHeight);
-            console.log(`[SAMService] 边缘清理完成 (${Date.now() - refineStart}ms)`);
-            
             const processingTime = Date.now() - startTime;
             console.log(`[SAMService] 总处理时间: ${processingTime}ms`);
             
             return {
                 success: true,
-                mask: refinedMask,
+                mask: maskData.mask,
                 maskWidth: originalWidth,
                 maskHeight: originalHeight,
                 processingTime
@@ -431,7 +473,7 @@ export class SAMService {
      */
     private preparePrompts(
         box: BoxPrompt,
-        centerPoint: PointPrompt | undefined,
+        guidancePoints: PointPrompt | PointPrompt[] | undefined,
         originalWidth: number,
         originalHeight: number,
         promptScale: number
@@ -453,21 +495,28 @@ export class SAMService {
             box.y2 * scaleY
         ];
         
-        let numPoints = 2;
-        let pointCoords: number[] = boxPoints;
+        const pointCoords: number[] = [...boxPoints];
         // SAM box prompt 标签: 2=左上角, 3=右下角
         // 这是 SAM 官方的 box prompt 编码
-        let pointLabels: number[] = [2, 3];
+        const pointLabels: number[] = [2, 3];
         
-        console.log(`[SAMService] Box 坐标 (缩放后): [${boxPoints.map(v => v.toFixed(1)).join(', ')}]`);
-        console.log(`[SAMService] 点标签: [${pointLabels.join(', ')}]`);
-        
-        // 如果有中心点，添加到 prompts
-        if (centerPoint) {
-            pointCoords.push(centerPoint.x * scaleX, centerPoint.y * scaleY);
-            pointLabels.push(centerPoint.label);
-            numPoints = 3;
+        let normalizedGuidance: PointPrompt[] = [];
+        if (Array.isArray(guidancePoints)) {
+            normalizedGuidance = guidancePoints;
+        } else if (guidancePoints) {
+            normalizedGuidance = [guidancePoints];
         }
+        for (const point of normalizedGuidance) {
+            if (!Number.isFinite(point.x) || !Number.isFinite(point.y)
+                || (point.label !== 0 && point.label !== 1)) {
+                throw new Error('SAM 正负点引导包含无效坐标或标签。');
+            }
+            pointCoords.push(point.x * scaleX, point.y * scaleY);
+            pointLabels.push(point.label);
+        }
+
+        console.log(`[SAMService] Box 坐标 (缩放后): [${boxPoints.map(v => v.toFixed(1)).join(', ')}]`);
+        console.log(`[SAMService] Prompt 标签: [${pointLabels.join(', ')}]`);
         
         return {
             pointCoords: new Float32Array(pointCoords),
@@ -681,9 +730,6 @@ export class SAMService {
         
         this.log(`[SAMService] 提取蒙版: 尺寸=${maskW}x${maskH}, 索引=${bestMaskIndex}, 偏移=${maskOffset}`);
         
-        // ========== 核心改进：在 Logits 空间放大，然后应用 Sigmoid ==========
-        // 这样边缘在 logit 空间中有更好的过渡，sigmoid 后边缘更自然
-        
         // 记录原始 logits 范围
         let minLogit = Infinity, maxLogit = -Infinity;
         for (let i = 0; i < singleMaskSize; i++) {
@@ -693,536 +739,71 @@ export class SAMService {
         }
         this.log(`[SAMService] 原始蒙版 logits 范围: min=${minLogit.toFixed(2)}, max=${maxLogit.toFixed(2)}`);
         
-        // Step 1: 在 logits 空间进行双三次插值放大（Bicubic，比双线性更平滑）
-        this.log(`[SAMService] 在 Logits 空间放大蒙版（双三次插值）: ${maskW}x${maskH} -> ${originalWidth}x${originalHeight}`);
-        
-        const upscaledLogits = new Float32Array(originalWidth * originalHeight);
-        const scaleX = maskW / originalWidth;
-        const scaleY = maskH / originalHeight;
-        
-        // 双三次插值核函数
-        const cubicWeight = (t: number): number => {
-            const a = -0.5; // Catmull-Rom 参数
-            const absT = Math.abs(t);
-            if (absT <= 1) {
-                return (a + 2) * absT * absT * absT - (a + 3) * absT * absT + 1;
-            } else if (absT < 2) {
-                return a * absT * absT * absT - 5 * a * absT * absT + 8 * a * absT - 4 * a;
-            }
-            return 0;
-        };
-        
-        // 获取 logit 值（带边界检查）
-        const getLogit = (x: number, y: number): number => {
-            const cx = Math.max(0, Math.min(maskW - 1, x));
-            const cy = Math.max(0, Math.min(maskH - 1, y));
-            return maskData[maskOffset + cy * maskW + cx];
-        };
-        
-        for (let dstY = 0; dstY < originalHeight; dstY++) {
-            for (let dstX = 0; dstX < originalWidth; dstX++) {
-                const srcX = dstX * scaleX;
-                const srcY = dstY * scaleY;
-                
-                const intX = Math.floor(srcX);
-                const intY = Math.floor(srcY);
-                const fracX = srcX - intX;
-                const fracY = srcY - intY;
-                
-                // 4x4 邻域双三次插值
-                let sum = 0;
-                let weightSum = 0;
-                
-                for (let j = -1; j <= 2; j++) {
-                    for (let i = -1; i <= 2; i++) {
-                        const weight = cubicWeight(fracX - i) * cubicWeight(fracY - j);
-                        sum += getLogit(intX + i, intY + j) * weight;
-                        weightSum += weight;
-                    }
-                }
-                
-                upscaledLogits[dstY * originalWidth + dstX] = sum / weightSum;
-            }
-        }
-        
-        // Step 2: 在高分辨率上应用 Sigmoid
-        this.log('[SAMService] 应用 Sigmoid 转换...');
-        
-        const probMask = new Float32Array(originalWidth * originalHeight);
-        
-        for (let i = 0; i < upscaledLogits.length; i++) {
-            const logit = upscaledLogits[i];
-            // Sigmoid 转换：logit -> 概率 [0, 1]
-            const prob = 1 / (1 + Math.exp(-logit));
-            probMask[i] = prob;
-        }
-        
-        // Step 3: 直接使用概率值生成蒙版，保持自然的边缘过渡
-        // 问题分析：之前的窄阈值 (0.45-0.55) 导致边缘出现块状伪影
-        // 解决方案：使用更宽的阈值范围，让 sigmoid 自然产生平滑边缘
-        this.log('[SAMService] 生成蒙版（自然边缘过渡）...');
-        
-        const finalMask = Buffer.alloc(originalWidth * originalHeight);
-        let whiteCount = 0, blackCount = 0, gradientCount = 0;
-        
-        // 使用更宽的阈值范围，让边缘更自然
-        // sigmoid 输出在边缘处会有自然的 0.2-0.8 过渡
-        const bgThreshold = 0.3;   // 低于此值 = 纯背景
-        const fgThreshold = 0.7;   // 高于此值 = 纯前景
-        
-        for (let y = 0; y < originalHeight; y++) {
-            for (let x = 0; x < originalWidth; x++) {
-                const idx = y * originalWidth + x;
-                const prob = probMask[idx];
-                
-                let value: number;
-                if (prob < bgThreshold) {
-                    value = 0;
-                    blackCount++;
-                } else if (prob > fgThreshold) {
-                    value = 255;
-                    whiteCount++;
-                } else {
-                    // 边缘区域：线性映射产生自然过渡
-                    value = Math.round((prob - bgThreshold) / (fgThreshold - bgThreshold) * 255);
-                    gradientCount++;
-                }
-                
-                finalMask[idx] = value;
-            }
-        }
-        
-        this.log(`[SAMService] 蒙版生成: 前景=${whiteCount}, 背景=${blackCount}, 渐变边缘=${gradientCount}`);
-        
-        return { mask: finalMask };
-    }
-    
-    /**
-     * 边缘引导锐化 - 使用原图边缘信息增强 mask 边缘清晰度
-     * 在原图边缘强的地方增强 mask 对比度，实现锐利边缘
-     */
-    private async refineEdgesWithGuidedFilter(
-        mask: Buffer,
-        imageBuffer: Buffer,
-        width: number,
-        height: number
-    ): Promise<Buffer> {
-        try {
-            // 1. 获取原图灰度版本作为引导
-            const guideBuffer = await this.sharp(imageBuffer)
-                .resize(width, height, { fit: 'fill' })
-                .grayscale()
-                .raw()
-                .toBuffer();
-            
-            const refinedMask = Buffer.alloc(width * height);
-            
-            // 获取像素值的辅助函数
-            const getPixel = (buf: Buffer, x: number, y: number): number => {
-                const cx = Math.max(0, Math.min(width - 1, x));
-                const cy = Math.max(0, Math.min(height - 1, y));
-                return buf[cy * width + cx];
-            };
-            
-            // 使用 3x3 Sobel 边缘检测
-            const sobelX = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]];
-            const sobelY = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]];
-            
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx = y * width + x;
-                    const currentMask = mask[idx];
-                    
-                    // 只处理边缘区域（mask 值在 10-245 之间）
-                    if (currentMask > 10 && currentMask < 245) {
-                        // 计算原图的边缘强度（3x3 窗口）
-                        let gx = 0, gy = 0;
-                        for (let wy = -1; wy <= 1; wy++) {
-                            for (let wx = -1; wx <= 1; wx++) {
-                                const pixel = getPixel(guideBuffer, x + wx, y + wy);
-                                gx += pixel * sobelX[wy + 1][wx + 1];
-                                gy += pixel * sobelY[wy + 1][wx + 1];
-                            }
-                        }
-                        
-                        const edgeStrength = Math.min(1, Math.sqrt(gx * gx + gy * gy) / 500);
-                        
-                        // 边缘锐化：在原图边缘强的地方，增强 mask 对比度
-                        // 将 mask 值向 0 或 255 推
-                        if (edgeStrength > 0.1) {
-                            // 边缘处：增强对比度
-                            if (currentMask > 127) {
-                                // 偏白：推向 255
-                                const boost = Math.min(255 - currentMask, edgeStrength * 50);
-                                refinedMask[idx] = Math.round(currentMask + boost);
-                            } else {
-                                // 偏黑：推向 0
-                                const boost = Math.min(currentMask, edgeStrength * 50);
-                                refinedMask[idx] = Math.round(currentMask - boost);
-                            }
-                        } else {
-                            // 非边缘处：保持原值
-                            refinedMask[idx] = currentMask;
-                        }
-                    } else {
-                        // 非边缘区域保持不变
-                        refinedMask[idx] = currentMask;
-                    }
-                }
-            }
-            
-            this.log('[SAMService] 边缘引导锐化完成');
-            return refinedMask;
-            
-        } catch (error: any) {
-            console.warn('[SAMService] 边缘引导锐化失败:', error.message);
-            return mask;
-        }
-    }
-    
-    /**
-     * 形态学腐蚀操作 - 收缩蒙版边缘，消除边界噪点
-     */
-    private erodeMask(mask: Buffer, width: number, height: number, iterations: number): Buffer {
-        let currentMask = Buffer.from(mask);
-        
-        for (let iter = 0; iter < iterations; iter++) {
-            const newMask = Buffer.alloc(width * height);
-            
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx = y * width + x;
-                    const centerValue = currentMask[idx];
-                    
-                    // 如果中心点是前景（>128）
-                    if (centerValue > 128) {
-                        // 检查 3x3 邻域，取最小值
-                        let minNeighbor = centerValue;
-                        
-                        for (let dy = -1; dy <= 1; dy++) {
-                            for (let dx = -1; dx <= 1; dx++) {
-                                const nx = x + dx;
-                                const ny = y + dy;
-                                
-                                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                                    const neighborIdx = ny * width + nx;
-                                    minNeighbor = Math.min(minNeighbor, currentMask[neighborIdx]);
-                                }
-                            }
-                        }
-                        
-                        newMask[idx] = minNeighbor;
-                    } else {
-                        newMask[idx] = centerValue;
-                    }
-                }
-            }
-            
-            currentMask = newMask;
-        }
-        
-        return currentMask;
-    }
-    
-    /**
-     * 形态学膨胀操作 - 扩展蒙版边缘，恢复主体边界
-     */
-    private dilateMask(mask: Buffer, width: number, height: number, iterations: number): Buffer {
-        let currentMask = Buffer.from(mask);
-        
-        for (let iter = 0; iter < iterations; iter++) {
-            const newMask = Buffer.alloc(width * height);
-            
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx = y * width + x;
-                    const centerValue = currentMask[idx];
-                    
-                    // 检查 3x3 邻域，取最大值
-                    let maxNeighbor = centerValue;
-                    
-                    for (let dy = -1; dy <= 1; dy++) {
-                        for (let dx = -1; dx <= 1; dx++) {
-                            const nx = x + dx;
-                            const ny = y + dy;
-                            
-                            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                                const neighborIdx = ny * width + nx;
-                                maxNeighbor = Math.max(maxNeighbor, currentMask[neighborIdx]);
-                            }
-                        }
-                    }
-                    
-                    newMask[idx] = maxNeighbor;
-                }
-            }
-            
-            currentMask = newMask;
-        }
-        
-        return currentMask;
-    }
-    
-    /**
-     * 边缘抗锯齿 - 仅对边界像素进行平滑，保持主体清晰
-     * 
-     * 核心思路：只在前景/背景交界处（1-2 像素宽度）做平滑
-     * 避免整体模糊，保持边缘锐利
-     */
-    private antiAliasMaskEdges(mask: Buffer, width: number, height: number): Buffer {
-        const result = Buffer.from(mask);
-        
-        // 3x3 高斯核（归一化）
-        const kernel = [
-            1, 2, 1,
-            2, 4, 2,
-            1, 2, 1
-        ];
-        const kernelSum = 16;
-        
-        for (let y = 1; y < height - 1; y++) {
-            for (let x = 1; x < width - 1; x++) {
-                const idx = y * width + x;
-                const centerValue = mask[idx];
-                
-                // 检测是否是边界像素（邻域同时有前景和背景）
-                let hasForeground = false;
-                let hasBackground = false;
-                
-                for (let dy = -1; dy <= 1; dy++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                        const neighborValue = mask[(y + dy) * width + (x + dx)];
-                        if (neighborValue > 200) hasForeground = true;
-                        if (neighborValue < 50) hasBackground = true;
-                    }
-                }
-                
-                // 只对边界像素应用高斯平滑
-                if (hasForeground && hasBackground) {
-                    let sum = 0;
-                    let ki = 0;
-                    
-                    for (let dy = -1; dy <= 1; dy++) {
-                        for (let dx = -1; dx <= 1; dx++) {
-                            sum += mask[(y + dy) * width + (x + dx)] * kernel[ki++];
-                        }
-                    }
-                    
-                    result[idx] = Math.round(sum / kernelSum);
-                }
-            }
-        }
-        
-        return result;
-    }
-    
-    /**
-     * 概率阈值精化 - 使用更智能的边界处理消除块状边缘和残留
-     * 
-     * 核心思路：
-     * 1. 对孤立的噪点（周围大部分是背景）进行清除
-     * 2. 对边界区域进行平滑过渡
-     * 3. 不使用腐蚀操作，避免边界收缩
-     */
-    private refineMaskWithProbabilityThreshold(mask: Buffer, width: number, height: number): Buffer {
-        const result = Buffer.from(mask);
-        
-        // Pass 1: 清除孤立噪点。
-        // 阈值必须很低：5x5 窗口跨在直边上时前景约占 48%，而边缘凸出的细节
-        // （荷叶边的尖角、织物纹理）只有 24-32%——用 40% 去筛，等于把所有边缘细节
-        // 当噪点抹掉，表现就是"选区小一圈 + 边缘被磨圆"。
-        // 12% 意味着 25 个邻居里少于 3 个是前景才算孤立点，只清真正的散点。
-        for (let y = 2; y < height - 2; y++) {
-            for (let x = 2; x < width - 2; x++) {
-                const idx = y * width + x;
-                const centerValue = mask[idx];
-                
-                // 只处理前景像素
-                if (centerValue > 128) {
-                    let foregroundCount = 0;
-                    let totalCount = 0;
-                    
-                    for (let dy = -2; dy <= 2; dy++) {
-                        for (let dx = -2; dx <= 2; dx++) {
-                            const neighborValue = mask[(y + dy) * width + (x + dx)];
-                            if (neighborValue > 128) foregroundCount++;
-                            totalCount++;
-                        }
-                    }
-                    
-                    // 只有几乎完全孤立的点才是噪点
-                    if (foregroundCount / totalCount < 0.12) {
-                        result[idx] = 0;
-                    }
-                }
-            }
-        }
-        
-        // Pass 2: 填充前景内部的小孔洞。
-        // 同样要保守：60% 会把荷叶边的镂空、织物之间的缝隙一起填平。
-        // 88% 意味着 25 个邻居里至少 22 个是前景才填，只补真正被前景包围的针孔。
-        for (let y = 2; y < height - 2; y++) {
-            for (let x = 2; x < width - 2; x++) {
-                const idx = y * width + x;
-                const centerValue = result[idx];
-                
-                // 只处理背景像素
-                if (centerValue < 128) {
-                    let foregroundCount = 0;
-                    let totalCount = 0;
-                    
-                    for (let dy = -2; dy <= 2; dy++) {
-                        for (let dx = -2; dx <= 2; dx++) {
-                            const neighborValue = result[(y + dy) * width + (x + dx)];
-                            if (neighborValue > 128) foregroundCount++;
-                            totalCount++;
-                        }
-                    }
-                    
-                    // 只有超过 88%（25 格中至少 23 格）是前景才填充
-                    if (foregroundCount / totalCount > 0.88) {
-                        result[idx] = 255;
-                    }
-                }
-            }
-        }
-        
-        // Pass 3: 边界平滑（3x3 高斯模糊仅对边界像素）
-        const smoothed = Buffer.from(result);
-        const gaussKernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
-        const gaussSum = 16;
-        
-        for (let y = 1; y < height - 1; y++) {
-            for (let x = 1; x < width - 1; x++) {
-                const idx = y * width + x;
-                
-                // 检测是否是边界
-                let hasFg = false, hasBg = false;
-                for (let dy = -1; dy <= 1; dy++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                        const nv = result[(y + dy) * width + (x + dx)];
-                        if (nv > 200) hasFg = true;
-                        if (nv < 50) hasBg = true;
-                    }
-                }
-                
-                // 只软化已有前景边缘，不向背景侧扩张。否则三像素镂空在 Pass 2 明明
-                // 被保留，仍会被高斯平均抬到 128 以上，等价于又把缝隙填死。
-                if (result[idx] > 0 && hasFg && hasBg) {
-                    let sum = 0, ki = 0;
-                    for (let dy = -1; dy <= 1; dy++) {
-                        for (let dx = -1; dx <= 1; dx++) {
-                            sum += result[(y + dy) * width + (x + dx)] * gaussKernel[ki++];
-                        }
-                    }
-                    smoothed[idx] = Math.round(sum / gaussSum);
-                }
-            }
-        }
-        
-        return smoothed;
-    }
+        const selectedLogits = maskData.subarray(maskOffset, maskOffset + singleMaskSize);
+        let upscaledLogits: Float32Array;
+        if (maskW === originalWidth && maskH === originalHeight) {
+            // 官方 ONNX 的 masks 已按 orig_im_size 输出；同尺寸再次双三次插值只会浪费时间。
+            upscaledLogits = selectedLogits;
+            this.log('[SAMService] 蒙版已是目标尺寸，跳过重复插值');
+        } else {
+            this.log(
+                `[SAMService] 在 Logits 空间放大蒙版（双三次插值）: `
+                + `${maskW}x${maskH} -> ${originalWidth}x${originalHeight}`
+            );
+            upscaledLogits = new Float32Array(originalWidth * originalHeight);
+            const scaleX = maskW / originalWidth;
+            const scaleY = maskH / originalHeight;
 
-    /**
-     * 边缘平滑处理 - 对边缘区域应用高斯模糊
-     * @deprecated 使用 refineMaskWithProbabilityThreshold 替代
-     */
-    private smoothMaskEdges(mask: Buffer, width: number, height: number): Buffer {
-        const result = Buffer.alloc(width * height);
-        
-        // 3x3 高斯核 (sigma=1)
-        const kernel = [
-            1/16, 2/16, 1/16,
-            2/16, 4/16, 2/16,
-            1/16, 2/16, 1/16
-        ];
-        
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const idx = y * width + x;
-                const centerValue = mask[idx];
-                
-                // 检测是否是边缘区域（值在 30-225 之间，或相邻有显著差异）
-                let isEdge = centerValue > 30 && centerValue < 225;
-                
-                if (!isEdge && (centerValue === 0 || centerValue === 255)) {
-                    // 检查邻域是否有差异
-                    for (let dy = -1; dy <= 1 && !isEdge; dy++) {
-                        for (let dx = -1; dx <= 1 && !isEdge; dx++) {
-                            const nx = x + dx;
-                            const ny = y + dy;
-                            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                                const neighborValue = mask[ny * width + nx];
-                                if (Math.abs(neighborValue - centerValue) > 100) {
-                                    isEdge = true;
-                                }
-                            }
-                        }
-                    }
+            function cubicWeight(t: number): number {
+                const a = -0.5;
+                const absT = Math.abs(t);
+                if (absT <= 1) {
+                    return (a + 2) * absT * absT * absT - (a + 3) * absT * absT + 1;
                 }
-                
-                if (isEdge) {
-                    // 对边缘应用高斯模糊
+                if (absT < 2) {
+                    return a * absT * absT * absT - 5 * a * absT * absT + 8 * a * absT - 4 * a;
+                }
+                return 0;
+            }
+
+            const getLogit = (x: number, y: number): number => {
+                const cx = Math.max(0, Math.min(maskW - 1, x));
+                const cy = Math.max(0, Math.min(maskH - 1, y));
+                return maskData[maskOffset + cy * maskW + cx];
+            };
+
+            for (let dstY = 0; dstY < originalHeight; dstY++) {
+                for (let dstX = 0; dstX < originalWidth; dstX++) {
+                    const srcX = dstX * scaleX;
+                    const srcY = dstY * scaleY;
+                    const intX = Math.floor(srcX);
+                    const intY = Math.floor(srcY);
+                    const fracX = srcX - intX;
+                    const fracY = srcY - intY;
                     let sum = 0;
-                    let ki = 0;
-                    
-                    for (let dy = -1; dy <= 1; dy++) {
-                        for (let dx = -1; dx <= 1; dx++) {
-                            const nx = x + dx;
-                            const ny = y + dy;
-                            
-                            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                                sum += mask[ny * width + nx] * kernel[ki];
-                            } else {
-                                sum += centerValue * kernel[ki];
-                            }
-                            ki++;
+                    let weightSum = 0;
+
+                    for (let j = -1; j <= 2; j++) {
+                        for (let i = -1; i <= 2; i++) {
+                            const weight = cubicWeight(fracX - i) * cubicWeight(fracY - j);
+                            sum += getLogit(intX + i, intY + j) * weight;
+                            weightSum += weight;
                         }
                     }
-                    
-                    result[idx] = Math.round(sum);
-                } else {
-                    // 非边缘区域保持原值
-                    result[idx] = centerValue;
+                    upscaledLogits[dstY * originalWidth + dstX] = sum / weightSum;
                 }
             }
         }
         
-        return result;
-    }
-    
-    /**
-     * 边缘硬化处理 - 将低不透明度像素设为 0，避免半透明背景残留
-     * @param mask 输入蒙版
-     * @param width 宽度
-     * @param height 高度
-     */
-    private hardenMaskEdges(mask: Buffer, width: number, height: number): Buffer {
-        const result = Buffer.alloc(width * height);
-        
-        // 阈值设置：低于此值的像素直接设为 0（完全透明）
-        // 使用较高阈值（240）以彻底去除半透明边缘残留
-        const lowThreshold = 240;
-        // 高于此值的像素设为 255（完全不透明）
-        const highThreshold = 250;
-        
-        for (let i = 0; i < mask.length; i++) {
-            const value = mask[i];
-            
-            if (value < lowThreshold) {
-                // 低不透明度：直接设为 0（去除背景残留）
-                result[i] = 0;
-            } else if (value >= highThreshold) {
-                // 高不透明度：设为 255（确保前景完整）
-                result[i] = 255;
-            } else {
-                // 中间值：线性映射到 0-255（保留少量过渡）
-                // 将 [lowThreshold, highThreshold] 映射到 [0, 255]
-                result[i] = Math.round((value - lowThreshold) / (highThreshold - lowThreshold) * 255);
-            }
-        }
-        
-        return result;
+        // SAM 只签语义范围；最终 alpha 由 MattingService 的细节 Provider 负责。
+        // 使用官方 logit > 0 边界，不能把负置信区域改造成半透明前景。
+        const finalMask = createSemanticScopeMaskFromLogits(
+            upscaledLogits,
+            originalWidth,
+            originalHeight
+        );
+        this.log('[SAMService] 已按官方零阈值生成二值语义范围');
+        return { mask: finalMask };
     }
     
     /**
@@ -1288,7 +869,7 @@ export class SAMService {
             return path.join(this.modelsDir, 'sam2', 'vision_encoder_fp16.onnx');
         }
         const modelName = this.modelType === 'mobile_sam' 
-            ? 'mobile_sam_encoder.onnx'
+            ? 'mobile_sam_image_encoder.onnx'
             : 'sam_vit_b_encoder.onnx';
         return path.join(this.modelsDir, 'sam', modelName);
     }
@@ -1301,7 +882,7 @@ export class SAMService {
             return path.join(this.modelsDir, 'sam2', 'prompt_encoder_mask_decoder_fp16.onnx');
         }
         const modelName = this.modelType === 'mobile_sam'
-            ? 'mobile_sam_decoder.onnx'
+            ? 'sam_mask_decoder_multi.onnx'
             : 'sam_vit_b_decoder.onnx';
         return path.join(this.modelsDir, 'sam', modelName);
     }
@@ -1322,16 +903,21 @@ export class SAMService {
             this.cacheCleanupTimer = null;
         }
         this.imageEmbeddingCache.clear();
+        await this.disposeSessions();
+        console.log('[SAMService] 资源已清理');
+    }
+
+    private async disposeSessions(): Promise<void> {
         const sessions = Array.from(new Set([
             this.encoderSession,
             this.decoderSession
         ].filter(Boolean)));
         this.encoderSession = null;
         this.decoderSession = null;
+        this.decoderMaskCandidateCount = 0;
         await Promise.all(sessions.map(async (session) => {
             if (typeof session.release === 'function') await session.release();
         }));
-        console.log('[SAMService] 资源已清理');
     }
 }
 

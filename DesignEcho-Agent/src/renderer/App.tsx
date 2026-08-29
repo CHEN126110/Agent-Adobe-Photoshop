@@ -13,6 +13,7 @@ import { useAppStore, EcommerceProjectStructure, type ProjectInfo } from './stor
 import { createDesignLearningRuntimeEntryController } from './services/design-learning-runtime-entry.service';
 import { installManualSkuColorCardBridge } from './services/manual-sku-color-card-bridge';
 import { canonicalizeProjectSession } from './services/project-session-identity';
+import { isCodexSubscriptionModelId } from '../shared/codex-subscription-contract';
 import { normalizeModelPreferences } from '../shared/config/models.config';
 
 const DesignAgentWorkbench = lazy(() =>
@@ -72,7 +73,7 @@ function App() {
     const projectScanned = useRef<string | null>(null);  // 记录已扫描的项目路径
     const designLearningEntry = useRef(createDesignLearningRuntimeEntryController());
     const designLearningPreparedFor = useRef<string | null>(null);
-    const testBridgeProjectSeeded = useRef(false);
+    const debugBridgeProjectSeeded = useRef(false);
     const stateFallbackLoaded = useRef(false);
     const stateSaveTimer = useRef<number | null>(null);
     const connectionStatusRevision = useRef(0);
@@ -81,10 +82,12 @@ function App() {
 
     useEffect(() => installManualSkuColorCardBridge(), []);
 
-    // ChatGPT 订阅目录属于当前登录会话，不能持久化成永久模型配置；但也不能要求用户
-    // 每次重启后先打开设置页。应用启动时从主进程重新验证账户并恢复目录，账户变化时
-    // 由同一入口失效并重取。短暂的 IPC 初始化竞态只重试，不把未知状态写成“未登录”。
+    // ChatGPT 订阅目录属于当前登录会话，不能持久化成永久模型配置。只有当前 Agent
+    // 明确选择 Codex 订阅模型时才在启动期恢复目录；其他 Provider 不应为未使用能力
+    // 拉起 Codex app-server。设置页、登录和显式订阅调用仍通过原 IPC 按需启动。
     useEffect(() => {
+        if (!isCodexSubscriptionModelId(modelPreferences.primaryModel)) return undefined;
+
         let disposed = false;
         let retryTimer: number | null = null;
         let revision = 0;
@@ -163,7 +166,7 @@ function App() {
             if (retryTimer !== null) window.clearTimeout(retryTimer);
             unsubscribe?.();
         };
-    }, [upsertDynamicModels]);
+    }, [modelPreferences.primaryModel, upsertDynamicModels]);
 
     // Claude 订阅模型目录：启动拉一次（覆盖持久化旧条目），主进程完成真实型号解析后再拉一次。
     // 不依赖设置页卡片挂载——用户直接聊天也能拿到带具体型号 id 的最新目录。
@@ -255,20 +258,17 @@ function App() {
     }, []);
 
     useEffect(() => {
-        if (process.env.NODE_ENV !== 'development') return;
-        const params = new URLSearchParams(window.location.search || '');
-        if (params.get('designechoChatTestBridge') !== '1') return;
-        const projectPath = params.get('designechoChatTestProjectPath');
+        const projectPath = window.designEcho?.getDebugBridgeLaunchProjectPath?.();
         if (!projectPath) return;
 
         const seedTestProject = () => {
-            if (testBridgeProjectSeeded.current) return;
+            if (debugBridgeProjectSeeded.current) return;
             const hydratedProject = useAppStore.getState().currentProject;
-            testBridgeProjectSeeded.current = true;
+            debugBridgeProjectSeeded.current = true;
             if (hydratedProject?.path === projectPath) return;
             commitProjectSession({
-                id: 'chat-ui-electron-bridge-smoke',
-                name: projectPath.split(/[\\/]+/).filter(Boolean).pop() || 'Chat UI Electron Bridge Smoke',
+                id: 'debug-bridge-project-session',
+                name: projectPath.split(/[\\/]+/).filter(Boolean).pop() || 'Debug Bridge Project',
                 path: projectPath,
                 createdAt: Date.now(),
                 lastOpenedAt: Date.now(),
@@ -428,7 +428,7 @@ function App() {
                 if (!result?.success || !result.state) return;
                 const current = useAppStore.getState();
                 const fallbackState = result.state as any;
-                const skipFallbackProjectRestore = testBridgeProjectSeeded.current;
+                const skipFallbackProjectRestore = debugBridgeProjectSeeded.current;
                 const shouldPatch =
                     (!current.recentProjects?.length && Array.isArray(fallbackState.recentProjects) && fallbackState.recentProjects.length > 0) ||
                     (!skipFallbackProjectRestore && !current.currentProject && fallbackState.currentProject) ||

@@ -14,14 +14,15 @@ const LAST_LAUNCH_JSON = path.join(TMP_ROOT, "chat-ui-debug-window-last-launch.j
 
 function usage() {
   return [
-    "Usage: node scripts/launch-chat-ui-debug-window.cjs [--port 9223|auto] [--port-offset 20000] [--use-default-runtime-ports] [--preflight-only] [--log-file <path>] [--fake-model] [--fake-model-fixture <name>] [--fake-photoshop] [--empty-photoshop] [--isolated-user-data] [--seed-user-state] [--model <configured-model-id>] [--project <path>] [--self-test]",
+    "Usage: node scripts/launch-chat-ui-debug-window.cjs [--port 9223|auto] [--port-offset 20000] [--use-default-runtime-ports] [--preflight-only] [--log-file <path>] [--fake-model] [--fake-model-fixture <name>] [--fake-photoshop] [--empty-photoshop] [--isolated-user-data] [--seed-user-state] [--reuse-codex-subscription-session] [--model <configured-model-id>] [--project <path>] [--self-test]",
     "",
     "Launches a persistent DesignEcho Electron window with the chat test bridge and a CDP port.",
     "This command does not close the window automatically; use inspect-chat-ui-running-window.cjs to attach to it.",
     "The debug window uses an isolated runtime port block by default so it does not disturb a normal running Agent window.",
     "Use --use-default-runtime-ports only after the normal runtime has stopped; the debug window becomes the sole owner for live Photoshop validation.",
     "--model requires --seed-user-state and changes only a minimal credential-free preference seed in OS temp; it never copies API keys or rewrites normal DesignEcho userData.",
-    "With --seed-user-state, --project is written as the only explicit project in that isolated seed; normal current/recent projects are never copied."
+    "With --seed-user-state, the isolated seed retains only model preferences and design dimensions; --project replaces normal current/recent projects with the explicit fixture.",
+    "--reuse-codex-subscription-session is for an isolated real-model run after the normal runtime has stopped. It reuses the normal secure ChatGPT subscription home without copying or printing credentials."
   ].join("\n");
 }
 
@@ -39,6 +40,7 @@ function parseArgs(argv) {
     emptyPhotoshop: false,
     isolatedUserData: false,
     seedUserState: false,
+    reuseCodexSubscriptionSession: false,
     modelId: "",
     projectPath: "",
     selfTest: false
@@ -122,6 +124,10 @@ function parseArgs(argv) {
       parsed.isolatedUserData = true;
       continue;
     }
+    if (arg === "--reuse-codex-subscription-session") {
+      parsed.reuseCodexSubscriptionSession = true;
+      continue;
+    }
     if (arg === "--model") {
       parsed.modelId = argv[index + 1] || "";
       index += 1;
@@ -162,6 +168,17 @@ function parseArgs(argv) {
     }
     if (!/^[A-Za-z0-9._:-]{1,256}$/.test(parsed.modelId)) {
       throw new Error("--model must be a configured model id containing only letters, numbers, dot, underscore, colon, or hyphen.");
+    }
+  }
+  if (parsed.reuseCodexSubscriptionSession) {
+    if (!parsed.seedUserState) {
+      throw new Error("--reuse-codex-subscription-session requires --seed-user-state.");
+    }
+    if (!parsed.useDefaultRuntimePorts) {
+      throw new Error("--reuse-codex-subscription-session requires --use-default-runtime-ports so the secure subscription home has a single runtime owner.");
+    }
+    if (parsed.fakeModel || parsed.fakeModelFixture) {
+      throw new Error("--reuse-codex-subscription-session cannot be combined with --fake-model.");
     }
   }
 
@@ -217,6 +234,9 @@ function buildEnv(parsed) {
   if (parsed.fakePhotoshop) env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP = "1";
   if (parsed.emptyPhotoshop) env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP_EMPTY = "1";
   if (projectPath) env.DESIGNECHO_CHAT_TEST_PROJECT_PATH = projectPath;
+  if (parsed.reuseCodexSubscriptionSession) {
+    env.DESIGNECHO_TEST_REUSE_CODEX_SUBSCRIPTION_SESSION = "1";
+  }
 
   if (parsed.isolatedUserData) {
     const userDataDir = resolveIsolatedUserDataDir(parsed);
@@ -336,6 +356,79 @@ function readModelPreferencesFromProjection(value) {
   return sanitizeModelPreferences(preferences);
 }
 
+function readBoundedInteger(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return undefined;
+  const rounded = Math.round(number);
+  if (rounded < min || rounded > max) return undefined;
+  return rounded;
+}
+
+function readBoundedNumberList(value, min, max) {
+  if (!Array.isArray(value)) return undefined;
+  const numbers = value
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item) && item >= min && item <= max)
+    .map((item) => Math.round(item * 100) / 100);
+  return numbers.length > 0 ? [...new Set(numbers)] : undefined;
+}
+
+function sanitizeDesignDimensionSpec(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const output = {};
+  const detailPage = value.detailPage;
+  if (detailPage && typeof detailPage === "object" && !Array.isArray(detailPage)) {
+    const detailOutput = {};
+    const baseWidth = readBoundedInteger(detailPage.baseWidth, 100, 8000);
+    const acceptableWidths = readBoundedNumberList(detailPage.acceptableWidths, 100, 8000);
+    const heightRange = detailPage.screenHeightRange;
+    if (baseWidth !== undefined) detailOutput.baseWidth = baseWidth;
+    if (acceptableWidths) detailOutput.acceptableWidths = acceptableWidths;
+    if (heightRange && typeof heightRange === "object" && !Array.isArray(heightRange)) {
+      const min = readBoundedInteger(heightRange.min, 100, 20000);
+      const max = readBoundedInteger(heightRange.max, min ?? 100, 40000);
+      if (min !== undefined && max !== undefined) {
+        detailOutput.screenHeightRange = { min, max };
+      }
+    }
+    if (Object.keys(detailOutput).length > 0) output.detailPage = detailOutput;
+  }
+  const mainImage = value.mainImage;
+  if (mainImage && typeof mainImage === "object" && !Array.isArray(mainImage)) {
+    const width = readBoundedInteger(mainImage.width, 100, 8000);
+    const height = readBoundedInteger(mainImage.height, 100, 8000);
+    if (width !== undefined || height !== undefined) {
+      output.mainImage = {
+        ...(width !== undefined ? { width } : {}),
+        ...(height !== undefined ? { height } : {})
+      };
+    }
+  }
+  const workingScaleFactors = readBoundedNumberList(value.workingScaleFactors, 0.01, 100);
+  if (workingScaleFactors) output.workingScaleFactors = workingScaleFactors;
+  const exportDefaults = value.exportDefaults;
+  if (exportDefaults && typeof exportDefaults === "object" && !Array.isArray(exportDefaults)) {
+    const format = exportDefaults.format === "png" || exportDefaults.format === "jpeg"
+      ? exportDefaults.format
+      : undefined;
+    const quality = readBoundedInteger(exportDefaults.quality, 1, 12);
+    if (format || quality !== undefined) {
+      output.exportDefaults = {
+        ...(format ? { format } : {}),
+        ...(quality !== undefined ? { quality } : {})
+      };
+    }
+  }
+  return Object.keys(output).length > 0 ? output : null;
+}
+
+function readDesignDimensionSpecFromProjection(value) {
+  const projection = parsePersistedProjection(value);
+  return sanitizeDesignDimensionSpec(
+    projection?.state?.designDimensionSpec || projection?.designDimensionSpec
+  );
+}
+
 function sanitizeModelPreferenceBucket(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const output = {};
@@ -393,6 +486,8 @@ function buildSanitizedSeedStateStore(sourceState, projectPath = "") {
   const modelPreferences = readModelPreferencesFromProjection(persistedProjection)
     || readModelPreferencesFromProjection(rendererProjection);
   if (!modelPreferences) return null;
+  const designDimensionSpec = readDesignDimensionSpecFromProjection(persistedProjection)
+    || readDesignDimensionSpecFromProjection(rendererProjection);
   const persistedVersion = Number.isInteger(persistedProjection?.version)
     ? persistedProjection.version
     : undefined;
@@ -401,6 +496,9 @@ function buildSanitizedSeedStateStore(sourceState, projectPath = "") {
     ...(persistedVersion !== undefined ? { version: persistedVersion } : {}),
     state: {
       modelPreferences: JSON.parse(JSON.stringify(modelPreferences)),
+      ...(designDimensionSpec
+        ? { designDimensionSpec: JSON.parse(JSON.stringify(designDimensionSpec)) }
+        : {}),
       ...(explicitProject
         ? {
           currentProject: explicitProject,
@@ -410,7 +508,10 @@ function buildSanitizedSeedStateStore(sourceState, projectPath = "") {
     }
   };
   const safeRendererProjection = {
-    modelPreferences: JSON.parse(JSON.stringify(modelPreferences))
+    modelPreferences: JSON.parse(JSON.stringify(modelPreferences)),
+    ...(designDimensionSpec
+      ? { designDimensionSpec: JSON.parse(JSON.stringify(designDimensionSpec)) }
+      : {})
   };
   return {
     updatedAt: Date.now(),
@@ -606,6 +707,11 @@ function runSelfTest() {
     "--model",
     "codex-subscription-gpt-5-6-sol"
   ]);
+  const reusableSubscription = parseArgs([
+    "--use-default-runtime-ports",
+    "--seed-user-state",
+    "--reuse-codex-subscription-session"
+  ]);
   if (autoPort.autoPort !== true || autoPort.port !== 0) {
     throw new Error("--port auto must preserve auto port mode until launch preflight resolves it");
   }
@@ -626,6 +732,17 @@ function runSelfTest() {
     () => parseArgs(["--model", "codex-subscription-gpt-5-6-sol"]),
     "--model requires --seed-user-state"
   );
+  assertThrows(
+    () => parseArgs(["--reuse-codex-subscription-session"]),
+    "requires --seed-user-state"
+  );
+  assertThrows(
+    () => parseArgs(["--seed-user-state", "--reuse-codex-subscription-session"]),
+    "requires --use-default-runtime-ports"
+  );
+  if (!reusableSubscription.reuseCodexSubscriptionSession) {
+    throw new Error("--reuse-codex-subscription-session must be preserved after validation");
+  }
   if (fixedModel.modelId !== "codex-subscription-gpt-5-6-sol") {
     throw new Error("--model must preserve the configured model id");
   }
@@ -665,6 +782,16 @@ function runSelfTest() {
               debugToken: "nested-secret-must-not-be-copied"
             },
             apiKeys: { openrouter: "secret-must-not-be-copied" },
+            designDimensionSpec: {
+              mainImage: { width: 1440, height: 1440, secret: "must-not-survive" },
+              detailPage: {
+                baseWidth: 1440,
+                acceptableWidths: [750, 790, 800, 1200],
+                screenHeightRange: { min: 600, max: 2600 }
+              },
+              workingScaleFactors: [2],
+              exportDefaults: { format: "jpeg", quality: 12 }
+            },
             conversations: [{ content: "private" }]
           }
         }),
@@ -683,8 +810,15 @@ function runSelfTest() {
       || safeSeedText.includes("nested-secret-must-not-be-copied")
       || safeSeedText.includes("conversations")
       || safeSeedText.includes("currentProject")
-      || safeSeedText.includes("unrelated")) {
-      throw new Error("isolated state seed must retain only credential-free model preferences");
+      || safeSeedText.includes("unrelated")
+      || safeSeedText.includes("must-not-survive")) {
+      throw new Error("isolated state seed must retain only credential-free model preferences and design dimensions");
+    }
+    const safeProjection = parsePersistedProjection(safeSeed.entries["designecho-storage"]);
+    if (safeProjection?.state?.designDimensionSpec?.mainImage?.width !== 1440
+      || safeProjection?.state?.designDimensionSpec?.mainImage?.height !== 1440
+      || safeProjection?.state?.designDimensionSpec?.exportDefaults?.quality !== 12) {
+      throw new Error("isolated state seed must retain sanitized design dimensions");
     }
     const explicitProjectRoot = path.join(modelStateRoot, "explicit-fixture");
     fs.mkdirSync(explicitProjectRoot);

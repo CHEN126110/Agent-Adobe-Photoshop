@@ -655,16 +655,11 @@ function cloneJson(value) {
 function buildCaseDigest(caseSpec) {
   const digestInput = cloneJson(caseSpec);
   delete digestInput.caseDigest;
-  // `loadSuite()` attaches this development-only locator after the persisted
-  // Case has already been validated. It is not part of the Case contract and
-  // must never make the same Case acquire a machine-specific digest.
-  delete digestInput.__file;
   return sha256Text(stableStringify(digestInput));
 }
 
 function buildRubricDigest(rubric) {
   const digestInput = cloneJson(rubric);
-  delete digestInput.__file;
   return sha256Text(stableStringify(digestInput));
 }
 
@@ -1028,21 +1023,23 @@ function validateDesignReliabilityCase(caseSpec) {
         || Object.keys(outputContract).some((key) => ![
           "version",
           "canvas",
+          "canvasAuthority",
           "exactRasterExports",
           "exactEditableDocuments"
         ].includes(key))
-        || outputContract.version !== "design-reliability-output-contract/v1"
+        || outputContract.version !== "design-reliability-output-contract/v2"
         || !isRecord(outputContract.canvas)
         || Object.keys(outputContract.canvas).some((key) => !["width", "height"].includes(key))
         || !Number.isInteger(outputContract.canvas.width)
         || outputContract.canvas.width < 1
         || !Number.isInteger(outputContract.canvas.height)
         || outputContract.canvas.height < 1
+        || !["runtime_setting", "user_instruction"].includes(outputContract.canvasAuthority)
         || !Number.isInteger(outputContract.exactRasterExports)
         || outputContract.exactRasterExports < 1
         || !Number.isInteger(outputContract.exactEditableDocuments)
         || outputContract.exactEditableDocuments < 1) {
-        errors.push("主图与参考复刻 Case 必须声明通用、结构化的 oracle.outputContract。 ");
+        errors.push("主图与参考复刻 Case 必须声明通用、结构化且带尺寸 authority 的 oracle.outputContract。 ");
       }
     }
     if (caseSpec.taskFamily === "sku") {
@@ -1818,6 +1815,9 @@ function deriveDesignReliabilityRunObservation(input) {
         : {}),
       ...(cleanString(environment.photoshopRuntimeBindingDigest)
         ? { photoshopRuntimeBindingDigest: cleanString(environment.photoshopRuntimeBindingDigest) }
+        : {}),
+      ...(cleanString(environment.mainImageCanvasDigest)
+        ? { mainImageCanvasDigest: cleanString(environment.mainImageCanvasDigest) }
         : {}),
       ...(Number.isFinite(environment.timeoutMs) ? { timeoutMs: Math.round(environment.timeoutMs) } : {}),
       ...(cleanString(environment.instructionDigest)
@@ -2836,6 +2836,7 @@ function buildRunControlledDimensionFingerprint(run) {
     runtimeBuildId: cleanString(dimensions.runtimeBuildId) || "unknown",
     runtimeAppVersion: cleanString(dimensions.runtimeAppVersion) || "unknown",
     photoshopRuntimeBuildId: cleanString(dimensions.photoshopRuntimeBuildId) || "unknown",
+    mainImageCanvasDigest: cleanString(dimensions.mainImageCanvasDigest) || "unknown",
     timeoutMs: Number.isFinite(dimensions.timeoutMs) ? dimensions.timeoutMs : null,
     liveRunProtocolKind: cleanString(dimensions.liveRunProtocolKind) || "unknown",
     liveRunProtocolDigest: cleanString(dimensions.liveRunProtocolDigest) || "unknown",
@@ -2858,6 +2859,7 @@ function buildRunGlobalControlledDimensionFingerprint(run) {
     runtimeBuildId: cleanString(dimensions.runtimeBuildId) || "unknown",
     runtimeAppVersion: cleanString(dimensions.runtimeAppVersion) || "unknown",
     photoshopRuntimeBuildId: cleanString(dimensions.photoshopRuntimeBuildId) || "unknown",
+    mainImageCanvasDigest: cleanString(dimensions.mainImageCanvasDigest) || "unknown",
     timeoutMs: Number.isFinite(dimensions.timeoutMs) ? dimensions.timeoutMs : null,
     liveRunProtocolKind: cleanString(dimensions.liveRunProtocolKind) || "unknown",
     liveRunProtocolDigest: cleanString(dimensions.liveRunProtocolDigest) || "unknown",

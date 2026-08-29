@@ -133,6 +133,7 @@ export interface RunFinalQualityReviewRuntimeInput {
     taskRunId: string;
     reflexionHandoff?: ReflexionHandoff;
     configuredSoftTimeBudgetMs?: number;
+    terminalQualityReserveMs?: number;
     maxRequestTimeoutMs: number;
     readActiveElapsedMs: () => number;
     callModel: (
@@ -593,6 +594,7 @@ export async function runFinalQualityReviewRuntime(
             : undefined,
         expectedHistoryStateRef: input.reviewCandidate.historyStateRef,
         configuredSoftTimeBudgetMs: input.configuredSoftTimeBudgetMs,
+        terminalQualityReserveMs: input.terminalQualityReserveMs,
         maxRequestTimeoutMs: input.maxRequestTimeoutMs,
         readActiveElapsedMs: input.readActiveElapsedMs,
         callJudge: (request) => input.callModel('final_quality_judge', request, presentation),

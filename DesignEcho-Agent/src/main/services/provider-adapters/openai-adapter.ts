@@ -16,6 +16,39 @@ import {
     resolveProviderStreamStopReason
 } from '../../../shared/provider-stream-completion';
 import { shouldReplayProviderReasoningContent } from '../../../shared/agent-model-transport-policy';
+import type { ProviderReportedTokenUsage } from '../../../shared/provider-reported-token-usage';
+
+function readNonNegativeTokenCount(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+        ? value
+        : undefined;
+}
+
+/**
+ * OpenAI-compatible usage 的唯一投影。DeepSeek 缓存明细只有成对上报且与 inputTokens
+ * 守恒时才进入 Runtime；缺失、部分或矛盾数据保持 unknown，不能补 0 或修正 Provider。
+ */
+export function readOpenAICompatibleTokenUsage(
+    provider: string,
+    rawUsage: unknown
+): ProviderReportedTokenUsage {
+    const usage = rawUsage && typeof rawUsage === 'object'
+        ? rawUsage as Record<string, unknown>
+        : {};
+    const inputTokens = readNonNegativeTokenCount(usage.prompt_tokens) ?? 0;
+    const outputTokens = readNonNegativeTokenCount(usage.completion_tokens) ?? 0;
+    const cacheHitInputTokens = readNonNegativeTokenCount(usage.prompt_cache_hit_tokens);
+    const cacheMissInputTokens = readNonNegativeTokenCount(usage.prompt_cache_miss_tokens);
+    const hasCompleteDeepSeekCacheUsage = provider.trim().toLowerCase() === 'deepseek'
+        && cacheHitInputTokens !== undefined
+        && cacheMissInputTokens !== undefined
+        && cacheHitInputTokens + cacheMissInputTokens === inputTokens;
+    return {
+        inputTokens,
+        outputTokens,
+        ...(hasCompleteDeepSeekCacheUsage ? { cacheHitInputTokens, cacheMissInputTokens } : {})
+    };
+}
 
 export class OpenAIAdapter implements ProviderAdapter {
     constructor(private readonly provider = 'openai') {}
@@ -224,10 +257,7 @@ export class OpenAIAdapter implements ProviderAdapter {
         }
 
         // Usage
-        result.usage = {
-            inputTokens: raw.usage?.prompt_tokens || 0,
-            outputTokens: raw.usage?.completion_tokens || 0
-        };
+        result.usage = readOpenAICompatibleTokenUsage(this.provider, raw.usage);
 
         return result;
     }

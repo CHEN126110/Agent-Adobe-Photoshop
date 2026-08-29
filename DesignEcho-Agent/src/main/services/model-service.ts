@@ -37,10 +37,15 @@ import type {
     AgentToolStreamResponse,
     AgentToolStreamToolCall
 } from '../../shared/agent-tool-stream';
+import type { ProviderReportedTokenUsage } from '../../shared/provider-reported-token-usage';
+import {
+    buildProviderTransportMetrics,
+    type ProviderTransportMetrics
+} from '../../shared/provider-transport-metrics';
 import { extractThinkingFromModel, getThinkingRequestParams } from './thinking-extractor';
-import { getProviderAdapter } from './provider-adapters';
+import { getProviderAdapter, readOpenAICompatibleTokenUsage } from './provider-adapters';
 import type { ToolSchema, AdapterMessage, ProviderResponse } from './provider-adapters';
-import { configureProcessProxyFromSystem, getOpenAIHttpAgent } from './network-proxy';
+import { configureProcessProxyFromSystem, getOpenAIFetchOptions } from './network-proxy';
 import type { ProviderNativeToolRequest, ProviderNativeToolCitation } from '../../shared/provider-native-tools';
 import {
     buildProviderNativeToolPlan,
@@ -317,10 +322,7 @@ export interface MessageContent {
 export interface ModelResponse {
     text: string;
     thinking?: string;  // 模型的思维过程（如果有）
-    usage?: {
-        inputTokens: number;
-        outputTokens: number;
-    };
+    usage?: ProviderReportedTokenUsage;
     visualPresentationReceipt?: unknown;
 }
 
@@ -332,6 +334,59 @@ interface AccumulatedToolCall {
     id?: string;
     name?: string;
     argumentsText: string;
+}
+
+interface ProviderTransportPreparation {
+    startedAtMs: number;
+    adapterFormatMs: number;
+}
+
+interface ProviderRequestPayloadMeasurement {
+    serializedRequestBytes?: number;
+    imageDataUrlBytes: number;
+    durationMs: number;
+}
+
+function measureProviderImageDataUrlBytes(formatted: any): number {
+    let bytes = 0;
+    for (const message of Array.isArray(formatted?.messages) ? formatted.messages : []) {
+        for (const block of Array.isArray(message?.content) ? message.content : []) {
+            const url = typeof block?.image_url?.url === 'string' ? block.image_url.url : '';
+            if (url.startsWith('data:image/')) bytes += Buffer.byteLength(url, 'utf8');
+        }
+    }
+    return Number.isSafeInteger(bytes) ? bytes : 0;
+}
+
+function measureProviderRequestPayload(requestBody: unknown, formatted: any): ProviderRequestPayloadMeasurement {
+    const startedAtMs = Date.now();
+    let serializedRequestBytes: number | undefined;
+    try {
+        const serialized = JSON.stringify(requestBody);
+        if (typeof serialized === 'string') {
+            serializedRequestBytes = Buffer.byteLength(serialized, 'utf8');
+        }
+    } catch {
+        // The Provider SDK remains the serialization authority. Measurement failure stays unknown.
+    }
+    return {
+        ...(serializedRequestBytes === undefined ? {} : { serializedRequestBytes }),
+        imageDataUrlBytes: measureProviderImageDataUrlBytes(formatted),
+        durationMs: Math.max(0, Math.floor(Date.now() - startedAtMs))
+    };
+}
+
+function hasOpenAICompatibleSemanticDelta(choice: any): boolean {
+    const delta = choice?.delta;
+    if (!delta) return false;
+    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return true;
+    if (typeof delta.content === 'string' && delta.content) return true;
+    if (String(delta.refusal || '').trim()) return true;
+    return Array.isArray(delta.tool_calls) && delta.tool_calls.some((toolCall: any) => (
+        Boolean(String(toolCall?.id || '').trim())
+        || Boolean(String(toolCall?.function?.name || '').trim())
+        || Boolean(String(toolCall?.function?.arguments || ''))
+    ));
 }
 
 function safeParseToolArguments(value: string): Record<string, any> {
@@ -498,7 +553,8 @@ export class ModelService {
      */
     private initializeClients(): void {
         configureProcessProxyFromSystem();
-        const httpAgent = getOpenAIHttpAgent();
+        const fetchOptions = getOpenAIFetchOptions();
+        const openAITransport = fetchOptions ? { fetchOptions } : {};
 
         this.anthropic = null;
         this.gemini = null;
@@ -519,7 +575,7 @@ export class ModelService {
             this.xiaomi = new OpenAI({
                 apiKey: this.config.xiaomiApiKey,
                 baseURL: 'https://api.xiaomimimo.com/v1',
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -528,7 +584,7 @@ export class ModelService {
         if (this.config.openaiApiKey) {
             this.openai = new OpenAI({
                 apiKey: this.config.openaiApiKey,
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -538,7 +594,7 @@ export class ModelService {
             this.deepseek = new OpenAI({
                 apiKey: this.config.deepseekApiKey,
                 baseURL: DEEPSEEK_BASE_URL,
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -548,7 +604,7 @@ export class ModelService {
             this.smileAi = new OpenAI({
                 apiKey: this.config.smileAiApiKey,
                 baseURL: SMILE_AI_BASE_URL,
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -1231,7 +1287,7 @@ export class ModelService {
             apiKey: key,
             baseURL: DEEPSEEK_BASE_URL,
             timeout: 30000,
-            httpAgent: getOpenAIHttpAgent()
+            fetchOptions: getOpenAIFetchOptions()
         });
 
         try {
@@ -1692,10 +1748,7 @@ export class ModelService {
         return {
             text: content,
             thinking: thinking || undefined,
-            usage: {
-                inputTokens: response.usage?.prompt_tokens || 0,
-                outputTokens: response.usage?.completion_tokens || 0
-            }
+            usage: readOpenAICompatibleTokenUsage(providerName, response.usage)
         };
     }
 
@@ -2419,6 +2472,7 @@ export class ModelService {
         signal: AbortSignal,
         emitChunk: (chunk: AgentToolStreamChunk) => void
     ): Promise<void> {
+        const transportStartedAtMs = Date.now();
         const debugProjectReferenceCandidate = prepareDebugProjectReferenceProviderCandidate(
             messages,
             'chat_with_tools_stream',
@@ -2497,6 +2551,7 @@ export class ModelService {
         const thinkingRequestParams = configuredModel
             ? this.resolveThinkingRequestParams(configuredModel, options)
             : {};
+        const adapterFormatStartedAtMs = Date.now();
         const formatted = adapter.formatMessages(messages, tools, {
             maxTokens: options?.maxTokens,
             temperature: options?.temperature,
@@ -2504,6 +2559,7 @@ export class ModelService {
             thinkingEnabled: options?.thinkingEnabled,
             thinkingRequestParams
         });
+        const adapterFormatMs = Math.max(0, Math.floor(Date.now() - adapterFormatStartedAtMs));
 
         if (provider === 'openrouter') {
             await this.streamOpenRouterWithTools(
@@ -2523,6 +2579,7 @@ export class ModelService {
                 client,
                 apiModelName,
                 formatted,
+                { startedAtMs: transportStartedAtMs, adapterFormatMs },
                 options?.timeoutMs,
                 signal,
                 emitChunk
@@ -2567,6 +2624,7 @@ export class ModelService {
         client: OpenAI,
         model: string,
         formatted: any,
+        transportPreparation: ProviderTransportPreparation,
         timeoutMs: number | undefined,
         signal: AbortSignal,
         emitChunk: (chunk: AgentToolStreamChunk) => void
@@ -2574,21 +2632,29 @@ export class ModelService {
         const accumulatedToolCalls = new Map<number, AccumulatedToolCall>();
         let content = '';
         let thinking = '';
-        let usage = { inputTokens: 0, outputTokens: 0 };
+        let usage: ProviderReportedTokenUsage = { inputTokens: 0, outputTokens: 0 };
         const annotations: unknown[] = [];
         let webSearchUsage: unknown;
         let providerFinishReason: string | undefined;
         let protocolInvalid = false;
         let providerRefusalSeen = false;
+        let firstChunkAtMs: number | undefined;
+        let firstSemanticDeltaAtMs: number | undefined;
+
+        const requestBody = {
+            model,
+            ...formatted,
+            stream: true,
+            ...(provider === 'deepseek' ? {
+                stream_options: { include_usage: true }
+            } : {})
+        };
+        const payloadMeasurement = measureProviderRequestPayload(requestBody, formatted);
 
         let stream: any;
         try {
-            stream = await client.chat.completions.create({
-                model,
-                ...formatted,
-                stream: true
-                // thinking 请求参数已由 adapter.formatMessages 写入 formatted；这里不按 provider 名覆盖。
-            } as any, {
+            // thinking 请求参数已由 adapter.formatMessages 写入 requestBody；这里不按 provider 名覆盖。
+            stream = await client.chat.completions.create(requestBody as any, {
                 signal,
                 timeout: resolveOpenAICompatibleTimeoutMs({ timeoutMs })
             } as any);
@@ -2598,11 +2664,18 @@ export class ModelService {
             }
             throw error;
         }
+        const streamOpenedAtMs = Date.now();
 
         try {
             for await (const chunk of stream as any) {
                 if (signal.aborted) return;
+                const chunkObservedAtMs = Date.now();
+                firstChunkAtMs = firstChunkAtMs ?? chunkObservedAtMs;
                 const choice = chunk?.choices?.[0];
+                if (firstSemanticDeltaAtMs === undefined
+                    && hasOpenAICompatibleSemanticDelta(choice)) {
+                    firstSemanticDeltaAtMs = chunkObservedAtMs;
+                }
                 if (choice?.finish_reason) {
                     const merged = mergeProviderFinishReason(
                         providerFinishReason,
@@ -2610,6 +2683,13 @@ export class ModelService {
                     );
                     providerFinishReason = merged.finishReason;
                     protocolInvalid = protocolInvalid || merged.conflict;
+                }
+                // DeepSeek include_usage 的尾块 choices=[]，必须在 delta 早退前消费。
+                if (chunk.usage) {
+                    usage = readOpenAICompatibleTokenUsage(provider, chunk.usage);
+                    if (chunk.usage.web_search_usage) {
+                        webSearchUsage = chunk.usage.web_search_usage;
+                    }
                 }
                 const delta = choice?.delta;
                 if (!delta) continue;
@@ -2634,15 +2714,6 @@ export class ModelService {
 
                 this.consumeToolCallDeltas(delta.tool_calls, accumulatedToolCalls, emitChunk);
 
-                if (chunk.usage) {
-                    usage = {
-                        inputTokens: chunk.usage.prompt_tokens || 0,
-                        outputTokens: chunk.usage.completion_tokens || 0
-                    };
-                    if (chunk.usage.web_search_usage) {
-                        webSearchUsage = chunk.usage.web_search_usage;
-                    }
-                }
             }
         } catch (error: any) {
             if (provider === 'xiaomi') {
@@ -2671,6 +2742,20 @@ export class ModelService {
         const citations = provider === 'xiaomi'
             ? normalizeProviderNativeToolCitations(annotations, { provider: 'xiaomi' })
             : [];
+        const providerTransportMetrics: ProviderTransportMetrics | undefined =
+            payloadMeasurement.serializedRequestBytes === undefined
+                ? undefined
+                : buildProviderTransportMetrics({
+                    startedAtMs: transportPreparation.startedAtMs,
+                    serializedRequestBytes: payloadMeasurement.serializedRequestBytes,
+                    imageDataUrlBytes: payloadMeasurement.imageDataUrlBytes,
+                    adapterFormatMs: transportPreparation.adapterFormatMs,
+                    payloadMeasurementMs: payloadMeasurement.durationMs,
+                    streamOpenedAtMs,
+                    firstChunkAtMs,
+                    firstSemanticDeltaAtMs,
+                    completedAtMs: Date.now()
+                });
         for (const toolCall of toolCalls) {
             emitChunk({ type: 'tool_call_ready', toolCall });
         }
@@ -2687,7 +2772,8 @@ export class ModelService {
                     ? [{ provider: 'xiaomi', toolType: 'web_search', rawUsage: webSearchUsage }]
                     : undefined,
                 stopReason,
-                streamMode: 'stream'
+                streamMode: 'stream',
+                ...(providerTransportMetrics ? { providerTransportMetrics } : {})
             }
         });
     }

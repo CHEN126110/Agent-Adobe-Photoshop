@@ -35,6 +35,63 @@ function loadImageTargetFitModule() {
     return loadTypeScriptModule('../src/core/image-target-fit.ts', 'image-target-fit.ts');
 }
 
+function assertPhotoshopDocumentEditStateContract() {
+    const state = loadTypeScriptModule(
+        '../src/core/photoshop-document-state.ts',
+        'photoshop-document-state.ts'
+    );
+    assert.deepEqual(state.observePhotoshopDocumentEditState({ saved: true }), {
+        editState: 'clean'
+    });
+    assert.deepEqual(state.observePhotoshopDocumentEditState({ saved: false }), {
+        editState: 'dirty'
+    });
+    assert.equal(
+        state.observePhotoshopDocumentEditState({}).editState,
+        'unknown'
+    );
+    const inaccessible = {};
+    Object.defineProperty(inaccessible, 'saved', {
+        get() {
+            throw new Error('saved unavailable');
+        }
+    });
+    const inaccessibleState = state.observePhotoshopDocumentEditState(inaccessible);
+    assert.equal(inaccessibleState.editState, 'unknown');
+    assert.match(inaccessibleState.editStateReason, /saved unavailable/);
+}
+
+function assertMattingSourceExportGeometryContract() {
+    const geometry = loadTypeScriptModule(
+        '../src/core/matting-source-export-geometry.ts',
+        'matting-source-export-geometry.ts'
+    );
+    assert.deepEqual(
+        geometry.resolveLayerFullDocumentSourceBounds({
+            layerBounds: { left: -100, top: 0, right: 900, bottom: 800 },
+            documentWidth: 1000,
+            documentHeight: 800
+        }),
+        { left: 0, top: 0, right: 900, bottom: 800 }
+    );
+    assert.deepEqual(
+        geometry.resolveLayerFullDocumentSourceBounds({
+            layerBounds: { left: 1, top: 1, right: 4672, bottom: 7007 },
+            documentWidth: 4672,
+            documentHeight: 7008
+        }),
+        { left: 1, top: 1, right: 4672, bottom: 7007 }
+    );
+    assert.throws(
+        () => geometry.resolveLayerFullDocumentSourceBounds({
+            layerBounds: { left: 2000, top: 0, right: 3000, bottom: 800 },
+            documentWidth: 1000,
+            documentHeight: 800
+        }),
+        /没有可见交集/
+    );
+}
+
 function assertDetailPageSliceDeliveryContract() {
     const contract = loadTypeScriptModule(
         '../src/tools/layout/slice-export-contract.ts',
@@ -319,6 +376,37 @@ function assertExportGroupDeliveryContract() {
     assert.match(source, /sourceHistoryStateRef = readActiveHistoryStateRef\(doc\)/);
     assert.match(source, /sameHistoryStateRef\(sourceHistoryStateRef, afterExportHistoryStateRef\)/);
     assert.doesNotMatch(source, /exportGroup 当前仅支持 png 格式/);
+}
+
+function assertRasterExportRevisionContract() {
+    const jsxBridgePath = path.resolve(__dirname, '../src/core/jsx-bridge.ts');
+    const saveDocumentPath = path.resolve(__dirname, '../src/tools/canvas/save-document.ts');
+    const jsxBridgeSource = fs.readFileSync(jsxBridgePath, 'utf8');
+    const saveDocumentSource = fs.readFileSync(saveDocumentPath, 'utf8');
+    const freezeIndex = saveDocumentSource.indexOf(
+        'const sourceHistoryStateRef = requireRasterExportSourceHistoryStateRef(doc);'
+    );
+    const dispatchIndex = saveDocumentSource.indexOf(
+        'const jsxResult = await saveDocumentViaJsx(requestedPath',
+        freezeIndex
+    );
+    const jsxGuardIndex = jsxBridgeSource.indexOf("throw new Error('JSX 保存前源文档已变化，未写入目标文件。')");
+    const jsxSaveIndex = jsxBridgeSource.indexOf('saveDoc.saveAs(target, options, true, Extension.LOWERCASE)');
+
+    assert.ok(freezeIndex >= 0 && freezeIndex < dispatchIndex,
+        'UXP must freeze the source revision before dispatching the JSX file write');
+    assert.ok(jsxGuardIndex >= 0 && jsxGuardIndex < jsxSaveIndex,
+        'JSX must verify the selected source document before writing the target file');
+    assert.ok(jsxBridgeSource.includes('expectedSourceDocumentId?: number')
+        && jsxBridgeSource.includes("throw new Error('JSX 保存前源文档已变化，未写入目标文件。')")
+        && !jsxBridgeSource.includes('sourceHistoryStateId'),
+    'JSX must guard the source document without projecting its incompatible history identity as UXP evidence');
+    assert.ok(saveDocumentSource.includes('requireRasterExportSourceHistoryStateRef(doc)')
+        && saveDocumentSource.includes('verifyRasterExportSourceHistoryStateRef({')
+        && saveDocumentSource.includes('emittedDocumentId: jsxResult.sourceDocumentId')
+        && saveDocumentSource.includes('sameHistoryStateRef(input.expected, afterExportHistoryStateRef)')
+        && saveDocumentSource.includes('导出完成后无法确认文件仍来自同一 Photoshop 文档版本'),
+    'saveDocument and quickExport must return only a same-document JSX and UXP pre/post same-revision receipt');
 }
 
 function assertImageSourceIdentityContract() {
@@ -842,11 +930,14 @@ assert.throws(
 
 assertTransformTargetBoundsTransactionContract();
 assertImagePlacementParameterConflictContracts();
+assertMattingSourceExportGeometryContract();
 assertJpegQualityNormalizationContract();
 assertExportGroupDeliveryContract();
+assertRasterExportRevisionContract();
 assertDetailPageSliceDeliveryContract();
 assertImageSourceIdentityContract();
 assertSkuPairedEditableDeliveryContract();
 assertRuntimeBuildIdentityContract();
+assertPhotoshopDocumentEditStateContract();
 
-console.log('image-target-fit: 17 geometry cases, runtime build identity, source identity, paired SKU editable delivery, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, matting source geometry, Photoshop document edit state, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');

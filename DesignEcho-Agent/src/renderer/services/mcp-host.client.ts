@@ -10,6 +10,7 @@ import { readPhotoshopToolDispatchFailure } from '../../shared/photoshop-tool-di
 const DEFAULT_MCP_HOST_ENDPOINT = 'http://127.0.0.1:8768/mcp';
 const MCP_HOST_TIMEOUT_MS = 1500;
 const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS = 30_000;
+const DEFAULT_MCP_WORKFLOW_CALL_TIMEOUT_MS = 120_000;
 
 type JsonRpcId = string | number;
 
@@ -533,6 +534,70 @@ export async function callPhotoshopMcpTool(
                 )
                 : parseToolCallPayload(result);
         }
+    } finally {
+        if (options.signal && abortListener) {
+            options.signal.removeEventListener('abort', abortListener);
+        }
+    }
+}
+
+/**
+ * 调用 Main Runtime 拥有的完整 Photoshop 工作流。
+ *
+ * 与 callPhotoshopMcpTool 的区别：后者只调用 UXP 原子工具；完整抠图还包含
+ * Main 本地推理、区域重取、写回和读回收据，不能再把 UXP 的导出半链当完成。
+ */
+export async function callPhotoshopRemoveBackgroundWorkflow(
+    args: Record<string, unknown> = {},
+    options: McpToolCallOptions = {}
+): Promise<unknown> {
+    const hostToolName = 'photoshop.workflows.remove_background';
+    const publicToolName = 'removeBackground';
+    const requestKey = createMcpRequestKey(hostToolName);
+    let cancelRequested = Boolean(options.signal?.aborted);
+    let abortListener: (() => void) | undefined;
+
+    const cancelWorkflow = async (): Promise<void> => {
+        cancelRequested = true;
+        try {
+            await callHostTool('photoshop.tools.cancel', {
+                requestKey,
+                awaitFinalResult: true
+            }, { timeoutMs: 5_000 });
+        } catch {
+            // 原始工作流请求仍会等待最终结算；取消通知失败不能伪造“没有写入”。
+        }
+    };
+
+    if (cancelRequested) {
+        return buildCancelledMcpToolResult(requestKey);
+    }
+    if (options.signal) {
+        abortListener = () => {
+            void cancelWorkflow();
+        };
+        options.signal.addEventListener('abort', abortListener, { once: true });
+    }
+
+    try {
+        const result = await callHostTool(hostToolName, {
+            ...args,
+            requestKey
+        }, {
+            timeoutMs: options.timeoutMs ?? DEFAULT_MCP_WORKFLOW_CALL_TIMEOUT_MS
+        });
+        return cancelRequested || options.signal?.aborted
+            ? finalizeCancelledMcpToolResult(result, requestKey, publicToolName, true)
+            : result;
+    } catch (error) {
+        if (cancelRequested || options.signal?.aborted || isTimeoutLikeError(error)) {
+            throw buildDispatchedMutationOutcomeUnknownError({
+                toolName: publicToolName,
+                requestKey,
+                originalError: error
+            });
+        }
+        throw error;
     } finally {
         if (options.signal && abortListener) {
             options.signal.removeEventListener('abort', abortListener);

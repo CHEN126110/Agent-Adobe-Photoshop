@@ -1184,7 +1184,7 @@ export class CodexSubscriptionService {
             const buffer = await this.readGeneratedImageBuffer(completed.item);
             let metadata: Metadata;
             try {
-                metadata = await sharp(buffer, { failOnError: true }).metadata();
+                metadata = await sharp(buffer, { failOn: 'error' }).metadata();
             } catch {
                 throw createSubscriptionError(
                     'Codex Runtime 返回的生图结果不是可解析的图片。',

@@ -1,6 +1,6 @@
 export type AgentResponseInterruptionVersion = 'agent-response-interruption/v0';
 
-export type AgentResponseInterruptionKind = 'user_stopped';
+export type AgentResponseInterruptionKind = 'user_stopped' | 'request_cancelled';
 
 export interface AgentResponseInterruption {
     version: AgentResponseInterruptionVersion;
@@ -8,19 +8,32 @@ export interface AgentResponseInterruption {
 }
 
 export const USER_STOPPED_RESPONSE_LABEL = '你已停止此响应';
+export const REQUEST_CANCELLED_RESPONSE_LABEL = '本次响应已中断';
 
 const LEGACY_USER_STOP_SOURCES = new Set([
     'agent-run:stop',
-    'agent-run:user-stopped',
-    'agent-run:cancelled-result',
-    'agent-run:cancelled-exception'
+    'agent-run:user-stopped'
 ]);
 
-export function buildUserStoppedResponseInterruption(): AgentResponseInterruption {
+const LEGACY_REQUEST_CANCEL_SOURCES = new Set([
+    'agent-run:debug-bridge-cancelled'
+]);
+
+export function buildAgentResponseInterruption(
+    kind: AgentResponseInterruptionKind
+): AgentResponseInterruption {
     return {
         version: 'agent-response-interruption/v0',
-        kind: 'user_stopped'
+        kind
     };
+}
+
+export function buildUserStoppedResponseInterruption(): AgentResponseInterruption {
+    return buildAgentResponseInterruption('user_stopped');
+}
+
+export function buildRequestCancelledResponseInterruption(): AgentResponseInterruption {
+    return buildAgentResponseInterruption('request_cancelled');
 }
 
 export function normalizeAgentResponseInterruption(
@@ -29,8 +42,8 @@ export function normalizeAgentResponseInterruption(
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const candidate = value as Partial<AgentResponseInterruption>;
     if (candidate.version !== 'agent-response-interruption/v0') return undefined;
-    if (candidate.kind !== 'user_stopped') return undefined;
-    return buildUserStoppedResponseInterruption();
+    if (candidate.kind !== 'user_stopped' && candidate.kind !== 'request_cancelled') return undefined;
+    return buildAgentResponseInterruption(candidate.kind);
 }
 
 export function resolveAgentResponseInterruption(input: {
@@ -48,16 +61,16 @@ export function resolveAgentResponseInterruption(input: {
     };
     if (origin.origin !== 'ui_status') return undefined;
     const source = typeof origin.source === 'string' ? origin.source.trim() : '';
-    return LEGACY_USER_STOP_SOURCES.has(source)
-        ? buildUserStoppedResponseInterruption()
-        : undefined;
+    if (LEGACY_USER_STOP_SOURCES.has(source)) return buildUserStoppedResponseInterruption();
+    if (LEGACY_REQUEST_CANCEL_SOURCES.has(source)) return buildRequestCancelledResponseInterruption();
+    return undefined;
 }
 
 export function isAgentResponseInterruptionSentinelContent(value: unknown): boolean {
     const content = String(value || '')
         .replace(/\uFE0F/g, '')
         .trim();
-    return /^(?:⏹\s*)?(?:已停止|任务已停止|你已停止此响应)$/u.test(content);
+    return /^(?:⏹\s*)?(?:已停止|任务已停止|你已停止此响应|本次响应已中断)$/u.test(content);
 }
 
 export function formatAgentResponseInterruption(
@@ -65,5 +78,7 @@ export function formatAgentResponseInterruption(
 ): string | undefined {
     const interruption = normalizeAgentResponseInterruption(value);
     if (!interruption) return undefined;
-    return USER_STOPPED_RESPONSE_LABEL;
+    return interruption.kind === 'user_stopped'
+        ? USER_STOPPED_RESPONSE_LABEL
+        : REQUEST_CANCELLED_RESPONSE_LABEL;
 }

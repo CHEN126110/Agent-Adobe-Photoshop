@@ -443,12 +443,13 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'listDocuments',
-        description: 'List all currently opened Photoshop documents in one observation. Each row includes pathState (saved / unsaved / unavailable), current-project affinity derived from the canonical project root, and a structure-based documentNature hint. Use these facts before choosing a target; do not guess documents one by one. Path reading defaults to on and does not recursively count layers; pass includePaths=false only for minimal polling.',
+        description: 'List open Photoshop documents with pathState, editState, project affinity, documentNature and document/history revision facts. Use them to identify the target. Dirty, unsaved or outside-project documents are not TaskRun-owned; never save or close them without authority. Paths and revisions default on; disable only for minimal polling.',
         inputSchema: objectSchema({
             includeDetails: { type: 'boolean' },
             includePaths: { type: 'boolean', description: '默认 true；读取 pathState 和已保存文件路径，不递归图层。极简轮询才传 false。' },
             includeDimensions: { type: 'boolean' },
-            includeLayerCount: { type: 'boolean' }
+            includeLayerCount: { type: 'boolean' },
+            includeHistoryState: { type: 'boolean', description: '默认 true；返回 documentId/historyStateId 供对象级变更检测。' }
         })
     },
     {
@@ -470,7 +471,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getDocumentInfo',
-        description: 'Read the active Photoshop document identity and state (document id/name, dimensions, history state). Use this to verify which document is active or whether document navigation succeeded. It does not read pixels and cannot prove visual quality.',
+        description: 'Read the active Photoshop document identity and state (document id/name, dimensions, history state, and clean / dirty / unknown editState). Use this to verify which document is active or whether document navigation succeeded. editState does not grant authority to save or close the document. It does not read pixels and cannot prove visual quality.',
         inputSchema: objectSchema({})
     },
     {
@@ -1382,8 +1383,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             referenceNote: { type: 'string', description: '可选：一句话说明参考是什么、为什么选它对照。' },
             deliverable: { type: 'string', description: '交付物名（点击图 / 详情页首屏 / SKU 组合图…）。' },
             rationale: { type: 'object', properties: { purpose: { type: 'string' }, claim: { type: 'string' }, materials: { type: 'string' }, structure: { type: 'string' }, scale: { type: 'string' }, visual: { type: 'string' }, copySource: { type: 'string' } }, description: '你的设计说明（与 composeDesign 同结构），评审据此判断说的和做的是否一致。' },
-            hardFindings: { type: 'array', items: { type: 'string' }, description: '可选：你希望隔离评审重点核对的画面观察或疑点。这是模型自报的待验证假设，不是规则硬伤或已证事实；评审只能在像素确实支持时采纳。' },
-            calibration: { type: 'array', items: { type: 'object', properties: { kind: { type: 'string', enum: ['good', 'bad'] }, why: { type: 'string' }, ref: { type: 'string' } } }, description: '可选：用户的品味校准样本（好 / 差各一句为什么）。' }
+            hardFindings: { type: 'array', items: { type: 'string' }, description: '可选：你希望隔离评审重点核对的画面观察或疑点。这是模型自报的待验证假设，不是规则硬伤或已证事实；评审只能在像素确实支持时采纳。' }
         })
     },
     {
@@ -2768,15 +2768,68 @@ Use this only when binding a specific Profile's method knowledge, stage context,
     },
     {
         name: 'removeBackground',
-        description: 'Remove the background of a layer using local AI matting (hair-level refinement available). Runs asynchronously via binary transfer; treat the immediate result as request acknowledgment, not guaranteed completion — verify with a follow-up snapshot before claiming the background is removed.',
+        description: 'Run the complete local matting workflow for the current or explicit layer: bind document/history/layer, export source pixels, detect and segment, apply the selected output, and verify the Photoshop mutation receipt. targetPrompt is optional: provide it to isolate a named semantic target, or omit it for general foreground matting. semanticGuidance is optional Agent-authored positive/negative point guidance in normalized layer coordinates; never invent points without observing the image.',
         inputSchema: objectSchema({
             mode: { type: 'string', enum: ['ai', 'local'] },
             layerId: { type: 'number' },
             createNewLayer: { type: 'boolean' },
             useMask: { type: 'boolean' },
             modelId: { type: 'string' },
-            quality: { type: 'number' },
+            quality: { type: 'string', enum: ['fast', 'balanced', 'quality'] },
             targetPrompt: { type: 'string' },
+            outputFormat: { type: 'string', enum: ['mask', 'selection', 'channel', 'layer'] },
+            semanticGuidance: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    version: { type: 'string', enum: ['semantic-matting-guidance/v1'] },
+                    instanceSelectionMode: {
+                        type: 'string',
+                        enum: ['refine_detected_candidates', 'exact_guided_instances'],
+                        description: 'Default refine_detected_candidates only refines matching detections. Use exact_guided_instances only after visually confirming that the guidance sets name every intended instance; Harness will then ignore unselected detector candidates.'
+                    },
+                    sets: {
+                        type: 'array',
+                        minItems: 1,
+                        maxItems: 8,
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                foregroundPoints: {
+                                    type: 'array',
+                                    minItems: 1,
+                                    maxItems: 4,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            x: { type: 'number', minimum: 0, maximum: 1 },
+                                            y: { type: 'number', minimum: 0, maximum: 1 }
+                                        },
+                                        required: ['x', 'y']
+                                    }
+                                },
+                                backgroundPoints: {
+                                    type: 'array',
+                                    maxItems: 8,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            x: { type: 'number', minimum: 0, maximum: 1 },
+                                            y: { type: 'number', minimum: 0, maximum: 1 }
+                                        },
+                                        required: ['x', 'y']
+                                    }
+                                }
+                            },
+                            required: ['foregroundPoints']
+                        }
+                    }
+                },
+                required: ['version', 'sets']
+            },
             edgeRefine: { type: 'string', enum: ['refine-none', 'refine-light', 'refine-standard', 'refine-hair'] },
             maxSize: { type: 'number' }
         })

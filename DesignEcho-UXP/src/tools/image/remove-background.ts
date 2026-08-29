@@ -12,6 +12,7 @@ import { Tool, ToolSchema } from '../types';
 import { BinaryMessageType } from '../../core/binary-protocol';
 import { BinaryMaskStore } from '../../core/binary-mask-store';
 import { arrayBufferFromBytes, assertImageBytesSafeForPhotoshop } from '../../core/image-safety';
+import { resolveLayerFullDocumentSourceBounds } from '../../core/matting-source-export-geometry';
 import { readActiveHistoryStateRef } from '../../core/photoshop-history-state-ref';
 import { checkPhotoshopTargetGuard } from '../../core/photoshop-target-guard';
 import {
@@ -107,7 +108,10 @@ export interface SemanticMattingApplyContract {
     unresolvedTargetCount: number;
     omittedTargetCount: number;
     detectedTargetCount: number;
+    candidateRegionCount?: number;
     detectedRegionCount: number;
+    unselectedCandidateCount?: number;
+    instanceSelectionMode?: 'all_detected' | 'exact_guided_instances';
     segmentationRequestedRegionCount: number;
     segmentationCompletedRegionCount: number;
     segmentationRequestedTargetCount: number;
@@ -244,12 +248,17 @@ export function validateSemanticMattingApplyContract(
     if (!value || typeof value !== 'object') return false;
     const contract = value as Partial<SemanticMattingApplyContract>;
     if (contract.schema !== 'semantic-matting-target-lifecycle/v2') return false;
+    const candidateRegionCount = contract.candidateRegionCount ?? contract.detectedRegionCount;
+    const unselectedCandidateCount = contract.unselectedCandidateCount ?? 0;
+    const instanceSelectionMode = contract.instanceSelectionMode ?? 'all_detected';
     const counts = [
         contract.requestedTargetCount,
         contract.unresolvedTargetCount,
         contract.omittedTargetCount,
         contract.detectedTargetCount,
+        candidateRegionCount,
         contract.detectedRegionCount,
+        unselectedCandidateCount,
         contract.segmentationRequestedRegionCount,
         contract.segmentationCompletedRegionCount,
         contract.segmentationRequestedTargetCount,
@@ -257,6 +266,12 @@ export function validateSemanticMattingApplyContract(
         contract.appliedRegionCount
     ];
     if (!counts.every(count => Number.isInteger(count) && Number(count) >= 0)) return false;
+    if (instanceSelectionMode !== 'all_detected'
+        && instanceSelectionMode !== 'exact_guided_instances') return false;
+    if (Number(candidateRegionCount) < Number(contract.detectedRegionCount)) return false;
+    if (Number(unselectedCandidateCount)
+        !== Number(candidateRegionCount) - Number(contract.detectedRegionCount)) return false;
+    if (instanceSelectionMode === 'all_detected' && Number(unselectedCandidateCount) !== 0) return false;
     return Number(contract.requestedTargetCount) > 0
         && contract.unresolvedTargetCount === 0
         && contract.omittedTargetCount === 0
@@ -271,32 +286,41 @@ export function validateSemanticMattingApplyContract(
 }
 
 async function readMattingUserMaskEnabled(layerId: number): Promise<boolean | undefined> {
-    const result = await action.batchPlay([
-        {
-            _obj: 'get',
-            _target: [{ _ref: 'layer', _id: layerId }],
-            _options: { dialogOptions: 'dontDisplay' }
-        }
-    ], { synchronousExecution: true }).catch(() => null);
-    const value = result?.[0]?.userMaskEnabled;
-    return typeof value === 'boolean' ? value : undefined;
+    try {
+        const result = await action.batchPlay([
+            {
+                _obj: 'get',
+                _target: [{ _ref: 'layer', _id: layerId }],
+                _options: { dialogOptions: 'dontDisplay' }
+            }
+        ], { synchronousExecution: true });
+        const value = result?.[0]?.userMaskEnabled;
+        return typeof value === 'boolean' ? value : undefined;
+    } catch (error) {
+        console.warn('[ApplyMattingResult] 读取图层蒙版状态失败:', describeMattingError(error));
+        return undefined;
+    }
 }
 
 async function readMattingSelectionBounds(): Promise<MattingSourceBounds | null | undefined> {
-    const result = await action.batchPlay([
-        {
-            _obj: 'get',
-            _target: [
-                { _property: 'selection' },
-                { _ref: 'document', _enum: 'ordinal', _value: 'targetEnum' }
-            ],
-            _options: { dialogOptions: 'dontDisplay' }
-        }
-    ], { synchronousExecution: true }).catch(() => undefined);
-    if (result === undefined) return undefined;
-    const selection = result?.[0]?.selection;
-    if (!selection) return null;
-    return normalizeSourceBounds(selection);
+    try {
+        const result = await action.batchPlay([
+            {
+                _obj: 'get',
+                _target: [
+                    { _property: 'selection' },
+                    { _ref: 'document', _enum: 'ordinal', _value: 'targetEnum' }
+                ],
+                _options: { dialogOptions: 'dontDisplay' }
+            }
+        ], { synchronousExecution: true });
+        const selection = result?.[0]?.selection;
+        if (!selection) return null;
+        return normalizeSourceBounds(selection);
+    } catch (error) {
+        console.warn('[ApplyMattingResult] 读取选区状态失败:', describeMattingError(error));
+        return undefined;
+    }
 }
 
 async function readMattingChannelName(
@@ -306,19 +330,35 @@ async function readMattingChannelName(
     const channelTarget = Number.isSafeInteger(expectedId) && Number(expectedId) > 0
         ? { _ref: 'channel', _id: expectedId }
         : { _ref: 'channel', _name: expectedName };
-    const result = await action.batchPlay([
-        {
-            _obj: 'get',
-            _target: [
-                { _property: 'name' },
-                channelTarget
-            ],
-            _options: { dialogOptions: 'dontDisplay' }
-        }
-    ], { synchronousExecution: true }).catch(() => undefined);
-    if (result === undefined) return undefined;
-    const returnedName = result?.[0]?.name;
-    return typeof returnedName === 'string' ? returnedName : null;
+    try {
+        const result = await action.batchPlay([
+            {
+                _obj: 'get',
+                _target: [
+                    { _property: 'name' },
+                    channelTarget
+                ],
+                _options: { dialogOptions: 'dontDisplay' }
+            }
+        ], { synchronousExecution: true });
+        const returnedName = result?.[0]?.name;
+        return typeof returnedName === 'string' ? returnedName : null;
+    } catch (error) {
+        console.warn('[ApplyMattingResult] 读取 Alpha 通道状态失败:', describeMattingError(error));
+        return undefined;
+    }
+}
+
+function describeMattingError(error: unknown): string {
+    if (error instanceof Error && error.message.trim()) return error.message;
+    if (typeof error === 'string' && error.trim()) return error;
+    try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== '{}') return serialized;
+    } catch {
+        // JSON 序列化本身失败时继续返回稳定的未知错误描述。
+    }
+    return String(error || '未知错误');
 }
 
 export class RemoveBackgroundTool implements Tool {
@@ -1031,8 +1071,19 @@ export class RemoveBackgroundTool implements Tool {
                     || actualSourceBounds.bottom > requestedRegion!.bottom + tolerance) {
                     throw new Error('区域取像失败：Photoshop 返回的实际范围超出请求范围。');
                 }
-            } else {
+            } else if (composite) {
                 actualSourceBounds = normalizeSourceBounds(pixelResult.sourceBounds) || undefined;
+            } else {
+                // layerID-only getPixels does not promise that pixelResult.sourceBounds uses
+                // document coordinates. Smart Objects with transformed scale can report an
+                // intrinsic / provider-space rectangle (live case: exactly half the document
+                // bounds). The full-layer document range is instead owned by the layer bounds
+                // observed and target-identity-checked inside this same modal.
+                actualSourceBounds = resolveLayerFullDocumentSourceBounds({
+                    layerBounds: targetLayer?.bounds,
+                    documentWidth: docWidth,
+                    documentHeight: docHeight
+                });
             }
 
             const actualWidth = imgData.width;
@@ -2227,12 +2278,13 @@ export class ApplyMattingResultTool implements Tool {
                     : undefined
             };
 
-        } catch (error: any) {
+        } catch (error: unknown) {
+            const errorMessage = describeMattingError(error);
             console.error('[ApplyMattingResult] 错误:', error);
             return {
                 success: false,
-                message: `应用抠图结果失败: ${error.message}`,
-                error: error.message
+                message: `应用抠图结果失败: ${errorMessage}`,
+                error: errorMessage
             };
         }
     }
