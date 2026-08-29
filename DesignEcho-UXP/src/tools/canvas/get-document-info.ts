@@ -9,13 +9,14 @@ import {
     type PhotoshopDocumentObservationErrorCode
 } from '../../core/photoshop-document-observation';
 import type { PhotoshopHistoryStateRef } from '../../core/photoshop-history-state-ref';
+import { observePhotoshopDocumentEditState } from '../../core/photoshop-document-state';
 
 export class GetDocumentInfoTool implements Tool {
     name = 'getDocumentInfo';
 
     schema: ToolSchema = {
         name: 'getDocumentInfo',
-        description: '获取当前文档的基本信息和当前活动图层',
+        description: '获取当前文档的基本信息、保存后的修改状态和当前活动图层',
         parameters: {
             type: 'object',
             properties: {}
@@ -42,6 +43,7 @@ export class GetDocumentInfoTool implements Tool {
                 let layerCount = 0;
                 this.countLayers(doc, (count) => { layerCount = count; });
                 const activeLayer = doc.activeLayers?.[0];
+                const editState = observePhotoshopDocumentEditState(doc);
                 const documentInfo: DocumentInfo = {
                     id: doc.id,
                     name: doc.name,
@@ -50,6 +52,10 @@ export class GetDocumentInfoTool implements Tool {
                     resolution: doc.resolution,
                     colorMode: this.getColorModeName(doc.mode),
                     layerCount,
+                    editState: editState.editState,
+                    ...(editState.editStateReason
+                        ? { editStateReason: editState.editStateReason }
+                        : {}),
                     ...(activeLayer ? {
                         activeLayerId: activeLayer.id,
                         activeLayerName: activeLayer.name

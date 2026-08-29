@@ -106,6 +106,19 @@ const {
   MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS
 } = require(path.join(ROOT, "src", "shared", "debug-bridge-chat.ts"));
 const {
+  enrichPhotoshopDocumentInventory
+} = require(path.join(ROOT, "src", "shared", "photoshop-document-inventory.ts"));
+const {
+  buildOperatingContextPromptSection,
+  buildOperatingContextSnapshot
+} = require(path.join(
+  ROOT,
+  "src",
+  "shared",
+  "agent-runtime-v5",
+  "operating-context-snapshot.ts"
+));
+const {
   MAIN_IMAGE_MANIFEST
 } = require(path.join(ROOT, "src", "shared", "agent-runtime-v5", "manifests", "main-image.manifest.ts"));
 const {
@@ -1935,6 +1948,53 @@ async function main() {
     safePhotoshopRuntimeBinding,
     "preflight 必须把已独立验证的 live 全身份与 runtime/manifest 摘要签成正式绑定"
   );
+  const dirtyOutsideInventory = enrichPhotoshopDocumentInventory({
+    success: true,
+    documents: [{
+      id: 132,
+      name: "SKU.psb",
+      isActive: true,
+      path: "E:/WERKE/C-1258/PSD/SKU.psb",
+      pathState: "saved",
+      editState: "dirty",
+      width: 4672,
+      height: 7008,
+      layerCount: 24
+    }]
+  }, "C:/fixture/project");
+  assert.strictEqual(dirtyOutsideInventory.documents[0].projectAffinity, "outside_current_project");
+  assert.strictEqual(dirtyOutsideInventory.documents[0].editState, "dirty");
+  const documentStateSnapshot = buildOperatingContextSnapshot({
+    snapshotId: "operating:document-state-audit",
+    correlationId: "run:document-state-audit",
+    capturedAt: "2026-08-26T00:00:02.000Z",
+    workspace: {
+      revision: "workspace:document-state-audit",
+      project: {
+        projectId: "fixture-project",
+        projectName: "fixture",
+        projectPath: "C:/fixture/project"
+      }
+    },
+    photoshop: {
+      revision: "photoshop:document-state-audit",
+      connection: "connected",
+      documentState: "present",
+      openDocuments: dirtyOutsideInventory.documents,
+      document: {
+        documentId: 132,
+        name: "SKU.psb",
+        editState: "dirty",
+        width: 4672,
+        height: 7008,
+        layerCount: 24
+      }
+    }
+  });
+  const documentStatePrompt = buildOperatingContextPromptSection(documentStateSnapshot);
+  assert(documentStatePrompt.includes("editState=dirty"));
+  assert(documentStatePrompt.includes("projectAffinity=outside_current_project"));
+  assert(documentStatePrompt.includes("不代表当前任务拥有、应保存或应关闭该文档"));
   assert.strictEqual(evaluateLiveEnvironmentSafety({
     ...safeLiveEnvironmentInput,
     photoshopRuntimeBuildVerification: {
@@ -2308,7 +2368,12 @@ async function main() {
       ok: true,
       result: {
         success: true,
-        documents: [{ id: 132, name: "SKU", pathState: "unsaved" }],
+        documents: [{
+          id: 132,
+          name: "SKU",
+          pathState: "unsaved",
+          editState: "dirty"
+        }],
         count: 1
       }
     }
@@ -2316,6 +2381,58 @@ async function main() {
   assert.strictEqual(userDocumentOpen.ready, false);
   assert(userDocumentOpen.blockers.includes("photoshop_documents_open"));
   assert.strictEqual(userDocumentOpen.photoshop.hasUnsavedDocument, true);
+  assert.strictEqual(userDocumentOpen.photoshop.hasDirtyDocument, true);
+
+  const unrelatedDocumentReconciliation = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    documentPolicy: "no_fixture_documents",
+    documentListStatus: {
+      ok: true,
+      result: dirtyOutsideInventory
+    }
+  });
+  assert.strictEqual(unrelatedDocumentReconciliation.ready, true,
+    "有明确外部路径的无关文档不得阻塞原 fixture reconciliation");
+  assert.strictEqual(unrelatedDocumentReconciliation.checks.noOpenPhotoshopDocuments, false);
+  assert.strictEqual(unrelatedDocumentReconciliation.checks.noOpenFixtureDocuments, true);
+  assert.strictEqual(unrelatedDocumentReconciliation.checks.openDocumentOwnershipResolved, true);
+  assert.strictEqual(unrelatedDocumentReconciliation.photoshop.openOutsideFixtureDocumentCount, 1);
+  assert.strictEqual(unrelatedDocumentReconciliation.photoshop.hasDirtyDocument, true,
+    "无关文档的 dirty 事实必须保留，但不能被误解为当前 TaskRun 所有权");
+
+  const unknownDocumentOwnership = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    documentPolicy: "no_fixture_documents",
+    documentListStatus: {
+      ok: true,
+      result: {
+        success: true,
+        documents: [{ id: 133, name: "未命名-1", pathState: "unsaved", editState: "dirty" }]
+      }
+    }
+  });
+  assert.strictEqual(unknownDocumentOwnership.ready, false);
+  assert(unknownDocumentOwnership.blockers.includes("photoshop_document_ownership_unresolved"));
+
+  const fixtureDocumentStillOpen = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    documentPolicy: "no_fixture_documents",
+    documentListStatus: {
+      ok: true,
+      result: {
+        success: true,
+        documents: [{
+          id: 134,
+          name: "候选.psd",
+          path: "C:/fixture/project/主图/候选.psd",
+          pathState: "saved",
+          editState: "clean"
+        }]
+      }
+    }
+  });
+  assert.strictEqual(fixtureDocumentStillOpen.ready, false);
+  assert(fixtureDocumentStillOpen.blockers.includes("photoshop_fixture_documents_open"));
 
   const staleRuntime = evaluateLiveEnvironmentSafety({
     ...safeLiveEnvironmentInput,

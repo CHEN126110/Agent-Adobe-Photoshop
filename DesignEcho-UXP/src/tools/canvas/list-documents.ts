@@ -5,6 +5,10 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import {
+    observePhotoshopDocumentEditState,
+    type PhotoshopDocumentEditState
+} from '../../core/photoshop-document-state';
 
 const app = require('photoshop').app;
 const action = require('photoshop').action;
@@ -22,7 +26,7 @@ export class ListDocumentsTool implements Tool {
 
     schema: ToolSchema = {
         name: 'listDocuments',
-        description: '列出 Photoshop 中所有打开的文档，包括当前活动文档的标识',
+        description: '列出 Photoshop 中所有打开的文档，包括活动标识、真实路径状态和保存后的修改状态',
         parameters: {
             type: 'object',
             properties: {
@@ -61,6 +65,8 @@ export class ListDocumentsTool implements Tool {
             path?: string;
             pathState: DocumentPathState;
             pathStatusReason?: string;
+            editState: PhotoshopDocumentEditState;
+            editStateReason?: string;
             width?: number;
             height?: number;
             layerCount?: number;
@@ -91,6 +97,8 @@ export class ListDocumentsTool implements Tool {
                 path?: string;
                 pathState: DocumentPathState;
                 pathStatusReason?: string;
+                editState: PhotoshopDocumentEditState;
+                editStateReason?: string;
                 width?: number;
                 height?: number;
                 layerCount?: number;
@@ -104,6 +112,8 @@ export class ListDocumentsTool implements Tool {
                     path?: string;
                     pathState: DocumentPathState;
                     pathStatusReason?: string;
+                    editState: PhotoshopDocumentEditState;
+                    editStateReason?: string;
                     width?: number;
                     height?: number;
                     layerCount?: number;
@@ -111,8 +121,15 @@ export class ListDocumentsTool implements Tool {
                     id: doc.id,
                     name: doc.name,
                     isActive: doc.id === activeDocId,
-                    pathState: 'not_requested'
+                    pathState: 'not_requested',
+                    editState: 'unknown'
                 };
+
+                const editState = observePhotoshopDocumentEditState(doc);
+                docInfo.editState = editState.editState;
+                if (editState.editStateReason) {
+                    docInfo.editStateReason = editState.editStateReason;
+                }
 
                 if (params.includeDetails || params.includeDimensions) {
                     docInfo.width = doc.width;

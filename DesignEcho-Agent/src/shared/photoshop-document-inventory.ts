@@ -4,6 +4,7 @@ import {
 } from './design-document-nature';
 
 export type PhotoshopDocumentPathState = 'saved' | 'unsaved' | 'unavailable' | 'not_requested';
+export type PhotoshopDocumentEditState = 'clean' | 'dirty' | 'unknown';
 export type PhotoshopDocumentProjectAffinity = 'current_project' | 'outside_current_project' | 'unknown';
 
 export interface PhotoshopDocumentInventoryEntry extends Record<string, unknown> {
@@ -12,6 +13,8 @@ export interface PhotoshopDocumentInventoryEntry extends Record<string, unknown>
     isActive: boolean;
     path?: string;
     pathState: PhotoshopDocumentPathState;
+    editState: PhotoshopDocumentEditState;
+    editStateReason?: string;
     projectAffinity: PhotoshopDocumentProjectAffinity;
     projectRelativePath?: string;
     projectAffinityReason: string;
@@ -103,6 +106,17 @@ function normalizePathState(document: Record<string, unknown>): PhotoshopDocumen
     return String(document.path || '').trim() ? 'saved' : 'not_requested';
 }
 
+function normalizeEditState(document: Record<string, unknown>): PhotoshopDocumentEditState {
+    const explicit = document.editState;
+    if (explicit === 'clean' || explicit === 'dirty' || explicit === 'unknown') {
+        return explicit;
+    }
+    if (typeof document.hasUnsavedChanges === 'boolean') {
+        return document.hasUnsavedChanges ? 'dirty' : 'clean';
+    }
+    return 'unknown';
+}
+
 export function enrichPhotoshopDocumentInventory(
     input: Record<string, unknown>,
     projectPath?: string
@@ -112,6 +126,7 @@ export function enrichPhotoshopDocumentInventory(
         .filter((document): document is Record<string, unknown> => Boolean(document) && typeof document === 'object')
         .map((document): PhotoshopDocumentInventoryEntry => {
             const pathState = normalizePathState(document);
+            const editState = normalizeEditState(document);
             const affinity = resolveProjectAffinity({
                 documentPath: document.path,
                 pathState,
@@ -123,6 +138,10 @@ export function enrichPhotoshopDocumentInventory(
                 name: String(document.name || ''),
                 isActive: document.isActive === true,
                 pathState,
+                editState,
+                ...(typeof document.editStateReason === 'string' && document.editStateReason.trim()
+                    ? { editStateReason: document.editStateReason.trim() }
+                    : {}),
                 projectAffinity: affinity.affinity,
                 ...(affinity.relativePath ? { projectRelativePath: affinity.relativePath } : {}),
                 projectAffinityReason: affinity.reason,
@@ -143,7 +162,7 @@ export function enrichPhotoshopDocumentInventory(
             version: 'photoshop-document-inventory/v0',
             ...(projectPath ? { currentProjectPath: projectPath } : {}),
             documentCount: documents.length,
-            facts: 'projectAffinity 与 pathState 是 Harness 根据真实路径计算的事实；documentNature 是结构提示，不是权限或任务角色。'
+            facts: 'pathState 表示是否有本地路径，editState 表示自上次保存后是否仍有修改；projectAffinity 由 Harness 根据真实路径计算。documentNature 是结构提示，不是权限、任务所有权或关闭授权。'
         }
     };
 }

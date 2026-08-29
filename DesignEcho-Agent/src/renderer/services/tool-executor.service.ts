@@ -126,7 +126,7 @@ export const AVAILABLE_TOOLS = [
 
     // === 文档/画布操作 ===
     { name: 'createDocument', description: '创建新文档', params: '{ preset?: string, width?: number, height?: number, name?: string, backgroundColor?: "white"|"black"|"transparent" }' },
-    { name: 'listDocuments', description: '一次列出所有【已打开】文档，并返回保存路径状态、当前项目归属和文档性质提示', params: '{ includeDetails?: boolean, includePaths?: boolean, includeDimensions?: boolean, includeLayerCount?: boolean }' },
+    { name: 'listDocuments', description: '一次列出所有【已打开】文档，并返回路径状态、保存后修改状态、当前项目归属和文档性质提示', params: '{ includeDetails?: boolean, includePaths?: boolean, includeDimensions?: boolean, includeLayerCount?: boolean }' },
     { name: 'switchDocument', description: '切换到【已打开】的指定文档（注意：不能打开新文件，只能切换）', params: '{ documentName: string }' },
     { name: 'closeDocument', description: '关闭指定文档（批量操作后清理）。不保存修改除非指定 save: true', params: '{ documentName?: string, documentId?: number, save?: boolean }' },
     { name: 'getDocumentInfo', description: '获取当前文档信息', params: '{}' },

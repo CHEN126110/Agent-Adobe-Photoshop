@@ -345,7 +345,7 @@ function buildPhotoshopRequestRevision(
     documents: PhotoshopDocumentInventoryEntry[]
 ): string {
     const inventoryRevision = documents
-        .map((document) => `${document.id}:${document.pathState}:${document.projectAffinity}:${document.isActive ? 1 : 0}`)
+        .map((document) => `${document.id}:${document.pathState}:${document.editState}:${document.projectAffinity}:${document.isActive ? 1 : 0}`)
         .join(',');
     return `${context?.revision || 'photoshop:document-unknown'}:open:${inventoryRevision || 'none'}`;
 }
@@ -403,6 +403,9 @@ export function normalizePhotoshopDocumentInfo(
             ? { historyStateRef }
             : {}),
         documentName: String(data?.name || data?.documentName || '').trim() || undefined,
+        ...(data?.editState === 'clean' || data?.editState === 'dirty' || data?.editState === 'unknown'
+            ? { editState: data.editState }
+            : {}),
         ...(Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
             ? { canvasSize: { width, height } }
             : {}),

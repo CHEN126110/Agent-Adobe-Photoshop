@@ -31,6 +31,9 @@
 - r26 已使用全新 fixture `fixture-20260828225140-2e9196a9fbc7`、同一句自然需求、GPT-5.6 Sol 与干净 `1a3f95d3` 双 Runtime 通过写前预检并提交。Agent 在中断前完成候选总览观察，自主选择 A01 穿着素材，理由是木耳边、袜筒纹理和鞋袜关系在缩略图中更易识别，并计划满版主视觉加左侧短文案；当时尚未创建 Photoshop 文档或产物。
 - 当前 Codex 执行回合被外部中断后，原 CLI 句柄、干净 Runtime 和原 Photoshop 进程均已退出；Attempt `main-image-pink-coffee-unseen-v1-attempt-20260828225315-864c4e8f021f` 只留下 `armed` 与 `submission_started`，没有 terminal、Run Record、PSD/JPG 或其它 fixture 新文件。随后用户从主工作区启动了另一份旧 /脏 Runtime，并在 08:46 新 Photoshop 进程中打开 `SKU.psb`；它不是 r26 现场，未被重载、关闭或停止。
 - Design Reliability 当前报告 6 次 Attempt Submission、5 次 terminal、1 次未闭合和 1 条写状态未清账；r26 已进入提交分母但没有产品终态，不能归因为 D-091 失败。现有 `reconcile-live-attempt` 支持 `submitted_without_terminal`，但必须等安全窗口以正确干净 Runtime、同 fixture、Photoshop 0 文档 /0 pending 对账；r26 fixture 只用于 reconciliation，不得复用为下一次样本。
+- 用户指出“无关 SKU 文档打开”不应成为全局阻塞。代码审计确认产品 Runtime 已通过 `listDocuments` 提供真实路径状态、当前项目归属和文档性质，并注入 Operating Context；首个偏差是保存后修改状态缺失，第二个偏差是 Design Reliability reconciliation 丢弃上述事实，只按打开文档数量判定安全。
+- D-092 已把四类事实拆开：`pathState` 只表示是否存在本地路径，`editState` 表示自上次保存后是否还有修改，`projectAffinity` 表示是否位于当前项目，TaskRun 创建 /mutation 收据才表示当前任务所有权。UXP 的 `getDocumentInfo` /`listDocuments` 已读取 `Document.saved`，Operating Context 明确告诉模型 dirty /项目内外状态，并声明 dirty 不产生保存或关闭授权。
+- D-092 reconciliation 使用 `no_fixture_documents` 策略：新正式 Attempt 仍保持 `none_open` 写前基线；中断对账允许路径明确且位于原 fixture 外的文档继续打开，但任何路径未知 /未保存文档、原 fixture 内文档、待处理请求、未重启 Agent Runtime 或未重新加载 Photoshop Runtime 都继续 fail closed。专项验证、完整核心闸门 58/58、Agent /UXP production build 与 `git diff --check` 已通过；独立提交、推送、提交后双 Runtime identity 和真机收据仍待完成。
 
 ### 实施边界
 
@@ -39,6 +42,7 @@
 - 预算租约不绕过硬 Tool 数、权限、目标 /revision、事务、preflight 或 unknown-write reconciliation。
 - 完成态审美建议仍只是 revision-bound 观察；剩余容量检查只决定是否启动新 Agent generation，不决定如何修改、不执行 Tool，也不把 `needs_review` 变成写入授权。
 - 技术成功继续以真实 Photoshop 写入、同目标读回、同 revision 可编辑稿与预览图交付为准；视觉质量继续单独盲评。
+- 环境事实不能合并成“有无文档”布尔值：文件路径、保存后修改、项目归属和 TaskRun 所有权分别由既有 Provider /Operating Context /Runtime receipt 拥有；Harness 只据此约束目标与副作用，不能替用户保存、放弃或关闭无关文档。
 
 ### 已实施的通用不变量
 
@@ -66,6 +70,7 @@
 7. “Judge 读过哪张图”必须由逐图 Provider 收据和精确 source output 绑定，不能通过给自动快照写 `reviewed=true` 冒充。
 8. 版本相同不等于语义对象相同；document/history 只能证明时间一致性，ReviewSet source /coverage 才能证明“看的是成品还是辅助素材”。
 9. 跨宿主协议的数字字段不能因同名就假定同一身份空间；文件提交的源 revision 必须由拥有该 revision 的 UXP 在写前 /写后闭合，JSX 只证明自己选中了哪一个文档。
+10. 环境安全应按对象身份和副作用范围判断；“任意文档打开即阻塞”会把无关用户工作错误升级成全局锁，既增加人工介入，也掩盖系统已有的路径与项目归属事实。
 
 ### 负面教训与禁止反例
 
@@ -80,12 +85,14 @@
 9. 禁止扫描已生成目录补造 `finalArtifactRefs`，也禁止给 Harness 自动观察伪造主模型 review decision。
 10. 禁止把 `single || bundle` 之类“有证据就先用”的降级写进终局选择；它会把素材、局部裁切或多屏集合偷换成单画布成品，并在 Judge、E2 与恢复 Artifact 之间制造多套事实。
 11. 禁止用真实存在的文件路径、导出成功文案或 ExtendScript history id 补造 UXP `sourceHistoryStateRef`；缺少同版本收据必须修复 Provider 返回链，不能放宽 E2 或扫描目录。
+12. 禁止用 `pathState=unsaved` 同时表达“没有路径”和“已有文件但有未保存修改”；也禁止把 `editState=dirty` 解释成当前 TaskRun 所有权、保存授权或关闭授权。
 
 ### 下一步
 
-1. 用户当前 `SKU.psb` 安全关闭后，以正确干净 `1a3f95d3` Runtime、原 r26 fixture、Photoshop 0 文档 /0 pending 执行 `reconcile-live-attempt`；只追加 `submitted_without_terminal` 对账，不恢复或重放原任务。
-2. 从锁定源创建全新 r27 fixture，以同一句需求、同一 GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-3. r27 技术成功后，对 r24 /r25 /r27 可评分结果与用户成稿 /Eagle 做匿名视觉比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
+1. 完成 D-092 最终差异审查、独立提交和 GitHub 推送；提交后重建并核对干净双 Runtime identity。
+2. 用临时测试文档真机验证 `listDocuments` 的 path /editState 状态及“外部文档不产生保存 /关闭权限”，随后以原 r26 fixture 执行 `reconcile-live-attempt`；只追加 `submitted_without_terminal` 对账，不恢复或重放原任务。
+3. 从锁定源创建全新 r27 fixture，以同一句需求、同一 GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
+4. r27 技术成功后，对 r24 /r25 /r27 可评分结果与用户成稿 /Eagle 做匿名视觉比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
 
 ### 验证与未知
 
@@ -101,11 +108,12 @@
 - 已验证：D-091 的顺序化 Main /Renderer 类型检查、完整 `maintenance:validate` 58/58、Agent /UXP production build 与 `git diff --check` 均通过。
 - 已验证：D-091 提交 `1a3f95d3` 已推送；提交后 Agent /UXP identity 均为同一干净提交，r26 写前环境全部通过。
 - 已验证：r26 只有 submission、没有 terminal /Run /产物；原 Runtime 与 Photoshop 已被外部关闭，当前用户 `SKU.psb` 属于后来启动的另一 Photoshop 进程。该样本处于未闭合开发账本，不代表 Agent 或 D-091 产品终态。
-- 待验证：r26 安全 reconciliation、r27 正式 Attempt、重复样本和匿名视觉评审。
+- 已验证：D-092 专项回归证明外部已保存文档（包括 dirty）不会阻塞 reconciliation，路径未知 /未保存文档与原 fixture 文档仍 fail closed；完整 `maintenance:validate` 58/58、Agent /UXP production build、UXP Document.saved 契约及核心边界审计均通过。
+- 待验证：D-092 独立提交、GitHub 推送、提交后双 Runtime identity 与真机状态读回；之后是 r26 安全 reconciliation、r27 正式 Attempt、重复样本和匿名视觉评审。
 
 ### 状态
 
-`in_progress / d091_1a3f95d3_pushed_clean_runtime_verified / r26_submitted_without_terminal_after_external_runtime_shutdown / reconciliation_waiting_for_user_sku_document_safe_window / r27_pending`
+`in_progress / d092_document_path_edit_affinity_and_reconciliation_scope_core_58_and_builds_passed / commit_push_and_live_probe_pending / r26_reconciliation_pending / r27_pending`
 
 ---
 

@@ -443,7 +443,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'listDocuments',
-        description: 'List all currently opened Photoshop documents in one observation. Each row includes pathState (saved / unsaved / unavailable), current-project affinity derived from the canonical project root, and a structure-based documentNature hint. Use these facts before choosing a target; do not guess documents one by one. Path reading defaults to on and does not recursively count layers; pass includePaths=false only for minimal polling.',
+        description: 'List all currently opened Photoshop documents in one observation. Each row separates pathState (whether a local path exists) from editState (clean / dirty / unknown since the last save), and includes current-project affinity plus a structure-based documentNature hint. Use these facts before choosing a target; do not guess documents one by one. A dirty or outside-project document is not automatically owned by this TaskRun and must not be saved or closed without explicit authority. Path reading defaults to on and does not recursively count layers; pass includePaths=false only for minimal polling.',
         inputSchema: objectSchema({
             includeDetails: { type: 'boolean' },
             includePaths: { type: 'boolean', description: '默认 true；读取 pathState 和已保存文件路径，不递归图层。极简轮询才传 false。' },
@@ -470,7 +470,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getDocumentInfo',
-        description: 'Read the active Photoshop document identity and state (document id/name, dimensions, history state). Use this to verify which document is active or whether document navigation succeeded. It does not read pixels and cannot prove visual quality.',
+        description: 'Read the active Photoshop document identity and state (document id/name, dimensions, history state, and clean / dirty / unknown editState). Use this to verify which document is active or whether document navigation succeeded. editState does not grant authority to save or close the document. It does not read pixels and cannot prove visual quality.',
         inputSchema: objectSchema({})
     },
     {

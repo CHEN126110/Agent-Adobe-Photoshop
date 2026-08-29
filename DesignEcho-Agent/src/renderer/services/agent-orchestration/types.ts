@@ -75,6 +75,7 @@ export interface PhotoshopContext {
     documentId?: number;
     historyStateRef?: { documentId: number; historyStateId: number };
     documentName?: string;
+    editState?: 'clean' | 'dirty' | 'unknown';
     canvasSize?: { width: number; height: number };
     activeLayerId?: number;
     activeLayerName?: string;

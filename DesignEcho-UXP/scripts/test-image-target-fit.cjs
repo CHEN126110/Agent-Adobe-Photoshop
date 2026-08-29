@@ -35,6 +35,32 @@ function loadImageTargetFitModule() {
     return loadTypeScriptModule('../src/core/image-target-fit.ts', 'image-target-fit.ts');
 }
 
+function assertPhotoshopDocumentEditStateContract() {
+    const state = loadTypeScriptModule(
+        '../src/core/photoshop-document-state.ts',
+        'photoshop-document-state.ts'
+    );
+    assert.deepEqual(state.observePhotoshopDocumentEditState({ saved: true }), {
+        editState: 'clean'
+    });
+    assert.deepEqual(state.observePhotoshopDocumentEditState({ saved: false }), {
+        editState: 'dirty'
+    });
+    assert.equal(
+        state.observePhotoshopDocumentEditState({}).editState,
+        'unknown'
+    );
+    const inaccessible = {};
+    Object.defineProperty(inaccessible, 'saved', {
+        get() {
+            throw new Error('saved unavailable');
+        }
+    });
+    const inaccessibleState = state.observePhotoshopDocumentEditState(inaccessible);
+    assert.equal(inaccessibleState.editState, 'unknown');
+    assert.match(inaccessibleState.editStateReason, /saved unavailable/);
+}
+
 function assertDetailPageSliceDeliveryContract() {
     const contract = loadTypeScriptModule(
         '../src/tools/layout/slice-export-contract.ts',
@@ -880,5 +906,6 @@ assertDetailPageSliceDeliveryContract();
 assertImageSourceIdentityContract();
 assertSkuPairedEditableDeliveryContract();
 assertRuntimeBuildIdentityContract();
+assertPhotoshopDocumentEditStateContract();
 
-console.log('image-target-fit: 17 geometry cases, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, Photoshop document edit state, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');

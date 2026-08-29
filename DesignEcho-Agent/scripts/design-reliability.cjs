@@ -3702,20 +3702,56 @@ async function safeCallMcpTool(endpoint, name, args = {}, timeoutMs = 5000) {
   }
 }
 
-function normalizeOpenDocumentState(documentList) {
+function normalizeDocumentPathForSafety(value) {
+  const raw = cleanString(value);
+  if (!raw) return "";
+  const withoutFileScheme = raw.replace(/^file:\/{2,3}/i, "");
+  try {
+    return normalizePathIdentity(decodeURI(withoutFileScheme));
+  } catch {
+    return normalizePathIdentity(withoutFileScheme);
+  }
+}
+
+function normalizeOpenDocumentState(documentList, expectedProjectPath) {
   const result = documentList?.ok ? documentList.result : undefined;
   const documents = Array.isArray(result?.documents) ? result.documents : undefined;
   if (!documents || result?.success === false) {
     return {
       verified: false,
       count: null,
-      hasUnsavedDocument: null
+      hasUnsavedDocument: null,
+      hasDirtyDocument: null,
+      fixtureDocumentCount: null,
+      outsideFixtureDocumentCount: null,
+      unresolvedOwnershipDocumentCount: null
     };
+  }
+  const expectedProjectIdentity = normalizePathIdentity(expectedProjectPath);
+  let fixtureDocumentCount = 0;
+  let outsideFixtureDocumentCount = 0;
+  let unresolvedOwnershipDocumentCount = 0;
+  for (const document of documents) {
+    const pathState = cleanString(document?.pathState);
+    const documentPath = normalizeDocumentPathForSafety(document?.path);
+    if (pathState !== "saved" || !documentPath || !expectedProjectIdentity) {
+      unresolvedOwnershipDocumentCount += 1;
+      continue;
+    }
+    if (isSameOrNestedRealPath(expectedProjectIdentity, documentPath)) {
+      fixtureDocumentCount += 1;
+    } else {
+      outsideFixtureDocumentCount += 1;
+    }
   }
   return {
     verified: true,
     count: documents.length,
-    hasUnsavedDocument: documents.some((document) => document?.pathState === "unsaved")
+    hasUnsavedDocument: documents.some((document) => document?.pathState === "unsaved"),
+    hasDirtyDocument: documents.some((document) => document?.editState === "dirty"),
+    fixtureDocumentCount,
+    outsideFixtureDocumentCount,
+    unresolvedOwnershipDocumentCount
   };
 }
 
@@ -3737,8 +3773,14 @@ function evaluateLiveEnvironmentSafety(input) {
     : null;
   const photoshopRuntimeBinding = buildPhotoshopRuntimeBinding(photoshopBuildVerification);
   const projectRootResult = input.projectRootStatus?.ok ? input.projectRootStatus.result : undefined;
-  const documents = normalizeOpenDocumentState(input.documentListStatus);
+  const documentPolicy = input.documentPolicy === "no_fixture_documents"
+    ? "no_fixture_documents"
+    : "none_open";
   const expectedProjectPath = normalizePathIdentity(input.expectedProjectPath);
+  const documents = normalizeOpenDocumentState(
+    input.documentListStatus,
+    expectedProjectPath
+  );
   const currentProjectPath = normalizePathIdentity(projectRootResult?.projectRoot);
   const pendingRequestCount = Number(systemStatus?.pluginConnectionDiagnostics?.pendingRequestCount);
 
@@ -3783,8 +3825,15 @@ function evaluateLiveEnvironmentSafety(input) {
   }
   if (!documents.verified) {
     blockers.push("photoshop_document_state_unavailable");
-  } else if (documents.count > 0) {
+  } else if (documentPolicy === "none_open" && documents.count > 0) {
     blockers.push("photoshop_documents_open");
+  } else if (documentPolicy === "no_fixture_documents") {
+    if (documents.unresolvedOwnershipDocumentCount > 0) {
+      blockers.push("photoshop_document_ownership_unresolved");
+    }
+    if (documents.fixtureDocumentCount > 0) {
+      blockers.push("photoshop_fixture_documents_open");
+    }
   }
 
   return {
@@ -3815,7 +3864,10 @@ function evaluateLiveEnvironmentSafety(input) {
         && currentProjectPath === expectedProjectPath
       ),
       photoshopDocumentStateVerified: documents.verified,
-      noOpenPhotoshopDocuments: documents.verified && documents.count === 0
+      noOpenPhotoshopDocuments: documents.verified && documents.count === 0,
+      noOpenFixtureDocuments: documents.verified && documents.fixtureDocumentCount === 0,
+      openDocumentOwnershipResolved: documents.verified
+        && documents.unresolvedOwnershipDocumentCount === 0
     },
     runtime: runtimeIdentity?.version === "designecho-runtime-build-identity/v1"
       ? {
@@ -3834,6 +3886,7 @@ function evaluateLiveEnvironmentSafety(input) {
       }
       : null,
     photoshop: {
+      documentPolicy,
       connected: connection?.connected === true,
       runtimeBuildId: cleanString(photoshopRuntime?.buildId) || null,
       runtimeLoadedAt: cleanString(photoshopRuntime?.loadedAt) || null,
@@ -3848,7 +3901,11 @@ function evaluateLiveEnvironmentSafety(input) {
         : [],
       pendingRequestCount: Number.isFinite(pendingRequestCount) ? pendingRequestCount : null,
       openDocumentCount: documents.count,
-      hasUnsavedDocument: documents.hasUnsavedDocument
+      hasUnsavedDocument: documents.hasUnsavedDocument,
+      hasDirtyDocument: documents.hasDirtyDocument,
+      openFixtureDocumentCount: documents.fixtureDocumentCount,
+      openOutsideFixtureDocumentCount: documents.outsideFixtureDocumentCount,
+      unresolvedOwnershipDocumentCount: documents.unresolvedOwnershipDocumentCount
     },
     project: {
       expectedFixtureSupplied: Boolean(expectedProjectPath),
@@ -3860,7 +3917,7 @@ function evaluateLiveEnvironmentSafety(input) {
   };
 }
 
-async function inspectLiveEnvironment(args, fixtureRoot) {
+async function inspectLiveEnvironment(args, fixtureRoot, options = {}) {
   const endpoint = args.get("--photoshop-mcp", DEFAULT_PHOTOSHOP_MCP_ENDPOINT);
   const [systemStatus, connectionStatus, photoshopDiagnosisStatus, projectRootStatus, documentListStatus] = await Promise.all([
     safeCallMcpTool(endpoint, "system.status"),
@@ -3897,6 +3954,7 @@ async function inspectLiveEnvironment(args, fixtureRoot) {
   return evaluateLiveEnvironmentSafety({
     currentGitEnvironment: readGitEnvironment(),
     expectedProjectPath: fixtureRoot,
+    documentPolicy: options.documentPolicy,
     systemStatus,
     connectionStatus,
     photoshopDiagnosisStatus,
@@ -4812,16 +4870,21 @@ async function reconcileLiveAttempt(args) {
   if (eventIdentities.size !== 1) {
     throw new Error("Attempt 事件身份已经漂移，不能自动完成 reconciliation。");
   }
-  const liveEnvironment = await inspectLiveEnvironment(args, fixtureRoot);
+  const liveEnvironment = await inspectLiveEnvironment(args, fixtureRoot, {
+    documentPolicy: "no_fixture_documents"
+  });
   const unresolvedEvent = terminal || submitted;
   const terminalAt = Date.parse(unresolvedEvent.occurredAt);
   const runtimeStartedAt = Date.parse(liveEnvironment.runtime?.processStartedAt || "");
+  const photoshopRuntimeLoadedAt = Date.parse(liveEnvironment.photoshop?.runtimeLoadedAt || "");
   if (!liveEnvironment.ready
     || !Number.isFinite(terminalAt)
     || !Number.isFinite(runtimeStartedAt)
-    || runtimeStartedAt <= terminalAt) {
+    || runtimeStartedAt <= terminalAt
+    || !Number.isFinite(photoshopRuntimeLoadedAt)
+    || photoshopRuntimeLoadedAt <= terminalAt) {
     throw new Error(
-      "Reconciliation 需要在该异常之后重启最新干净 Runtime，并确认原项目已绑定、Photoshop 无打开文档且无待处理请求。"
+      "Reconciliation 需要在异常后重启最新干净 Agent / Photoshop Runtime、绑定原项目、清空待处理请求，并证明所有打开文档都不属于原 fixture。"
     );
   }
   const context = buildLiveAttemptContextFromEvent(unresolvedEvent);
@@ -4841,8 +4904,13 @@ async function reconcileLiveAttempt(args) {
     photoshopRuntimeBuildId: liveEnvironment.photoshop.runtimeBuildId,
     reconciliationFacts: {
       runtimeRestartedAfterFailure: true,
+      photoshopRuntimeReloadedAfterFailure: true,
       noPendingPhotoshopRequests: true,
-      noOpenPhotoshopDocuments: true,
+      noOpenAttemptFixtureDocuments: true,
+      openDocumentOwnershipResolved: true,
+      openUnrelatedPhotoshopDocumentCount:
+        liveEnvironment.photoshop.openOutsideFixtureDocumentCount,
+      documentPolicy: "no_fixture_documents",
       projectMatchesOriginalFixture: true
     }
   });

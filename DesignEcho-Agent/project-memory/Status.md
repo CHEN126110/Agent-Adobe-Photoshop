@@ -2,6 +2,13 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-092 文档事实与 reconciliation 范围收敛
+
+- 用户指出无关 `SKU.psb` 不应成为全局阻塞。现有产品能力并非完全不知道环境：`listDocuments` 已读取文档路径，Renderer 已计算 `projectAffinity` 与文档性质，Operating Context 也会把完整清单交给模型。真实缺口是没有区分“文档有文件路径”和“文件自上次保存后又被修改”，而开发 reconciliation 又绕过上述事实，只检查打开文档数量。
+- D-092 新增 `editState=clean|dirty|unknown`：UXP 从官方 `Document.saved` 属性读取，`getDocumentInfo` 与 `listDocuments` 都返回；`pathState` 继续只表达本地路径是否存在。Renderer 兼容旧 Provider 结果并默认 unknown，把 editState、路径和项目归属共同放进 Operating Context，同时明确 dirty 不是 TaskRun 所有权、保存授权或关闭授权。
+- Design Reliability 保留正式新 Attempt 的 `none_open` 写前隔离，但 reconciliation 改用 `no_fixture_documents`：路径明确且在原 fixture 外的用户文档不阻塞；路径未知 /未保存文档和原 fixture 内文档仍阻断。对账还新增“Photoshop Runtime 必须在异常后重新加载”，与既有 Agent Runtime 重启、0 pending、原项目绑定共同闭合未知写状态。
+- 专项 `test:design-reliability`、Agent Business Boundary、Tool Registry、Runtime Declaration、Main /Renderer 类型检查、UXP 测试与类型检查、完整 `maintenance:validate` 58/58 和 Agent /UXP production build 均已通过。尚未完成独立提交、推送、提交后 Runtime identity、真机 editState 读回或 r26 reconciliation，因此不能声称本轮闭环完成。
+
 ## 2026-08-29 r26 外部执行环境中断：已提交但无终态
 
 - D-091 已以 `1a3f95d3` 提交并推送；提交后 Agent build `designecho-1a3f95d3d1a7-63de096427d3` 与 UXP build `designecho-uxp-production-1a3f95d3d1a7-be4ae879ddb5` 均为同一干净提交。r26 全新 fixture、GPT-5.6 Sol、真实 Photoshop、1440×1440、0 文档 /0 pending 写前预检全部通过。

@@ -6269,6 +6269,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         document: {
                             documentId: photoshopContext.documentId,
                             name: photoshopContext.documentName,
+                            editState: photoshopContext.editState,
                             width: photoshopContext.canvasSize?.width,
                             height: photoshopContext.canvasSize?.height,
                             layerCount: photoshopContext.layerCount

@@ -117,6 +117,9 @@ export interface DocumentInfo {
     resolution: number;
     colorMode: string;
     layerCount: number;
+    /** clean=自上次保存后未修改；dirty=存在未保存修改；unknown=Host 无法读取。 */
+    editState?: 'clean' | 'dirty' | 'unknown';
+    editStateReason?: string;
     activeLayerId?: number;
     activeLayerName?: string;
 }

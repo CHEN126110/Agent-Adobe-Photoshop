@@ -22,6 +22,7 @@ import {
     type EagleAssetRef
 } from '../eagle-asset-ref';
 import type {
+    PhotoshopDocumentEditState,
     PhotoshopDocumentPathState,
     PhotoshopDocumentProjectAffinity
 } from '../photoshop-document-inventory';
@@ -93,6 +94,7 @@ export interface OperatingPhotoshopOpenDocument {
     isActive: boolean;
     path?: string;
     pathState: PhotoshopDocumentPathState;
+    editState: PhotoshopDocumentEditState;
     projectAffinity: PhotoshopDocumentProjectAffinity;
     projectRelativePath?: string;
     nature: 'source_image' | 'design_document' | 'blank_canvas' | 'unknown';
@@ -105,6 +107,7 @@ export interface OperatingPhotoshopOpenDocument {
 interface OperatingPhotoshopDocumentIdentity {
     documentId: number;
     name?: string;
+    editState?: PhotoshopDocumentEditState;
     width?: number;
     height?: number;
     layerCount?: number;
@@ -148,6 +151,7 @@ interface BuildOperatingPhotoshopContextInput {
         isActive?: boolean;
         path?: string;
         pathState: PhotoshopDocumentPathState;
+        editState: PhotoshopDocumentEditState;
         projectAffinity: PhotoshopDocumentProjectAffinity;
         projectRelativePath?: string;
         documentNature?: {
@@ -161,6 +165,7 @@ interface BuildOperatingPhotoshopContextInput {
     document?: {
         documentId: number;
         name?: string;
+        editState?: PhotoshopDocumentEditState;
         width?: number;
         height?: number;
         layerCount?: number;
@@ -418,9 +423,15 @@ function normalizePhotoshopDocument(
     const width = finitePositiveNumber(document?.width);
     const height = finitePositiveNumber(document?.height);
     const layerCount = finitePositiveNumber(document?.layerCount);
+    const editState = document?.editState === 'clean'
+        || document?.editState === 'dirty'
+        || document?.editState === 'unknown'
+        ? document.editState
+        : undefined;
     return {
         documentId,
         ...(name ? { name } : {}),
+        ...(editState ? { editState } : {}),
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
         ...(layerCount ? { layerCount } : {})
@@ -456,12 +467,18 @@ function normalizeOpenPhotoshopDocuments(
         const width = finitePositiveNumber(document.width);
         const height = finitePositiveNumber(document.height);
         const layerCount = finitePositiveNumber(document.layerCount);
+        const editState = document.editState === 'clean'
+            || document.editState === 'dirty'
+            || document.editState === 'unknown'
+            ? document.editState
+            : 'unknown';
         normalized.push({
             documentId,
             ...(name ? { name } : {}),
             isActive: document.isActive === true,
             ...(documentPath ? { path: documentPath } : {}),
             pathState: document.pathState,
+            editState,
             projectAffinity: document.projectAffinity,
             ...(projectRelativePath ? { projectRelativePath } : {}),
             nature: document.documentNature?.kind || 'unknown',
@@ -789,7 +806,7 @@ export function buildOperatingContextPromptSection(snapshot: OperatingContextSna
             ? '提交时 Photoshop 文档基线'
             : '已过期的提交时 Photoshop 文档基线';
         lines.push(
-            `- ${documentLabel}: ${snapshot.photoshop.document.name || '未命名'}；documentId=${snapshot.photoshop.document.documentId}`
+            `- ${documentLabel}: ${snapshot.photoshop.document.name || '未命名'}；documentId=${snapshot.photoshop.document.documentId}${snapshot.photoshop.document.editState ? `；editState=${snapshot.photoshop.document.editState}` : ''}`
         );
     }
     if (snapshot.photoshop.openDocuments?.length) {
@@ -799,10 +816,10 @@ export function buildOperatingContextPromptSection(snapshot: OperatingContextSna
                 ? `path=${document.path || '路径缺失'}`
                 : `pathState=${document.pathState}`;
             lines.push(
-                `  - ${document.isActive ? '[当前活动] ' : ''}${document.name || '未命名'}；documentId=${document.documentId}；${pathFact}；projectAffinity=${document.projectAffinity}${document.projectRelativePath ? `；projectRelativePath=${document.projectRelativePath}` : ''}；nature=${document.nature}${document.natureReason ? `（${document.natureReason}）` : ''}`
+                `  - ${document.isActive ? '[当前活动] ' : ''}${document.name || '未命名'}；documentId=${document.documentId}；${pathFact}；editState=${document.editState}；projectAffinity=${document.projectAffinity}${document.projectRelativePath ? `；projectRelativePath=${document.projectRelativePath}` : ''}；nature=${document.nature}${document.natureReason ? `（${document.natureReason}）` : ''}`
             );
         }
-        lines.push('- 先依据这份清单选择目标，不要逐个猜文档；outside_current_project 不是当前项目交付物，除非用户明确指定。');
+        lines.push('- 先依据这份清单选择目标，不要逐个猜文档；outside_current_project 不是当前项目交付物，除非用户明确指定。editState=dirty 只表示有未保存修改，不代表当前任务拥有、应保存或应关闭该文档。');
     }
     if (snapshot.photoshop.activeLayer) {
         const layerLabel = snapshot.photoshop.observation.freshness === 'current'

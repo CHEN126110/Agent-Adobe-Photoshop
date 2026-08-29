@@ -15,9 +15,10 @@
 9. `[已定位 r25 首个偏差]`：真实 renderer 探针证明 `quickExport` 重定向写出的 JPG 缺少 `sourceHistoryStateRef`；E2 正确拒绝无法绑定终审 revision 的文件，而 `production-delivery` 只按文件格式计数。进一步证伪确认 ExtendScript 与 UXP history id 不在同一身份空间，不能互相包装。
 10. `[已完成 D-091 / 1a3f95d3]`：JSX 只在写前核对实际源文档 ID；UXP 是 revision 唯一 owner，在导出前冻结并在导出后读回同一 history，再返回收据。修复后同形探针的 renderer 收据、导出前 /后 revision 均为 `4492:4497`；完整 `maintenance:validate` 58/58、Agent /UXP production build、独立提交、GitHub 推送和提交后双 Runtime identity 均已完成。
 11. `[r26 已提交但未闭合]`：全新 fixture 与干净 `1a3f95d3` 写前预检通过；Agent 自主观察并选择 A01 后，外部 Codex 执行回合关闭了原 CLI、Runtime 与 Photoshop。Attempt 只有 `armed / submission_started`，无 terminal、Run Record 或产物；当前正式账本为 6 次 submission、5 次 terminal、1 次未闭合。
-12. `[等待安全 reconciliation]`：用户当前在后来启动的 Photoshop 中打开 `SKU.psb`，不得重载 UXP、关闭文档或停止主工作区 Runtime。文档安全关闭后，以正确干净 Runtime、原 r26 fixture、0 文档 /0 pending 调用现有 `reconcile-live-attempt`；不恢复、不重放、不复用 r26 fixture。
-13. `[待完成 r27]`：从锁定源创建全新 fixture，以同一句需求、GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布执行；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-14. `[条件后置]`：r27 技术成功后再对 r24 /r25 /r27 与用户成稿 /Eagle 做匿名质量比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
+12. `[D-092 代码与专项验证已完成]`：复用现有 `listDocuments`、Operating Context、TaskRun 创建 /mutation 收据和项目路径真相，不新建状态中心。UXP 区分本地路径 `pathState` 与保存后修改 `editState`；模型看到项目内外和 dirty 状态，但不因此取得保存 /关闭权限。正式 Attempt 继续 `none_open`，reconciliation 改为 `no_fixture_documents`，只允许身份明确的外部文档共存。专项 Design Reliability、边界 /Tool /Runtime 审计、Main /Renderer 与 UXP 类型检查、UXP 测试均通过。
+13. `[D-092 完整验证已通过 / 待提交]`：完整核心闸门 58/58 与 Agent /UXP production build 已通过；下一步形成独立提交并推送。提交后重载干净双 Runtime，用临时测试文档取得 path /editState 真机读回，并在不触碰无关用户文件的情况下完成 r26 reconciliation。
+14. `[待完成 r27]`：从锁定源创建全新 fixture，以同一句需求、GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布执行；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
+15. `[条件后置]`：r27 技术成功后再对 r24 /r25 /r27 与用户成稿 /Eagle 做匿名质量比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 
