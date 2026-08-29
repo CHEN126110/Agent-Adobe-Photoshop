@@ -13,7 +13,7 @@
 - 来源：正式采样五次同类失败（r23/r24/r25/r36/r38，最新 2026-08-30 r38：quality=artifact_completed、PSD+JPG 真实落盘、外部文档保护成立，但 `runtimeDeliveryResultRefs` 为空导致收据拒绝）。触发目标条款「同一 blocker 重复→根因复盘」。
 - 归属层级：Runtime 交付阶段证据投影（`projectDeliveryStageEvidence` → `collectRuntimeFinalArtifactPaths`）与 UXP 配对交付收据（d112/1a3f95d3 线）。
 - 状态：triaged
-- 下一步：判别假设——r35（saveDocument+quickExport）refs 非空、r38（saveDocument×2 出 PSD+JPG）refs 空；核对 saveDocument-as-JPG 的结果是否缺少 raster 交付收据/未进入 producer receipt 选择；修复后用 fresh fixture 复验。
+- 下一步：判别假设——r35（saveDocument+quickExport）refs 非空、r38（saveDocument×2 出 PSD+JPG）refs 空。2026-08-30 已排除一项：UXP saveDocument 的 JSX 光栅路径**有**验证过的 sourceHistoryStateRef 收据（save-document.ts:534-550），断点收敛到 Renderer 侧 `projectAgenticFinalDeliveryStageEvidence` 的绑定输入——重点核查 ①`findReviewedPreview` 要求的 full-surface judge 观察是否在 toolCallLog 中且 history 与 save 的 source 一致、②`finalQualityReviewedVisualBinding` 是否在投影调用前已建立（终局时序）、③paired 要求下单一 artifact 路径正则不匹配即整体丢弃 refs 的全有全无语义是否过脆。复现方式：用真实收据形状做纯逻辑插桩测试，不再靠脱敏病历倒推。
 - 边界：不放宽收据校验、不让 Harness 代 Agent 声明交付；只修"真实交付事实未被投影"的记账链。
 
 ### INTAKE-084 evaluateDesign 评审链路三连败稳定性
