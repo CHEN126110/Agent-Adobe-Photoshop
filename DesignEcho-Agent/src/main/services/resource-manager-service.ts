@@ -11,7 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import sharp from 'sharp';
+import sharp, { type OverlayOptions } from 'sharp';
 import { readPsd, initializeCanvas } from 'ag-psd';
 import { diversifyAssetRecommendationShortlist } from '../../shared/asset-recommendation-shortlist';
 import { buildAgentResourceCacheBudget } from '../../shared/agent-performance-policy';
@@ -258,7 +258,7 @@ function isForegroundPixelAgainstBackground(
 
 async function buildImageVisualMetricsProbe(imagePath: string): Promise<ImageVisualMetricsProbe | undefined> {
     const sampleLimit = 256;
-    const { data, info } = await sharp(imagePath, { failOnError: false })
+    const { data, info } = await sharp(imagePath, { failOn: 'none' })
         .rotate()
         .resize({ width: sampleLimit, height: sampleLimit, fit: 'inside', withoutEnlargement: true })
         .ensureAlpha()
@@ -391,7 +391,7 @@ async function buildImageVisualMetricsProbe(imagePath: string): Promise<ImageVis
 }
 
 async function readLumaRawForProbe(input: string | Buffer, width: number, height: number, blurSigma = 0): Promise<Buffer> {
-    let image = sharp(input, { failOnError: false })
+    let image = sharp(input, { failOn: 'none' })
         .resize(width, height, { fit: 'fill' })
         .removeAlpha()
         .grayscale();
@@ -1483,7 +1483,7 @@ export class ResourceManagerService {
                 return null;
             }
             
-            const buffer = await sharp(imagePath, { failOnError: false })
+            const buffer = await sharp(imagePath, { failOn: 'none' })
                 .resize(size, size, { fit: 'inside' })
                 .jpeg({ quality: 70 })
                 .toBuffer();
@@ -1540,7 +1540,7 @@ export class ResourceManagerService {
         const thumbTop = 46;
         const thumbWidth = tileWidth - tilePadding * 2;
         const thumbHeight = Math.max(32, tileHeight - thumbTop - labelHeight - tilePadding);
-        const composites: sharp.OverlayOptions[] = [];
+        const composites: OverlayOptions[] = [];
         const items: ProjectContactSheetOverviewItem[] = [];
 
         // 逐图缩略图生成按批并发：单图是独立的解码→缩放→编码，串行处理 40 张会把
@@ -1549,7 +1549,7 @@ export class ResourceManagerService {
         const CONTACT_SHEET_RENDER_CONCURRENCY = 6;
         const renderedTiles = new Array<{
             item: ProjectContactSheetOverviewItem;
-            composites: sharp.OverlayOptions[];
+            composites: OverlayOptions[];
             warning?: string;
         }>(requestedImages.length);
 
@@ -1561,7 +1561,7 @@ export class ResourceManagerService {
             const relativePath = input.relativePath
                 || (rootPath ? path.relative(rootPath, fullPath) : path.basename(fullPath));
             const id = `A${String(index + 1).padStart(2, '0')}`;
-            const tileComposites: sharp.OverlayOptions[] = [];
+            const tileComposites: OverlayOptions[] = [];
             let tileWarning: string | undefined;
             const column = index % columns;
             const row = Math.floor(index / columns);
@@ -1602,7 +1602,7 @@ export class ResourceManagerService {
 
                 // resolveWithObject 直接带回缩略图尺寸，省掉此前为拿宽高而对刚生成的
                 // 缩略图做的第二次解码（每张图白解一遍）。
-                const { data: thumb, info } = await sharp(fullPath, { failOnError: false })
+                const { data: thumb, info } = await sharp(fullPath, { failOn: 'none' })
                     .rotate()
                     .resize(thumbWidth, thumbHeight, {
                         fit: 'contain',
@@ -1791,7 +1791,7 @@ export class ResourceManagerService {
             }
 
             // 常规图片使用 Sharp
-            const sharpInstance = sharp(imagePath, { failOnError: false });
+            const sharpInstance = sharp(imagePath, { failOn: 'none' });
             const metadata = await sharpInstance.metadata();
             
             // 检查是否为支持的格式
@@ -1799,7 +1799,7 @@ export class ResourceManagerService {
                 return { success: false, error: '不支持的图片格式' };
             }
             
-            const buffer = await sharp(imagePath, { failOnError: false })
+            const buffer = await sharp(imagePath, { failOn: 'none' })
                 .resize(maxSize, maxSize, { fit: 'inside' })
                 .jpeg({ quality: 85 })
                 .toBuffer();
@@ -1990,7 +1990,7 @@ export class ResourceManagerService {
             try {
                 // 使用文件路径让 Sharp 处理，避免大文件 Buffer 拷贝
                 // Sharp (libvips) 对 PSD/PSB 的支持取决于合成数据是否存在
-                const sharpBuffer = await sharp(psdPath, { failOnError: false })
+                const sharpBuffer = await sharp(psdPath, { failOn: 'none' })
                     .resize(maxSize, maxSize, { fit: 'inside', kernel: 'lanczos3' })
                     .sharpen({ sigma: 1.1, m1: 1, m2: 2.5, x1: 2, y2: 10, y3: 20 })
                     .jpeg({ quality: 94, mozjpeg: true, chromaSubsampling: '4:4:4' })

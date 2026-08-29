@@ -1,5 +1,5 @@
 import axios from 'axios';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { getAxiosProxyConfig } from './network-proxy';
 
 export type OpenRouterGeminiImageModel =
@@ -117,7 +117,7 @@ export type OpenRouterImageSource =
     | { raw: Buffer; width: number; height: number; channels: 1 | 2 | 3 | 4 };
 
 /** 把图像源统一成 sharp 实例，调用方不必关心它是哪种形态 */
-function openSource(source: OpenRouterImageSource): sharp.Sharp {
+function openSource(source: OpenRouterImageSource): Sharp {
     if (Buffer.isBuffer(source)) {
         return sharp(source);
     }

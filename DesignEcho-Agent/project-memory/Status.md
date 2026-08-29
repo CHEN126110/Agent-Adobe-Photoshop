@@ -2,15 +2,23 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-110 Sharp 0.35 图像运行时安全迁移
+
+- Sharp 0.34.5 已升到 0.35.4；当前 Windows x64 clean install 真实加载 libvips 8.18.6。13 处已删除 `failOnError` 按原语义迁为 `failOn`，7 个服务迁到 0.35 named types /`SharpConstructor`，没有用 `any`、`skipLibCheck` 或全局 override 掩盖 breaking change。
+- 冻结 lock 同时在原 semver 内更新 fast-uri 3.1.6、picomatch 2.3.2 与 `@tootallnate/once` 2.0.1。Agent 生产 audit 6→2，剩余只属于 ONNX/adm-zip；全量 27→23，Agent /UXP 构建链仍独立待治理。
+- Agent /UXP clean install、`npm ls --all` 0 problems 和依赖完整性 595/595、148/148 通过；CJS /ESM、PNG /JPEG /WebP、RAW /resize /flatten /fine sharpen /composite 真实原生契约通过。
+- Main /Renderer 类型、OpenRouter /Smile 图像 Provider、主体框、SKU 姿态、形态算法与 Design Reliability 专项，以及 Agent /UXP production build 均通过。dirty packaged app.asar 真实读取 48×48 PNG、返回 visual metrics /digest，并通过六端口、MCP、Renderer sandbox、DeepSeek exact model 与 0 D-110 Codex 子进程验证；唯一完整核心 65/65 通过，独立提交和 clean identities 尚待收口。
+- 正式模型仍为 `deepseek-v4-flash-vision-exp` 且不跨 Provider fallback；未读取正常 Key、未发付费请求、未执行 Photoshop Tool，普通 PID 36604 未停止。
+
 ## 2026-08-29 D-109 Volcengine /TOS SDK 依赖安全覆盖
 
 - live npm 元数据确认官方最新 OpenAPI 1.36.2 与 TOS 2.9.1 仍声明旧 Axios /protobuf /UUID /form-data /lodash /proxy 依赖，单纯抬 SDK 版本不能修复。根 Axios 已升 1.20.0；两个 SDK 子树使用显式 scoped overrides，未全局压版本。
 - OpenAPI 子树当前为 Axios 0.33.0、SDK form-data 3.0.5、Axios form-data 4.0.6、protobufjs 7.6.6 /utf8 1.1.2、UUID 11.1.1；TOS 子树为 Axios /adapter Axios 0.33.0、http-proxy-middleware 2.0.10、lodash 4.18.1。第一次错误 form-data 覆盖被 `npm ls` invalid 拒绝，已改成分层 `.` 覆盖。
 - Agent /UXP clean install、`npm ls --all` 0 problems与依赖完整性 595/595、148/148 通过；macOS-only dmg-license EPERM 残壳经 optional /OS 核对后精确删除。
 - 本地真实协议契约通过根 Axios、OpenAPI JSON /multipart HMAC、TOS putObject TOS4、protobuf encode/decode 与 UUID CJS v4；Smile /OpenRouter、模型用途、Main deps、Main /Renderer 类型、preload 与 production build 通过。
-- dirty app.asar 在隔离 DeepSeek /fake Photoshop 下完成六端口、MCP、Renderer sandbox 与 artifactsVerified 启动；D-108 的非 Codex 启动行为保持 0 个 Codex 子进程。未调用真实火山服务或 Photoshop。
+- dirty 与 exact clean app.asar 在隔离 DeepSeek /fake Photoshop 下完成六端口、MCP、Renderer sandbox 与 artifactsVerified 启动；D-108 的非 Codex 启动行为保持 0 个该工作树 Codex 子进程。未调用真实火山服务或 Photoshop。
 - Agent 全量 audit 37→27（2 low /1 moderate /22 high /2 critical），生产视图 17→6（1 low /0 moderate /5 high /0 critical）；Volcengine/TOS/Axios/protobuf/UUID/form-data/lodash/proxy finding 为 0，剩余 owner 是 ONNX/adm-zip、sharp、fast-uri、picomatch 与 once。UXP 仍为 7 项。
-- 项目记忆与快速治理通过，唯一完整核心 64/64 通过；独立提交与 clean identity 尚待收口。真实火山账号、TOS region/bucket/ACL、代理上游、任务轮询与图像质量未验证。
+- 项目记忆与快速治理、唯一完整核心 64/64、独立提交 `45e15560`、Agent /UXP clean identity 与 exact clean app.asar 均完成。真实火山账号、TOS region/bucket/ACL、代理上游、任务轮询与图像质量未验证。
 
 ## 2026-08-29 D-108 非 Codex 模型启动惰性化
 

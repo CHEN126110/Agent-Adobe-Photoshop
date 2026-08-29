@@ -82,6 +82,7 @@ const COMMANDS = [
   { label: "Electron 运行时兼容性", cwd: agentRoot, args: ["run", "test:electron-runtime-compatibility"] },
   { label: "OpenAI-compatible SDK 传输", cwd: agentRoot, args: ["run", "test:openai-compatible-sdk"] },
   { label: "Volcengine SDK 安全兼容性", cwd: agentRoot, args: ["run", "test:volcengine-sdk-security"] },
+  { label: "Sharp 运行时兼容性", cwd: agentRoot, args: ["run", "test:sharp-runtime-compatibility"] },
   { label: "Electron preload sandbox 边界", cwd: agentRoot, args: ["run", "test:preload-sandbox-boundary"] },
   { label: "UXP 核心测试", cwd: uxpRoot, args: ["test"] },
   { label: "UXP 构建", cwd: uxpRoot, args: ["run", "build"] }

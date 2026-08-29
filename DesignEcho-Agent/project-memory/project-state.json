@@ -1,10 +1,11 @@
 {
-  "currentFocus": "2026-08-29 VOLCENGINE-SDK-SECURITY-109：在保留现有 Volcengine OpenAPI /TOS Provider owner 的前提下，用限定安全覆盖、真实本地协议契约和完整依赖树治理生产可达漏洞。",
-  "currentMilestone": "VOLCENGINE-SDK-SECURITY-109",
-  "milestoneStatus": "code_complete_scoped_security_overrides_valid_dependency_tree_zero_problems_agent_integrity_595_of_595_uxp_integrity_148_of_148_local_openapi_json_and_multipart_passed_local_tos_put_object_passed_direct_axios_protobuf_uuid_passed_adjacent_image_provider_regressions_passed_production_audit_17_to_6_volcengine_findings_zero_production_build_and_dirty_packaged_startup_passed_full_core_validation_64_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
+  "currentFocus": "2026-08-29 SHARP-RUNTIME-SECURITY-110：在 Electron 44 /Node 24 基线上升级 Sharp /libvips，逐项迁移 breaking API，并用真实原生编解码与相邻图像链验证保持运行语义。",
+  "currentMilestone": "SHARP-RUNTIME-SECURITY-110",
+  "milestoneStatus": "implementation_and_focused_validation_passed_sharp_0_35_4_libvips_8_18_6_loaded_removed_api_and_named_type_migration_complete_agent_uxp_dependency_trees_zero_problems_integrity_595_and_148_passed_production_audit_6_to_2_only_onnx_remaining_full_audit_27_to_23_agent_uxp_production_builds_passed_dirty_packaged_sharp_probe_and_startup_passed_full_core_validation_65_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
   "verified": {
     "code": [
-      "Volcengine SDK security compatibility D-109 (2026-08-29): live npm metadata showed the latest official OpenAPI and TOS SDKs still declare vulnerable Axios, protobuf, UUID, form-data, lodash and proxy ranges. The root Axios moved to 1.20.0 and explicit SDK-scoped overrides now bind patched descendants without a global major override. A first invalid form-data tree was rejected by npm ls and replaced by a layered parent/Axios override. Agent/UXP clean installs, zero-problem dependency trees, 595/595 and 148/148 integrity, real local OpenAPI JSON/multipart and TOS signed requests, protobuf/UUID behavior, adjacent provider regressions, types, production build, dirty packaged startup and the single 64-stage core gate passed. Production audit fell from 17 to 6 with zero finding owned by this slice; commit and clean identity remain pending. No real credential, paid request or Photoshop write was used.",
+      "Sharp runtime security compatibility D-110 (2026-08-29): Sharp moved from 0.34.5 to 0.35.4 with the Windows x64 native binary and libvips 8.18.6. Thirteen removed failOnError properties preserve their exact tolerant/strict semantics through failOn, and seven services use the 0.35 named-type or SharpConstructor contract rather than any or skipLibCheck. Clean Agent/UXP installs, zero-problem dependency trees, 595/595 and 148/148 integrity, CJS/ESM loading, real PNG/JPEG/WebP and raw/resize/flatten/sharpen/composite operations, adjacent image paths, types, both production builds, a dirty packaged read-only image probe/startup and the single 65-stage core gate passed. Production audit fell from 6 to 2 and now contains only the independent ONNX/adm-zip owner; commit and clean identity remain pending. No credential, paid request or Photoshop write was used.",
+      "Volcengine SDK security compatibility D-109 (2026-08-29): live npm metadata showed the latest official OpenAPI and TOS SDKs still declare vulnerable Axios, protobuf, UUID, form-data, lodash and proxy ranges. The root Axios moved to 1.20.0 and explicit SDK-scoped overrides now bind patched descendants without a global major override. A first invalid form-data tree was rejected by npm ls and replaced by a layered parent/Axios override. Agent/UXP clean installs, zero-problem dependency trees, 595/595 and 148/148 integrity, real local OpenAPI JSON/multipart and TOS signed requests, protobuf/UUID behavior, adjacent provider regressions, types, production build, exact clean packaged startup and the single 64-stage core gate passed. Production audit fell from 17 to 6 with zero finding owned by this slice; commit 45e15560 and clean identities passed. No real credential, paid request or Photoshop write was used.",
       "Codex Runtime lazy startup D-108 (2026-08-29): the normal DeepSeek runtime exposed a preexisting unconditional startup cost because Main and Renderer both hydrated the ChatGPT subscription catalog, whose status read starts the bundled app-server. One shared subscription model-id identity now guards both startup consumers while settings, login, catalog, chat and image IPC remain on-demand. Clean installs, model routing, types, authorship/business/runtime/simplification/preload checks, production build, the single 63-stage core gate, commit 16db25ec and exact clean packaged identities passed. Credential-free same-build canaries showed exact DeepSeek primary/visual with zero D-108 codex.exe children, while an explicit codex-subscription model started exactly one restricted model-bridge process; neither canary sent a model request or touched Photoshop. Normal user restart remains pending.",
       "Smile Provider closure D-105 (2026-08-29): the existing conversation Provider acd53530 and image Provider 0fa91c6f remain independent ancestors of the current chain. Current model-usage and single-model routing tests prove Smile image models stay out of conversation candidates, conversation models do not receive implicit vision or Tool Calling, missing keys fail explicitly and no cross-model fallback is created. The image-provider suite proves independent Smile/OpenRouter credentials, exact supported models, pre-request rejection, Gemini and GPT Image 2 protocol shapes, cancellation, HTTPS/result budgets, batch error provenance and actual output dimensions; the adjacent OpenRouter suite also passed. The three Smile image core/test files are byte-identical to 0fa91c6f. No Provider or production code changed and no paid request ran.",
       "Dependency closure D-104 (2026-08-29): the existing 5c1bc06d Anthropic peer migration is already an independent ancestor of D-103 and was revalidated in a new worktree without a node_modules junction. Agent and UXP npm ci completed; one Windows cleanup residue for the macOS-only optional dmg-license package was removed by npm prune; both npm ls --all graphs then exited 0 with zero problems. Installed Anthropic SDK 0.122.0, Claude Agent SDK 0.3.241 and Zod 4.4.3 satisfy the declared peers. Agent/UXP builds and the one ordered 60-stage core gate passed. No package, lock, Provider, model, Prompt or Photoshop code changed. Dynamic security findings remain a separate recorded risk rather than being hidden by the install result.",
@@ -134,7 +135,7 @@
   },
   "unverified": [
     "D-105 paid live Provider evidence: with explicit budget authorization, use isolated non-user inputs to verify the actual Smile account groups, billing path, each selected upstream model, output MIME/dimensions/digest and cancellation. Photoshop placement and commercial visual quality are separate acceptance layers. Existing mock HTTP tests, historical comments and key presence cannot substitute for this evidence.",
-    "Dependency security closure after D-104: Electron 28/embedded Node 18 must be migrated and live-started before OpenAI v6+ can replace the current OpenAI 4/Zod override; Volcengine/protobuf/axios, sharp/ws and Agent/UXP build-chain findings require separate reachability, upgrade and rollback slices. The 2026-08-29 audit counts are Agent 40 and UXP 7, but dynamic count reduction alone is not a completion criterion.",
+    "Dependency security closure after D-110: Electron 44/Node 24, OpenAI 7/Zod 4, Volcengine network descendants and Sharp 0.35/libvips are independently migrated and validated. The 2026-08-29 Agent production audit now contains only ONNX/adm-zip (2 high); Agent all-dependency audit is 23 and UXP remains 7, so ONNX and both build chains still require separate reachability, upgrade and rollback slices. Dynamic count reduction alone is not a completion criterion, and Sharp platform/format coverage beyond Windows x64 PNG/JPEG/WebP remains unverified.",
     "D-103 exact-build Photoshop evidence: load clean integrated Agent/UXP artifacts only after r32 reconciliation, D-097 r33 and the ordered D-102 canary; then separately verify the versioned Provider and the real panel-button UXP-to-Main-to-UXP path on isolated documents with target-bound receipts and cleanup. Real commercial quality additionally requires a naturally medium-bent single complete sock with clear cuff/pattern; the audited C-1256, cross-product 36 plus 48 samples and C-1024 set did not provide one, so applicability remains unknown.",
     "D-102 exact-build semantic Photoshop canary: after r32 reconciliation and the D-097 r33 baseline, load clean D-102 Agent/UXP artifacts and repeat the fixed two-sock case with target-count conservation, source bounds, document/history/layer identity, visual output and mutation readback. The prior 0c404cda run cannot substitute for this integration verification.",
     "D-099/D-101 full-run evidence: a production Agent RunRecord with real large history, Tool schemas, image blocks and repeated observations must show cache and Provider phase coverage before any latency optimization or speed claim.",
@@ -335,35 +336,35 @@
     ]
   },
   "activeRequest": {
-    "id": "VOLCENGINE-SDK-SECURITY-109",
-    "summary": "Eliminate production-reachable vulnerable dependency versions beneath the current Volcengine OpenAPI and TOS providers with explicit scoped overrides and executable protocol compatibility tests, without replacing the provider owners or making paid requests.",
-    "status": "code_complete_scoped_security_overrides_valid_dependency_tree_zero_problems_agent_integrity_595_of_595_uxp_integrity_148_of_148_local_openapi_json_and_multipart_passed_local_tos_put_object_passed_direct_axios_protobuf_uuid_passed_adjacent_image_provider_regressions_passed_production_audit_17_to_6_volcengine_findings_zero_production_build_and_dirty_packaged_startup_passed_full_core_validation_64_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
+    "id": "SHARP-RUNTIME-SECURITY-110",
+    "summary": "Move the production image runtime to Sharp 0.35.4 and its patched libvips line, migrate every removed constructor and ESM type API at the real owners, and prove native codec and adjacent image-path compatibility without mixing ONNX or build-chain majors into the same rollback slice.",
+    "status": "implementation_and_focused_validation_passed_sharp_0_35_4_libvips_8_18_6_loaded_removed_api_and_named_type_migration_complete_agent_uxp_dependency_trees_zero_problems_integrity_595_and_148_passed_production_audit_6_to_2_only_onnx_remaining_full_audit_27_to_23_agent_uxp_production_builds_passed_dirty_packaged_sharp_probe_and_startup_passed_full_core_validation_65_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
     "mustDo": [
-      "Upgrade the direct Axios dependency to the current secure line and the official OpenAPI package to its current release.",
-      "Keep overrides scoped to the official OpenAPI and TOS dependency subtrees, with distinct form-data versions for the SDK and its nested Axios where required.",
-      "Require npm ls zero problems and workspace dependency integrity after a real clean install; reject audit-green invalid trees.",
-      "Exercise real local OpenAPI JSON/multipart signing, TOS putObject, direct Axios, protobuf encode/decode and UUID v4 using the installed packages.",
-      "Run adjacent image-provider regressions, types, production build, packaged startup, one full core gate, an independent commit and clean identity verification."
+      "Upgrade the direct Sharp dependency to 0.35.4 and require the matching Windows x64 native package and libvips 8.18 line.",
+      "Map every removed failOnError value to the equivalent failOn level and migrate Sharp namespace types to the 0.35 named-type contract.",
+      "Exercise CommonJS and ESM loading plus real PNG, JPEG, WebP, raw, resize, flatten, sharpen and composite operations using the installed native runtime.",
+      "Require clean installs, npm ls zero problems, workspace dependency integrity and adjacent image-provider, subject-box, pose, morphing and reliability regressions.",
+      "Run production build, isolated packaged startup, one full core gate, an independent commit and exact clean identity verification."
     ],
     "mustNotDo": [
-      "Do not replace the Volcengine or TOS provider implementation with a second signer or HTTP runtime.",
-      "Do not apply a global dependency major override or accept npm audit counts without runtime compatibility evidence.",
-      "Do not read, copy or mutate normal Volcengine/TOS credentials or issue a paid upstream request.",
-      "Do not change the formal DeepSeek Agent model, Prompt, Tool, Skill, permission, transaction or Photoshop behavior.",
+      "Do not mix ONNX/adm-zip or electron-builder, Vite, PostCSS and UXP build-chain majors into this Sharp rollback slice.",
+      "Do not change image algorithms, quality parameters, output selection or failure semantics merely to satisfy the new types.",
+      "Do not use any, skipLibCheck, catch-and-ignore or a global override to hide Sharp 0.35 incompatibility.",
+      "Do not read, copy or mutate normal credentials, issue a paid Provider request or change the formal DeepSeek model.",
       "Do not stop PID 36604, occupy default ports or modify any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "VOLCENGINE-SDK-SECURITY-109",
+    "id": "SHARP-RUNTIME-SECURITY-110",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：package/lock 与 OpenAPI/TOS scoped security overrides，分层 form-data 依赖树合法。",
+      "已完成：Sharp 0.35.4 /libvips 8.18.6 与合法传递 lock 更新。",
+      "已完成：13 处 removed constructor API 与 7 个服务 named-type 迁移。",
       "已完成：Agent/UXP clean install、npm ls、595/595 与 148/148 依赖完整性。",
-      "已完成：本地 OpenAPI JSON/multipart、TOS putObject、Axios/protobuf/UUID 与相邻 Provider 回归。",
-      "已完成：类型、production build、dirty app.asar 启动与生产 audit owner 清零。",
-      "已完成：项目记忆、快速治理与唯一完整核心 64/64。",
-      "进行中：独立提交与 clean Agent /UXP /app.asar identity；不重复完整核心。",
-      "后续：默认端口释放优先 r32，否则分别治理 sharp 与 ONNX。"
+      "已完成：真实 native codec/operation、类型和相邻图像链专项。",
+      "已完成：production build、dirty packaged Sharp probe /startup、项目记忆与唯一完整核心 65/65。",
+      "进行中：独立提交、clean Agent/UXP identities 与 exact clean app.asar；不重复完整核心。",
+      "后续：默认端口释放优先 r32，否则依次治理 ONNX/adm-zip 和 Agent/UXP 构建链。"
     ]
   },
   "convergenceBaseline": {

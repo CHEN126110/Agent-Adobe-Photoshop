@@ -1,5 +1,48 @@
 # Current Task
 
+## 2026-08-29 SHARP-RUNTIME-SECURITY-110：图像运行时安全升级与真实编解码兼容
+
+### 目标
+
+1. 把直接生产依赖 Sharp 从 0.34.5 升到已修复 libvips 公告的 0.35.4，同时迁移 0.35 已删除的构造参数和 ESM 类型接口；不接受只改 lock、运行语义未知的“审计变绿”。
+2. 保留现有图像处理意图：宽容读取继续使用 `failOn: 'none'`，严格校验继续使用 `failOn: 'error'`；不趁依赖升级改抠图、缩略图、锐化、图像 Provider 或设计策略。
+3. 用当前安装的原生二进制真实执行 CJS /ESM 加载、PNG /JPEG /WebP、RAW、resize、flatten、细粒度 sharpen 与 composite，再跑相关 Provider、主体框、姿态、形态和交付证据回归。
+
+### 当前事实
+
+- Sharp 官方 0.35 迁移线要求 Node >=20.9，移除了 `failOnError` 和旧 namespace 型 ESM 用法，并升级 libvips；D-106 已提供 Electron 44 /Node 24.18.1 基线。当前 clean install 实际为 Sharp 0.35.4、Windows x64 原生包 0.35.4、libvips 8.18.6。
+- 源码原有 13 处 `failOnError`：12 处 `false` 已逐字义迁为 `failOn: 'none'`，1 处 `true` 迁为 `failOn: 'error'`。7 个服务把 `sharp.Sharp /Metadata /OverlayOptions` 或 `typeof import('sharp')` 迁到 0.35 的 named types /`SharpConstructor`，没有用 `any` 或 `skipLibCheck` 掩盖类型变化。
+- 冻结 lock 同步把仍满足上游 semver 的 fast-uri 3.1.6、picomatch 2.3.2 与 `@tootallnate/once` 2.0.1 抬到安全版本；没有全局 override，也没有修改它们的调用方。Agent 生产 audit 从 D-109 的 6 项降到 2 项，剩余只属于独立 ONNX/adm-zip owner；全量 audit 27→23，构建链仍独立待治理。
+- Agent /UXP clean install 完成，双方 `npm ls --all` 为 0 problems，依赖完整性为 595/595 与 148/148。Sharp 真实运行契约通过 CJS /ESM、三个 codec 和关键图像操作；Main /Renderer 类型、Image Provider、主体框、SKU 姿态、形态算法与 Design Reliability 专项通过。
+- D-109 已以 `45e15560` 独立提交；Agent `designecho-45e15560c8d7-ec5792180c7e`、UXP `designecho-uxp-production-45e15560c8d7-cb76a9e9c3fe` 和 exact clean app.asar 均为 `gitDirty=false / artifactsVerified=true`。隔离 DeepSeek 启动保持正式模型、Renderer sandbox、六端口和 0 个 D-109 Codex 子进程，普通 PID 36604 未停止。
+
+### 实施边界
+
+- D-110 只拥有 Sharp /libvips、被其 breaking API 直接要求的类型与参数适配，以及同 lock 内可无破坏抬升的三个生产传递包；不把 ONNX/adm-zip 或 electron-builder /Vite /PostCSS /UXP 构建链混入同一回滚提交。
+- 不改变图像像素算法、质量参数、输入限制、输出格式选择或失败降级策略；任何行为变化必须由专项 fixture 暴露，不能用 try/catch、默认值或类型断言吞掉。
+- 正式 Agent 模型保持 `deepseek-v4-flash-vision-exp`，`autoFallback=false`；不读取、打印、复制或修改正常 Key，不调用付费 Provider，不执行 Photoshop Tool。
+- 不停止普通 PID 36604，不占用默认端口，不保存、关闭、丢弃或修改 Photoshop 文档。
+
+### 下一步
+
+1. [已完成] package /lock、13 处参数迁移、7 个服务类型迁移和可复用 Sharp Runtime 契约已实现。
+2. [已完成] 两仓 clean install、零问题依赖树、依赖完整性、Sharp 真实 codec /operation、Main /Renderer 类型及相邻图像链专项通过。
+3. [已完成] 项目记忆、Agent /UXP production build、dirty packaged app.asar 启动与提交前唯一完整 `maintenance:validate` 65/65 通过。
+4. [进行中] 形成独立提交后重建 clean Agent /UXP identity，并用 exact clean app.asar 再验证 Sharp 原生加载、DeepSeek 配置、Renderer sandbox 与 0 Codex 子进程；不重复完整核心。
+5. [后续独立] 默认端口若仍占用，先治理 ONNX/adm-zip 生产 owner，再治理 Agent /UXP 构建链；默认端口自然释放则优先回到 r32 reconciliation。
+
+### 验证与未知
+
+- 已验证：当前 Windows x64 /Node 24 安装、原生 Sharp /libvips 加载、CJS /ESM、PNG /JPEG /WebP、RAW /resize /flatten /sharpen /composite、迁移属性清零、类型与相关离线回归。
+- 未验证：macOS /Linux /Windows ARM64、NSIS 安装后 Sharp、超大 /损坏 /多页 /CMYK /AVIF /TIFF 边界、真实用户素材全分布、真实 Photoshop 抠图 /姿态 /生成图置入及视觉质量。
+- 动态 audit 与上游二进制会变化；结论绑定 2026-08-29 lock 和当前平台，不能外推为永久零风险。
+
+### 状态
+
+in_progress / implementation_and_focused_validation_passed / sharp_0_35_4_libvips_8_18_6_loaded / removed_api_and_named_type_migration_complete / agent_uxp_dependency_trees_zero_problems / integrity_595_and_148_passed / production_audit_6_to_2_only_onnx_remaining / full_audit_27_to_23 / agent_uxp_production_builds_passed / dirty_packaged_sharp_probe_and_startup_passed / full_core_validation_65_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / no_paid_request / no_photoshop_write
+
+---
+
 ## 2026-08-29 VOLCENGINE-SDK-SECURITY-109：生产可达依赖安全覆盖与协议兼容
 
 ### 目标
@@ -31,7 +74,7 @@
 1. [已完成] package /lock、scoped overrides 与分层 form-data 依赖树已实现，双方 clean install /npm ls /依赖完整性通过。
 2. [已完成] 本地真实协议兼容契约、相邻图像 Provider、模型用途、类型 /production build 与 dirty app.asar 启动通过。
 3. [已完成] 更新项目记忆、运行快速治理和提交前唯一完整 `maintenance:validate`；64/64 通过。
-4. [进行中] 形成独立 D-109 提交并复验 clean Agent /UXP /app.asar identity；不重复完整核心。
+4. [已完成] 独立提交 `45e15560`、clean Agent /UXP identity 与 exact clean app.asar 已复验；不重复完整核心。
 5. [后续独立] sharp /libvips 与 ONNX/adm-zip 分开治理；Agent /UXP 构建链继续保持独立 owner。
 6. [外部现场] 有明确火山测试账号与额度授权时再做真实 Jimeng /TOS 单请求；当前不自动消费额度。
 
@@ -43,7 +86,7 @@
 
 ### 状态
 
-in_progress / code_complete / scoped_security_overrides_valid / dependency_tree_zero_problems / agent_integrity_595_of_595 / uxp_integrity_148_of_148 / local_openapi_json_and_multipart_passed / local_tos_put_object_passed / direct_axios_protobuf_uuid_passed / adjacent_image_provider_regressions_passed / production_audit_17_to_6_volcengine_findings_zero / production_build_and_dirty_packaged_startup_passed / full_core_validation_64_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / no_paid_request / no_photoshop_write
+validated / scoped_security_overrides_valid / dependency_tree_zero_problems / agent_integrity_595_of_595 / uxp_integrity_148_of_148 / local_openapi_json_and_multipart_passed / local_tos_put_object_passed / direct_axios_protobuf_uuid_passed / adjacent_image_provider_regressions_passed / production_audit_17_to_6_volcengine_findings_zero / production_build_and_exact_clean_packaged_startup_passed / full_core_validation_64_passed / independent_commit_45e15560_and_clean_identity_complete / deepseek_selection_unchanged / no_paid_request / no_photoshop_write
 
 ---
 

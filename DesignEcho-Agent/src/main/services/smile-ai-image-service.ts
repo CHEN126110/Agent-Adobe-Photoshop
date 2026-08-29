@@ -1,5 +1,5 @@
 import axios from 'axios';
-import sharp from 'sharp';
+import sharp, { type Metadata, type Sharp } from 'sharp';
 import { getAxiosProxyConfig } from './network-proxy';
 
 /**
@@ -163,7 +163,7 @@ const EXPECTED_LONG_EDGE: Record<SmileAiImageSize, number> = {
     '4K': 4096
 };
 
-function openSource(source: SmileAiImageSource): sharp.Sharp {
+function openSource(source: SmileAiImageSource): Sharp {
     if (Buffer.isBuffer(source)) {
         return sharp(source);
     }
@@ -327,7 +327,7 @@ export class SmileAiImageService {
         const model = this.normalizeModel(options?.model);
         onProgress?.({ progress: 20, stage: 'provider-validate', message: '正在准备生成请求' });
 
-        let metadata: sharp.Metadata;
+        let metadata: Metadata;
         try {
             metadata = await openSource(sourceImage).rotate().metadata();
         } catch (error: any) {
@@ -951,7 +951,7 @@ export class SmileAiImageService {
         aspectRatio: string,
         imageSize: SmileAiImageSize
     ): Promise<SmileAiImageResult> {
-        let metadata: sharp.Metadata;
+        let metadata: Metadata;
         try {
             metadata = await sharp(resolved.image).metadata();
         } catch (error: any) {

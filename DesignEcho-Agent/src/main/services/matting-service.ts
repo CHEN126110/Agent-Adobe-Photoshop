@@ -25,6 +25,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import type { SharpConstructor } from 'sharp';
 import { 
     BinaryImageData, 
     isBinaryImageData, 
@@ -316,7 +317,7 @@ export class MattingService {
 
     // ONNX Runtime 和 Sharp（延迟加载）
     private ort: typeof import('onnxruntime-node') | null = null;
-    private sharp: typeof import('sharp') | null = null;
+    private sharp: SharpConstructor | null = null;
     
     // 模型会话缓存
     // BiRefNet 双档：full（birefnet.onnx，~970MB，边缘最优但慢）/ lite（birefnet_lite|_old.onnx，~220MB，3-5 倍速）
