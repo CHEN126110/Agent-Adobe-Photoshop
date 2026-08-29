@@ -1,5 +1,52 @@
 # Current Task
 
+## 2026-08-29 VOLCENGINE-SDK-SECURITY-109：生产可达依赖安全覆盖与协议兼容
+
+### 目标
+
+1. 在不替换现有 Provider owner、不调用付费接口的前提下，消除 Volcengine OpenAPI /TOS 子树中已知的 Axios、protobufjs、UUID、form-data、lodash 与 proxy middleware 漏洞版本。
+2. 直接 Axios 升到当前安全线；火山官方 SDK 仍固定旧传递依赖时，只在对应 SDK 子树使用显式 scoped overrides，不全局强压 major。
+3. 用真实本地 HTTP 请求验证 OpenAPI JSON /multipart 签名、TOS `putObject`、根 Axios、protobuf encode/decode 和 UUID CJS API；`npm audit` 下降不能代替运行兼容。
+
+### 当前事实
+
+- 2026-08-29 live npm 元数据：`@volcengine/openapi` 最新 1.36.2 仍声明 Axios `^0.21.1`、protobufjs `7.2.5`、UUID `^8.3.2` 与 form-data `^3.0.0`；`@volcengine/tos-sdk` 最新 2.9.1 仍声明 Axios `^0.21.1`、axios-adapter-uniapp、lodash `^4.17.21` 与 http-proxy-middleware `^2.0.1`。上游没有一条仅抬 SDK 版本即可闭合的依赖线。
+- 项目根 Axios 已从 1.13.2 升到 1.20.0；OpenAPI 升到 1.36.2。scoped overrides 把 OpenAPI 子树固定为 Axios 0.33.0、其 Axios form-data 4.0.6、SDK 直属 form-data 3.0.5、protobufjs 7.6.6 /utf8 1.1.2、UUID 11.1.1；TOS 子树固定 Axios 0.33.0、adapter Axios 0.33.0、http-proxy-middleware 2.0.10 与 lodash 4.18.1。
+- 第一次 form-data 覆盖把 OpenAPI 父包和 Axios 子包都压到 3.0.5，`npm ls` 正确报 invalid；没有接受假绿。当前用 Axios override 的 `.` /子依赖分层表达，OpenAPI 自身保持 3.0.5、Axios 使用 4.0.6，Agent /UXP `npm ls --all` 均 exit 0。
+- Windows clean install 的 macOS-only optional `dmg-license` 再次留下 EPERM 残壳；确认 lock 为 `optional=true / os=[darwin]` 后删除精确 node_modules 残留。依赖完整性为 Agent 595/595、UXP 148/148。
+- 新的长期兼容契约真实启动本地 HTTP server：根 Axios 1.20 请求、OpenAPI JSON 与 multipart HMAC 请求、TOS `putObject` TOS4 签名全部到达；protobuf 7.6.6 完成 encode/decode，UUID 11.1.1 CJS `v4()` 通过。没有真实凭据或外部 Provider 请求。
+- Smile /OpenRouter 图像请求、模型用途、Main runtime deps、Main /Renderer 类型、preload 和 Agent production build 均通过；dirty app.asar 在隔离 DeepSeek/fake Photoshop 下完成六端口、MCP、Renderer sandbox 与 `artifactsVerified=true` 启动。
+- Agent 动态 audit 全量从 D-108 的 37 项降到 27 项（2 low /1 moderate /22 high /2 critical），生产视图从 17 项降到 6 项（1 low /0 moderate /5 high /0 critical）。生产剩余只属于 ONNX/adm-zip、sharp、fast-uri、picomatch 与 `@tootallnate/once`；Volcengine/TOS/Axios/protobuf/UUID/form-data/lodash/proxy finding 为 0。UXP 仍为 7 项。
+
+### 实施边界
+
+- 不重写 Volcengine 签名器或 TOS 客户端，不新增第二 Provider /HTTP owner；官方 SDK 继续拥有协议实现，项目只拥有依赖兼容边界和既有 network-proxy 配置。
+- 不使用全局 Axios /protobuf major override；每个旧 SDK 子树显式锁定并由可执行契约守护。版本变化必须更新测试与项目记忆，不能悄悄漂移。
+- 不读取、复制或修改正常用户的火山 Key /TOS 配置，不运行真实 Jimeng /Seedream /TOS 请求，不据本地签名 fixture 宣称账号权限、上游可用或设计质量。
+- 正式模型仍为 `deepseek-v4-flash-vision-exp`；不改模型目录、Prompt、Tool、Skill、权限、事务、Evaluation 或 Photoshop 行为。
+- 不停止普通 PID 36604，不占用默认端口，不保存、关闭、丢弃或修改 Photoshop 文档。
+
+### 下一步
+
+1. [已完成] package /lock、scoped overrides 与分层 form-data 依赖树已实现，双方 clean install /npm ls /依赖完整性通过。
+2. [已完成] 本地真实协议兼容契约、相邻图像 Provider、模型用途、类型 /production build 与 dirty app.asar 启动通过。
+3. [已完成] 更新项目记忆、运行快速治理和提交前唯一完整 `maintenance:validate`；64/64 通过。
+4. [进行中] 形成独立 D-109 提交并复验 clean Agent /UXP /app.asar identity；不重复完整核心。
+5. [后续独立] sharp /libvips 与 ONNX/adm-zip 分开治理；Agent /UXP 构建链继续保持独立 owner。
+6. [外部现场] 有明确火山测试账号与额度授权时再做真实 Jimeng /TOS 单请求；当前不自动消费额度。
+
+### 验证与未知
+
+- 已验证：冻结 lock、两仓 clean install、完整依赖树、SDK 版本 /override、真实本地 HTTP 签名请求、直接 Axios、protobuf /UUID、相邻图像 Provider、类型 /production build 与 dirty packaged startup。
+- 未验证：真实 Volcengine /TOS 账号鉴权、region /bucket /ACL、代理环境下真实上游、Jimeng /Seedream 任务轮询、图片下载 /置入 Photoshop 与商业质量。
+- 动态 audit 会随数据库变化；本轮结论必须绑定当前 lock 与 2026-08-29 扫描，不能作为永久“零风险”声明。
+
+### 状态
+
+in_progress / code_complete / scoped_security_overrides_valid / dependency_tree_zero_problems / agent_integrity_595_of_595 / uxp_integrity_148_of_148 / local_openapi_json_and_multipart_passed / local_tos_put_object_passed / direct_axios_protobuf_uuid_passed / adjacent_image_provider_regressions_passed / production_audit_17_to_6_volcengine_findings_zero / production_build_and_dirty_packaged_startup_passed / full_core_validation_64_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / no_paid_request / no_photoshop_write
+
+---
+
 ## 2026-08-29 CODEX-RUNTIME-LAZY-START-108：DeepSeek 启动不再预热未使用的 Codex Runtime
 
 ### 目标
@@ -29,7 +76,7 @@
 1. [已完成] 共享 Codex 模型身份、Main /Renderer 条件恢复和现有模型路由回归已实现。
 2. [已完成] 两仓 clean install、专项 /类型 /production build与 DeepSeek 0 进程、显式 Codex 1 进程双启动证据已取得。
 3. [已完成] 更新项目记忆、运行快速治理与提交前唯一完整 `maintenance:validate`；63/63 通过。
-4. [进行中] 形成独立 D-108 提交并复验 clean Agent /UXP identity 与 exact clean packaged DeepSeek runtime；不重复完整核心。
+4. [已完成] 独立提交 `16db25ec`、Agent `designecho-16db25ec431b-ec5792180c7e`、UXP `designecho-uxp-production-16db25ec431b-cb76a9e9c3fe` 与 exact clean packaged DeepSeek runtime 均复验；`gitDirty=false / artifactsVerified=true / codexProcessCount=0`。
 5. [后续] 普通用户下次自然重启加载 D-108 后，再确认 DeepSeek 正常状态没有 Codex model-bridge 子进程；当前旧 PID 不为验证而强停。
 6. [后续独立] 默认端口若仍占用则进入 Volcengine /protobuf /axios 安全切片；端口自然释放则先完成 r32 reconciliation。
 
@@ -41,7 +88,7 @@
 
 ### 状态
 
-in_progress / code_complete / shared_codex_model_identity_passed / main_and_renderer_lazy_bootstrap_passed / deepseek_zero_codex_process_canary_passed / explicit_codex_single_process_canary_passed / clean_installs_and_focused_regressions_passed / production_build_passed / full_core_validation_63_passed / independent_commit_and_clean_packaged_identity_pending / deepseek_selection_unchanged / no_model_request / no_photoshop_write
+validated / code_complete / shared_codex_model_identity_passed / main_and_renderer_lazy_bootstrap_passed / deepseek_zero_codex_process_canary_passed / explicit_codex_single_process_canary_passed / clean_installs_and_focused_regressions_passed / production_build_passed / full_core_validation_63_passed / independent_commit_16db25ec_complete / exact_clean_packaged_deepseek_zero_codex_process_passed / deepseek_selection_unchanged / no_model_request / no_photoshop_write
 
 ---
 

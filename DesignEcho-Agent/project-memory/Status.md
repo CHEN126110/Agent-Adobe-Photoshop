@@ -2,6 +2,16 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-109 Volcengine /TOS SDK 依赖安全覆盖
+
+- live npm 元数据确认官方最新 OpenAPI 1.36.2 与 TOS 2.9.1 仍声明旧 Axios /protobuf /UUID /form-data /lodash /proxy 依赖，单纯抬 SDK 版本不能修复。根 Axios 已升 1.20.0；两个 SDK 子树使用显式 scoped overrides，未全局压版本。
+- OpenAPI 子树当前为 Axios 0.33.0、SDK form-data 3.0.5、Axios form-data 4.0.6、protobufjs 7.6.6 /utf8 1.1.2、UUID 11.1.1；TOS 子树为 Axios /adapter Axios 0.33.0、http-proxy-middleware 2.0.10、lodash 4.18.1。第一次错误 form-data 覆盖被 `npm ls` invalid 拒绝，已改成分层 `.` 覆盖。
+- Agent /UXP clean install、`npm ls --all` 0 problems与依赖完整性 595/595、148/148 通过；macOS-only dmg-license EPERM 残壳经 optional /OS 核对后精确删除。
+- 本地真实协议契约通过根 Axios、OpenAPI JSON /multipart HMAC、TOS putObject TOS4、protobuf encode/decode 与 UUID CJS v4；Smile /OpenRouter、模型用途、Main deps、Main /Renderer 类型、preload 与 production build 通过。
+- dirty app.asar 在隔离 DeepSeek /fake Photoshop 下完成六端口、MCP、Renderer sandbox 与 artifactsVerified 启动；D-108 的非 Codex 启动行为保持 0 个 Codex 子进程。未调用真实火山服务或 Photoshop。
+- Agent 全量 audit 37→27（2 low /1 moderate /22 high /2 critical），生产视图 17→6（1 low /0 moderate /5 high /0 critical）；Volcengine/TOS/Axios/protobuf/UUID/form-data/lodash/proxy finding 为 0，剩余 owner 是 ONNX/adm-zip、sharp、fast-uri、picomatch 与 once。UXP 仍为 7 项。
+- 项目记忆与快速治理通过，唯一完整核心 64/64 通过；独立提交与 clean identity 尚待收口。真实火山账号、TOS region/bucket/ACL、代理上游、任务轮询与图像质量未验证。
+
 ## 2026-08-29 D-108 非 Codex 模型启动惰性化
 
 - 普通 DeepSeek Runtime PID 36604 在应用启动后自动出现 model-bridge `codex.exe app-server`；源码定位到 Main 无条件 `hydrateCodexSubscriptionModels()` 与 Renderer 无条件 `scheduleHydration(0)`。目录状态检查会调用 `getStatus()`，从而执行 `ensureStarted()`；这不是 Codex 模型请求，但会让非 Codex 用户承担未使用进程成本。
@@ -9,7 +19,7 @@
 - Agent /UXP clean install 与 `npm ls --all` 通过；模型用途、Main /Renderer 类型、设计作者权、业务边界、Runtime declaration、简化棘轮、preload、Main runtime deps 与 Agent production build 通过。
 - 无凭据同构双启动已通过：`primaryModel /visualModel=deepseek-v4-flash-vision-exp` 的隔离窗口六端口齐全、8 秒后 D-108 路径下 Codex 进程 0；显式 `codex-subscription-gpt-5-6-sol` 窗口六端口齐全并启动 1 个受限 model-bridge 进程。两次均为 fake model /fake Photoshop，未发送聊天、未调用模型或 Tool。
 - 当前只证明避免一个未使用进程，未建立启动耗时或内存改善分布。普通 PID 36604 仍加载旧构建并保留旧子进程；D-108 未停止它、改正常 state、读取 Key 内容或触碰 Photoshop。
-- 项目记忆与快速治理通过，提交前唯一完整核心 63/63 通过；独立提交与 exact clean packaged identity 尚待收口。
+- 项目记忆、唯一完整核心 63/63、独立提交 `16db25ec`、Agent /UXP clean identity 与 exact clean packaged DeepSeek 0 Codex 进程均已闭合；普通 PID 36604 仍待自然重启加载新构建。
 
 ## 2026-08-29 D-107 OpenAI 7 /Zod 4 兼容客户端迁移
 

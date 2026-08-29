@@ -10,16 +10,17 @@
 
 - 事实：普通 PID 36604 的正式模型是 DeepSeek，但应用启动 21 秒后出现受限 `codex.exe app-server`。Main /Renderer 都会无条件恢复 ChatGPT 订阅目录，而状态读取内部执行 `ensureStarted()`；因此未调用 Codex 模型也会创建进程。第二个 image-generation Runtime 是数分钟后的显式能力路径，不属于本次冷启动 owner。
 - 影响：非 Codex 用户承担额外进程、初始化和潜在故障面；同时“正式模型是 DeepSeek”与进程列表中的 Codex 容易造成模型边界误判。仅隐藏进程或删除订阅 Provider 会破坏真实功能，都不是根因修复。
-- 处理：D-108 用共享模型 ID 契约把 Main /Renderer 启动恢复绑定到当前 Codex 主模型；设置、登录、目录、订阅对话 /生图继续显式按需启动。同构无凭据 canary 已证明 DeepSeek 为 0 个 Codex 子进程、显式 Codex 为 1 个 model-bridge 子进程；专项、类型、production build 与唯一完整核心 63/63 已通过，独立提交 /clean packaged identity 待完成。
+- 处理：D-108 用共享模型 ID 契约把 Main /Renderer 启动恢复绑定到当前 Codex 主模型；设置、登录、目录、订阅对话 /生图继续显式按需启动。同构无凭据 canary 已证明 DeepSeek 为 0 个 Codex 子进程、显式 Codex 为 1 个 model-bridge 子进程；专项、唯一完整核心 63/63、独立提交 `16db25ec` 与 exact clean packaged identity 已通过。
 - 关闭条件：D-108 完整核心、独立提交与 exact clean packaged identity 通过；普通用户下次自然重启加载新构建后，DeepSeek 状态在稳定窗口内无 model-bridge Codex 子进程；显式打开订阅设置或选择订阅主模型仍能启动并取得真实账户状态。启动耗时 /内存改善若要声明，必须另做重复测量，不能由进程数推断。
 
 ### R-054 Electron /OpenAI SDK 基线已迁移，Provider /图像 /构建链动态安全债务尚未收口
 
 - 事实：D-106 已把 Electron 28.3.3 /Node 18 单变量迁移到 [Electron 44.0.0](https://releases.electronjs.org/release/v44.0.0) /Node 24.18.1，并通过 clean install、ClipboardItem /sRGB Runtime 契约、preload、production build、旧 builder x64 打包及 source /app.asar 隔离启动。Electron npm 二进制显式安装和 3 个 Main runtime import 漏声明均已按根因修复；新增 import→manifest 审计防止 dev 子树偶然满足生产依赖。
 - 事实：D-107 已升级 OpenAI SDK 7.8.0、ws 8.21.3 与 undici 7.29.0，保留 Zod 4.4.3 并删除旧 override；OpenAI 7 的 Fetch dispatcher 迁移通过本地真实代理、DeepSeek 扩展 /Tool /stream cache /timeout /abort、现有模型边界、production build、最小真实 exact-model DeepSeek Tool canary 与 dirty app.asar 启动。OpenAI SDK 不再依赖未声明的 Zod 兼容 seam。
-- 事实：当前 Agent 动态 `npm audit` 为 37 项（3 critical /27 high /5 moderate /2 low），生产视图为 17 项（1 critical /11 high /4 moderate /1 low）。UXP 仍为 7 项（5 high /2 moderate）。Volcengine /axios /protobuf、sharp、electron-builder tar /shell-quote 与 Agent /UXP 构建链 finding 都未在 D-106 /D-107 修复。
+- 事实：D-109 当前把根 Axios 升到 1.20.0，并以两个官方 SDK 子树的显式安全覆盖取得 OpenAPI JSON/multipart、TOS putObject、protobuf /UUID 本地协议证据；Volcengine/TOS/Axios/protobuf/UUID/form-data/lodash/proxy finding 已为 0。全量 audit 37→27，生产视图 17→6；该结论绑定当前 lock，唯一完整核心 64/64 已通过，提交 /clean identity 待完成。
+- 事实：当前生产剩余 6 项为 ONNX/adm-zip、sharp、fast-uri、picomatch 与 `@tootallnate/once`；UXP 仍为 7 项（5 high /2 moderate）。这些不属于 D-109 的 Provider SDK owner。
 - 影响：核心闸门绿色只能证明当前冻结 lock 的工程一致性，不能证明没有已知安全风险。整体执行 `npm audit fix --force` 会同时跨 Electron Runtime、Provider、图像处理与构建系统抬 major，破坏真实应用兼容和回滚边界；继续长期不处理则让用户输入图像、本地 WebSocket、Provider 凭据、打包与 Electron 漏洞暴露面累积。
-- 处理：① Electron Runtime 片已以 `6a37acb9`、62/62 和 clean app.asar 收口；② OpenAI /Zod 片已以 `f3742497`、63/63 和 exact clean app.asar 收口；③ D-108 启动惰性化不改依赖 finding；④ 下一步分别治理 Volcengine /protobuf /axios 与 sharp，最后独立升级 Agent /UXP 构建链。每片只改自己的 package /lock 与必要适配，运行专项、构建、唯一核心闸门和相称真机验证，不以 audit 数量归零为唯一目标。
+- 处理：① Electron Runtime 片已以 `6a37acb9`、62/62 和 clean app.asar 收口；② OpenAI /Zod 片已以 `f3742497`、63/63 和 exact clean app.asar 收口；③ D-109 Volcengine /TOS 片已完成代码、clean install、本地协议、production build、dirty app.asar、生产 audit owner 清零与唯一核心 64/64，待提交 /clean identity；④ 下一步分别治理 sharp 与 ONNX，再独立处理 Agent /UXP 构建链。每片只改自己的 package /lock 与必要适配，运行专项、构建、唯一核心闸门和相称真机验证，不以 audit 数量归零为唯一目标。
 - 关闭条件：当前直接生产依赖的 high /critical finding 均已被安全版本消除、证明不可达并形成可审计 containment，或由上游无修复事实明确接受；Electron 运行于仍受支持的 Node /Chromium 线；OpenAI /Zod 不再依赖未声明兼容 override；两仓 clean install、构建、桌面启动、DeepSeek 正式模型链和 Photoshop E2E 均无回退。动态公告会变化，关闭必须绑定当时 lock 与 audit 时间戳。
 
 ### R-053 共享 Photoshop 的 UXP plugin session 可被其它开发会话替换

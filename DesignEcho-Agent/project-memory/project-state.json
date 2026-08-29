@@ -1,10 +1,11 @@
 {
-  "currentFocus": "2026-08-29 CODEX-RUNTIME-LAZY-START-108：当正式 Agent 模型为 DeepSeek 或其它非 Codex Provider 时，不在应用启动期拉起未使用的 Codex model-bridge Runtime；显式订阅能力保持按需可达。",
-  "currentMilestone": "CODEX-RUNTIME-LAZY-START-108",
-  "milestoneStatus": "code_complete_shared_codex_model_identity_passed_main_and_renderer_lazy_bootstrap_passed_deepseek_zero_codex_process_canary_passed_explicit_codex_single_process_canary_passed_clean_installs_and_focused_regressions_passed_production_build_passed_full_core_validation_63_passed_independent_commit_and_clean_packaged_identity_pending_deepseek_selection_unchanged_no_model_request_no_photoshop_write",
+  "currentFocus": "2026-08-29 VOLCENGINE-SDK-SECURITY-109：在保留现有 Volcengine OpenAPI /TOS Provider owner 的前提下，用限定安全覆盖、真实本地协议契约和完整依赖树治理生产可达漏洞。",
+  "currentMilestone": "VOLCENGINE-SDK-SECURITY-109",
+  "milestoneStatus": "code_complete_scoped_security_overrides_valid_dependency_tree_zero_problems_agent_integrity_595_of_595_uxp_integrity_148_of_148_local_openapi_json_and_multipart_passed_local_tos_put_object_passed_direct_axios_protobuf_uuid_passed_adjacent_image_provider_regressions_passed_production_audit_17_to_6_volcengine_findings_zero_production_build_and_dirty_packaged_startup_passed_full_core_validation_64_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
   "verified": {
     "code": [
-      "Codex Runtime lazy startup D-108 (2026-08-29): the normal DeepSeek runtime exposed a preexisting unconditional startup cost because Main and Renderer both hydrated the ChatGPT subscription catalog, whose status read starts the bundled app-server. One shared subscription model-id identity now guards both startup consumers while settings, login, catalog, chat and image IPC remain on-demand. Clean installs, model routing, types, authorship/business/runtime/simplification/preload checks, production build and the single 63-stage core gate passed. Credential-free same-build canaries showed exact DeepSeek primary/visual with zero D-108 codex.exe children, while an explicit codex-subscription model started exactly one restricted model-bridge process; neither canary sent a model request or touched Photoshop. Commit and clean packaged identity remain pending.",
+      "Volcengine SDK security compatibility D-109 (2026-08-29): live npm metadata showed the latest official OpenAPI and TOS SDKs still declare vulnerable Axios, protobuf, UUID, form-data, lodash and proxy ranges. The root Axios moved to 1.20.0 and explicit SDK-scoped overrides now bind patched descendants without a global major override. A first invalid form-data tree was rejected by npm ls and replaced by a layered parent/Axios override. Agent/UXP clean installs, zero-problem dependency trees, 595/595 and 148/148 integrity, real local OpenAPI JSON/multipart and TOS signed requests, protobuf/UUID behavior, adjacent provider regressions, types, production build, dirty packaged startup and the single 64-stage core gate passed. Production audit fell from 17 to 6 with zero finding owned by this slice; commit and clean identity remain pending. No real credential, paid request or Photoshop write was used.",
+      "Codex Runtime lazy startup D-108 (2026-08-29): the normal DeepSeek runtime exposed a preexisting unconditional startup cost because Main and Renderer both hydrated the ChatGPT subscription catalog, whose status read starts the bundled app-server. One shared subscription model-id identity now guards both startup consumers while settings, login, catalog, chat and image IPC remain on-demand. Clean installs, model routing, types, authorship/business/runtime/simplification/preload checks, production build, the single 63-stage core gate, commit 16db25ec and exact clean packaged identities passed. Credential-free same-build canaries showed exact DeepSeek primary/visual with zero D-108 codex.exe children, while an explicit codex-subscription model started exactly one restricted model-bridge process; neither canary sent a model request or touched Photoshop. Normal user restart remains pending.",
       "Smile Provider closure D-105 (2026-08-29): the existing conversation Provider acd53530 and image Provider 0fa91c6f remain independent ancestors of the current chain. Current model-usage and single-model routing tests prove Smile image models stay out of conversation candidates, conversation models do not receive implicit vision or Tool Calling, missing keys fail explicitly and no cross-model fallback is created. The image-provider suite proves independent Smile/OpenRouter credentials, exact supported models, pre-request rejection, Gemini and GPT Image 2 protocol shapes, cancellation, HTTPS/result budgets, batch error provenance and actual output dimensions; the adjacent OpenRouter suite also passed. The three Smile image core/test files are byte-identical to 0fa91c6f. No Provider or production code changed and no paid request ran.",
       "Dependency closure D-104 (2026-08-29): the existing 5c1bc06d Anthropic peer migration is already an independent ancestor of D-103 and was revalidated in a new worktree without a node_modules junction. Agent and UXP npm ci completed; one Windows cleanup residue for the macOS-only optional dmg-license package was removed by npm prune; both npm ls --all graphs then exited 0 with zero problems. Installed Anthropic SDK 0.122.0, Claude Agent SDK 0.3.241 and Zod 4.4.3 satisfy the declared peers. Agent/UXP builds and the one ordered 60-stage core gate passed. No package, lock, Provider, model, Prompt or Photoshop code changed. Dynamic security findings remain a separate recorded risk rather than being hidden by the install result.",
       "SKU pose integration D-103 (2026-08-29): the isolated capability was ported onto D-102 as three independent rollback commits: a pure deterministic no-side-effect geometry and sku-pose-alignment-report/v1 core, a document/history/layer-bound versioned Provider with one PhotoshopTransactionRunner-owned mutation and readback receipts, and a WebView/panel caller that exposes only Provider-effective parameters. Internal capture/apply tools remain outside the ordinary Agent surface. Dependency integrity, algorithm/Provider/panel tests, all UXP tests, 181-Tool and design-authorship audits, business/executor/semantic-dispatch/change boundaries, Main/Renderer typechecks, Agent/UXP production builds and the one ordered 60-stage core gate passed. Exact D-103 Photoshop runs remain pending; D-097 is unchanged for r33.",
@@ -334,34 +335,35 @@
     ]
   },
   "activeRequest": {
-    "id": "CODEX-RUNTIME-LAZY-START-108",
-    "summary": "Prevent DeepSeek and other non-Codex Agent configurations from starting the bundled Codex model-bridge app-server during application bootstrap, while preserving explicit ChatGPT subscription settings, login, catalog, chat and image-generation entry points.",
-    "status": "code_complete_shared_codex_model_identity_passed_main_and_renderer_lazy_bootstrap_passed_deepseek_zero_codex_process_canary_passed_explicit_codex_single_process_canary_passed_clean_installs_and_focused_regressions_passed_production_build_passed_full_core_validation_63_passed_independent_commit_and_clean_packaged_identity_pending_deepseek_selection_unchanged_no_model_request_no_photoshop_write",
+    "id": "VOLCENGINE-SDK-SECURITY-109",
+    "summary": "Eliminate production-reachable vulnerable dependency versions beneath the current Volcengine OpenAPI and TOS providers with explicit scoped overrides and executable protocol compatibility tests, without replacing the provider owners or making paid requests.",
+    "status": "code_complete_scoped_security_overrides_valid_dependency_tree_zero_problems_agent_integrity_595_of_595_uxp_integrity_148_of_148_local_openapi_json_and_multipart_passed_local_tos_put_object_passed_direct_axios_protobuf_uuid_passed_adjacent_image_provider_regressions_passed_production_audit_17_to_6_volcengine_findings_zero_production_build_and_dirty_packaged_startup_passed_full_core_validation_64_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
     "mustDo": [
-      "Keep deepseek-v4-flash-vision-exp as the exact primary and legacy visual mirror without adding a Codex or cross-provider fallback.",
-      "Use one shared Codex subscription model-id identity for Main and Renderer startup decisions.",
-      "Skip startup catalog hydration for non-Codex primary models while retaining explicit settings, login, catalog, chat and image-generation IPC paths.",
-      "Prove the same credential-free build starts zero Codex processes for an exact DeepSeek state and one restricted model-bridge process for an explicit Codex subscription state.",
-      "Run focused model/runtime/ownership checks, production build, one full core gate, an independent commit and exact clean packaged-runtime verification."
+      "Upgrade the direct Axios dependency to the current secure line and the official OpenAPI package to its current release.",
+      "Keep overrides scoped to the official OpenAPI and TOS dependency subtrees, with distinct form-data versions for the SDK and its nested Axios where required.",
+      "Require npm ls zero problems and workspace dependency integrity after a real clean install; reject audit-green invalid trees.",
+      "Exercise real local OpenAPI JSON/multipart signing, TOS putObject, direct Axios, protobuf encode/decode and UUID v4 using the installed packages.",
+      "Run adjacent image-provider regressions, types, production build, packaged startup, one full core gate, an independent commit and clean identity verification."
     ],
     "mustNotDo": [
-      "Do not remove or disable the ChatGPT subscription Provider or image-generation capability.",
-      "Do not infer startup time or memory improvement from process count alone.",
-      "Do not send a Codex model request, reuse normal subscription credentials or print any key or token.",
-      "Do not stop PID 36604 or its existing children merely to demonstrate the fix.",
-      "Do not occupy default ports or save, close, discard or modify any Photoshop document."
+      "Do not replace the Volcengine or TOS provider implementation with a second signer or HTTP runtime.",
+      "Do not apply a global dependency major override or accept npm audit counts without runtime compatibility evidence.",
+      "Do not read, copy or mutate normal Volcengine/TOS credentials or issue a paid upstream request.",
+      "Do not change the formal DeepSeek Agent model, Prompt, Tool, Skill, permission, transaction or Photoshop behavior.",
+      "Do not stop PID 36604, occupy default ports or modify any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "CODEX-RUNTIME-LAZY-START-108",
+    "id": "VOLCENGINE-SDK-SECURITY-109",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：共享 Codex 模型身份和 Main /Renderer 条件启动恢复。",
-      "已完成：clean install、模型 /类型 /作者权 /Runtime /简化回归和 production build。",
-      "已完成：无凭据 DeepSeek 0 Codex 进程与显式订阅模型 1 model-bridge 进程双向 canary。",
-      "已完成：项目记忆、快速治理与提交前唯一完整核心 63/63。",
-      "进行中：独立提交与 clean Agent /UXP /packaged identity；不重复完整核心。",
-      "后续：普通用户自然重启后复核进程树；默认端口释放优先 r32，否则进入 Volcengine 安全切片。"
+      "已完成：package/lock 与 OpenAPI/TOS scoped security overrides，分层 form-data 依赖树合法。",
+      "已完成：Agent/UXP clean install、npm ls、595/595 与 148/148 依赖完整性。",
+      "已完成：本地 OpenAPI JSON/multipart、TOS putObject、Axios/protobuf/UUID 与相邻 Provider 回归。",
+      "已完成：类型、production build、dirty app.asar 启动与生产 audit owner 清零。",
+      "已完成：项目记忆、快速治理与唯一完整核心 64/64。",
+      "进行中：独立提交与 clean Agent /UXP /app.asar identity；不重复完整核心。",
+      "后续：默认端口释放优先 r32，否则分别治理 sharp 与 ONNX。"
     ]
   },
   "convergenceBaseline": {

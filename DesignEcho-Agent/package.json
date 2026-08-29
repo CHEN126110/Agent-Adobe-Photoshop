@@ -104,6 +104,7 @@
     "test:runtime-build-identity": "node scripts/verify-runtime-build-identity.cjs",
     "test:electron-runtime-compatibility": "node scripts/verify-electron-runtime-compatibility.cjs",
     "test:openai-compatible-sdk": "npm run build:main && node scripts/verify-openai-compatible-sdk.cjs",
+    "test:volcengine-sdk-security": "node scripts/verify-volcengine-sdk-security.cjs",
     "test:preload-sandbox-boundary": "node scripts/verify-preload-sandbox-boundary.cjs",
     "test:openrouter-image-request": "node scripts/test-openrouter-image-request.cjs",
     "test:smile-image-provider": "node scripts/test-smile-image-provider.cjs",
@@ -143,11 +144,11 @@
     "@anthropic-ai/sdk": "^0.122.0",
     "@google/generative-ai": "^0.21.0",
     "@openai/codex": "0.149.0",
-    "@volcengine/openapi": "^1.36.0",
+    "@volcengine/openapi": "^1.36.2",
     "@volcengine/tos-sdk": "^2.9.1",
     "ag-psd": "^29.1.0",
     "ajv": "^8.20.0",
-    "axios": "^1.13.2",
+    "axios": "^1.20.0",
     "http-proxy-agent": "^5.0.0",
     "https-proxy-agent": "^5.0.1",
     "iconv-lite": "^0.6.3",
@@ -180,6 +181,25 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
     "vite": "^5.0.0"
+  },
+  "overrides": {
+    "@volcengine/openapi": {
+      "axios": {
+        ".": "0.33.0",
+        "form-data": "4.0.6"
+      },
+      "form-data": "3.0.5",
+      "protobufjs": "7.6.6",
+      "uuid": "11.1.1"
+    },
+    "@volcengine/tos-sdk": {
+      "axios": "0.33.0",
+      "axios-adapter-uniapp": {
+        "axios": "0.33.0"
+      },
+      "http-proxy-middleware": "2.0.10",
+      "lodash": "4.18.1"
+    }
   },
   "build": {
     "appId": "com.designecho.agent",
