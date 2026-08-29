@@ -1049,6 +1049,14 @@ export async function executeSkuColorCardStrategy(
                     ? params.sourceMode
                     : 'auto',
                 maxLongEdge: params.retouchMaxLongEdge,
+                // 姿态统一（骨架拉直）由判断者显式开启；缺省不做，保留摄影原始姿态。
+                poseAlignment: params.poseAlignment && typeof params.poseAlignment === 'object'
+                    ? {
+                        strength: Number(params.poseAlignment.strength) || 0,
+                        cuffLockRatio: Number(params.poseAlignment.cuffLockRatio) || 0,
+                        maxIterations: Number(params.poseAlignment.maxIterations) || undefined
+                    }
+                    : undefined,
                 force: params.forceRetouch === true
             }, 'prepare-sku-retouch-assets');
             if (!retouchResult?.success) {

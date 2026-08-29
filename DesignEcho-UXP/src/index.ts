@@ -1222,12 +1222,7 @@ async function executeMorphingFromWebView(payload: any) {
     console.log('[3] 参数校验...');
     sendToWebView('morphProgress', { progress: 15, message: '验证参数...' });
     
-    if (!refShapeId || isNaN(refShapeId)) {
-        console.error('  ✗ 参考形状 ID 无效:', refShapeId);
-        sendToWebView('hideMorphProgress', {});
-        sendToWebView('toast', { message: '请选择参考形状', type: 'error' });
-        return;
-    }
+    // 姿态统一新链不需要参考形状图层（自身骨架拉直）；选了也只是不参与变形。
     if (productLayerIds.length === 0) {
         console.error('  ✗ 产品图层列表为空');
         sendToWebView('hideMorphProgress', {});
@@ -1241,7 +1236,7 @@ async function executeMorphingFromWebView(payload: any) {
     console.log('  方法: enhanced-shape-morph');
     console.log('  参数: { referenceShapeId:', refShapeId, ', productLayerIds:', productLayerIds, ', step: align }');
     
-    sendToWebView('morphProgress', { progress: 20, message: '正在对齐主体位置...' });
+    sendToWebView('morphProgress', { progress: 20, message: '正在统一姿态（骨架拉直）...' });
     
     try {
         const startTime = Date.now();
@@ -1275,29 +1270,21 @@ async function executeMorphingFromWebView(payload: any) {
         console.log('  分区控制:', selectedRegions);
         console.log('  款式:', sockStyle, '袜口:', cuffType, '袜口保护:', cuffProtected);
         
-        // 超时时间：每个图层约 15 秒，最少 60 秒
-        const timeoutMs = Math.max(60000, productLayerIds.length * 15000);
+        // 超时时间：每层含导出/分割/拉直/回贴，约 30 秒，最少 120 秒
+        const timeoutMs = Math.max(120000, productLayerIds.length * 30000);
         console.log(`  超时设置: ${timeoutMs / 1000} 秒`);
         
-        const result = await wsClient.sendRequest('enhanced-shape-morph', {
-            referenceShapeId: refShapeId,
-            productLayerIds: productLayerIds,
-            step: step,
-            forceRedetect: forceRedetect,
-            useOptimizedMorphing: true,  // 启用 JFA + 稀疏位移场优化变形
-            // 开关控制
-            preAlign: preAlign,
-            shapeMatch: shapeMatch,
-            // 变形强度参数
-            edgeStrength: edgeStrength,
-            contentProtection: contentProtection,
-            smoothness: smoothness,
-            // 分区控制
-            selectedRegions: selectedRegions,
-            // 款式信息
-            sockStyle: sockStyle,
-            cuffType: cuffType,
-            cuffProtected: cuffProtected
+        // 2026-08 起面板主链切到姿态统一新实现（pose-align-layers，骨架拉直）：
+        // 不需要参考形状，同尺寸整幅进出原位回贴，规避老链的位置漂移与黑剪影。
+        // 老 enhanced-shape-morph handler 保留未删，仅面板不再指向它。
+        const result = await wsClient.sendRequest('pose-align-layers', {
+            layerIds: productLayerIds,
+            // 面板「边缘变形」滑杆 0-100 → 矫正强度 0-1
+            strength: Math.max(0, Math.min(1, edgeStrength / 100)),
+            // 勾选「袜口保护」时锁定顶部 15% 段（木耳边等产品特征不动）
+            cuffLockRatio: cuffProtected ? 0.15 : 0,
+            // 「参考形状」= 用户画的占位矩形：所有袜子主体先等比对到该框再统一姿态
+            referenceFrameLayerId: refShapeId && !isNaN(refShapeId) ? refShapeId : undefined
         }, timeoutMs);
         
         const duration = Date.now() - startTime;

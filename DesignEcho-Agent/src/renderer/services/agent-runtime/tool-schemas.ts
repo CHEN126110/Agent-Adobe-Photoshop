@@ -2094,6 +2094,15 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             referenceSourcePath: { type: 'string', description: '可选的统一尺度参考源路径；未提供时自动从同批适用素材中选择基准。' },
             sourceMode: { type: 'string', enum: ['auto', 'studio', 'scene'] },
             maxLongEdge: { type: 'number', description: '透明主体提取工作图长边，1024~3072，默认 2048。' },
+            poseAlignment: {
+                type: 'object',
+                description: '可选姿态统一（骨架拉直）：把摆放姿态不同的袜子中轴拉到一致，只矫正低频姿态、保留真实版型与织物纹理。缺省不做。你看图判断需要时才开启：袜子明显有的直有的斜/弯时用 strength 0.8~1；袜口木耳边等产品特征段不想动时给 cuffLockRatio（该段占主体高的比例，如 0.15）。姿态复杂（S 形）时会如实跳过并在报告说明。',
+                properties: {
+                    strength: { type: 'number', description: '0~1 矫正强度；0 或缺省 = 不做。' },
+                    cuffLockRatio: { type: 'number', description: '顶部锁定段占主体高比例 0~0.4，默认 0（袜口/木耳边保持原样）。' },
+                    maxIterations: { type: 'number', description: '迭代上限 1~4，默认 3。' }
+                }
+            },
             force: { type: 'boolean' }
         }, ['sources'])
     },

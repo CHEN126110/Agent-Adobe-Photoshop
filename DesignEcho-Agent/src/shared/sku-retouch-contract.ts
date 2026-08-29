@@ -4,11 +4,12 @@
  * 该契约只描述确定性文件处理的输入、产物与量化结果；不授予 Photoshop
  * 写入权限，也不把离线处理成功等同于色卡设计完成。
  *
- * 阶段边界（2026-08-25 用户拍板）：当前阶段只做「主体等比缩放到统一尺度」
- * ——不做形态变形（保留每只袜子的真实版型），也不生成阴影或光影修正资产。
+ * 阶段边界（2026-08-25 用户拍板）：当前阶段默认只做「主体等比缩放到统一尺度」
+ * ——保留每只袜子的真实版型，不生成阴影或光影修正资产。姿态统一（骨架拉直，
+ * round-trip 实证方案）作为可选项由 poseAlignment 显式开启，默认关。
  */
 
-export const SKU_RETOUCH_ASSETS_VERSION = 'sku-retouch-assets/v2' as const;
+export const SKU_RETOUCH_ASSETS_VERSION = 'sku-retouch-assets/v3' as const;
 export const SKU_RETOUCH_REPORT_VERSION = 'sku-retouch-report/v2' as const;
 
 export type SkuRetouchSourceMode = 'auto' | 'studio' | 'scene';
@@ -18,6 +19,28 @@ export interface SkuRetouchSourceInput {
     sourceId?: string;
     filePath: string;
     colorName?: string;
+}
+
+/**
+ * 姿态统一（骨架拉直）选项。强度与袜口锁定比例是判断者（模型/用户）的显式输入；
+ * 代码只执行并如实报告，拟合残差过大时跳过而不硬扭。
+ */
+export interface SkuRetouchPoseAlignmentInput {
+    /** 0~1；0 或缺省 = 不做姿态矫正（默认关）。 */
+    strength?: number;
+    /** 顶部锁定段占主体高比例 0~0.4（袜口/木耳边等产品特征段不动），默认 0。 */
+    cuffLockRatio?: number;
+    /** 迭代上限 1~4，默认 3（实证 3 轮内收敛）。 */
+    maxIterations?: number;
+}
+
+export interface SkuRetouchPoseReport {
+    applied: boolean;
+    iterations: number;
+    initialShiftPx: number;
+    residualShiftPx: number;
+    fitResidualPx: number;
+    skippedReason?: string;
 }
 
 export interface PrepareSkuRetouchAssetsInput {
@@ -30,6 +53,8 @@ export interface PrepareSkuRetouchAssetsInput {
     shapeStrength?: number;
     /** @deprecated v2 不再消费；仅为旧调用形状保留读取兼容。 */
     lightingStrength?: number;
+    /** 姿态统一（骨架拉直）选项；缺省或 strength=0 时不做。 */
+    poseAlignment?: SkuRetouchPoseAlignmentInput;
     /** 离线工作图长边；默认 2048，范围 1024~3072。 */
     maxLongEdge?: number;
     force?: boolean;
@@ -149,6 +174,8 @@ export interface SkuRetouchPreparedSource {
     previewByteLength?: number;
     uniformScale?: SkuRetouchUniformScaleMetrics;
     alphaSafety?: SkuRetouchAlphaSafetyMetrics;
+    /** 姿态统一执行情况；未启用姿态矫正时不提供。 */
+    pose?: SkuRetouchPoseReport;
     warnings: string[];
     error?: string;
 }

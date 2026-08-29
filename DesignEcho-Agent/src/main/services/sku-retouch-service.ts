@@ -12,6 +12,8 @@ import {
     type SkuRetouchAlphaBounds,
     type SkuRetouchAlphaSafetyMetrics,
     type SkuRetouchCacheIdentity,
+    type SkuRetouchPoseAlignmentInput,
+    type SkuRetouchPoseReport,
     type SkuRetouchPreparedSource,
     type SkuRetouchReport,
     type SkuRetouchSourceClassification,
@@ -20,8 +22,10 @@ import {
 } from '../../shared/sku-retouch-contract';
 import type { MattingService } from './matting-service';
 import {
+    alignSkuRetouchPose,
     analyzeSkuRetouchShape,
     chooseSkuRetouchReferenceIndex,
+    type SkuRetouchPoseAlignmentOptions,
     type SkuRetouchRaster,
     type SkuRetouchShapeAnalysis
 } from './sku-retouch/geometry';
@@ -34,6 +38,20 @@ interface PreparedWorkingSource {
     raster: SkuRetouchRaster;
     mask: Buffer;
     shape: SkuRetouchShapeAnalysis;
+    /** 姿态统一执行情况；未启用时不设置。 */
+    pose?: SkuRetouchPoseReport;
+}
+
+/** 解析姿态统一选项：缺省 = 关（strength 0）；边界一律 clamp 不报错。 */
+function resolvePoseAlignmentOptions(input: SkuRetouchPoseAlignmentInput | undefined): SkuRetouchPoseAlignmentOptions {
+    const strength = clamp(Number(input?.strength ?? 0), 0, 1);
+    const cuffLockRatio = clamp(Number(input?.cuffLockRatio ?? 0), 0, 0.4);
+    const maxIterations = clamp(Math.round(Number(input?.maxIterations ?? 3)), 1, 4);
+    return {
+        strength: Number.isFinite(strength) ? strength : 0,
+        cuffLockRatio: Number.isFinite(cuffLockRatio) ? cuffLockRatio : 0,
+        maxIterations: Number.isFinite(maxIterations) ? maxIterations : 3
+    };
 }
 
 /** 等比缩放到统一画布后的主体资产（阶段边界：不变形、不产阴影与中性灰）。 */
@@ -159,6 +177,7 @@ async function buildBatchIdentity(input: {
     maxLongEdge: number;
     sourceMode: SkuRetouchSourceMode;
     referenceSourcePath?: string;
+    poseOptions: SkuRetouchPoseAlignmentOptions;
 }): Promise<SkuRetouchCacheIdentity> {
     const fingerprint: SkuRetouchCacheIdentity['sources'] = [];
     for (const source of input.sources) {
@@ -192,7 +211,9 @@ async function buildBatchIdentity(input: {
         sourceMode: input.sourceMode,
         referenceSourcePath: referenceSourcePath
             ? normalizePathForComparison(referenceSourcePath)
-            : undefined
+            : undefined,
+        // 姿态统一参数改变产物内容，必须参与缓存指纹（防调参吃旧缓存）。
+        poseAlignment: input.poseOptions.strength > 0 ? input.poseOptions : undefined
     })).digest('hex').slice(0, 16);
     return {
         batchId,
@@ -925,11 +946,13 @@ export class SkuRetouchService {
             throw new Error('SKU 素材精修 maxLongEdge 必须是有限数字。');
         }
         const maxLongEdge = clamp(Math.round(requestedMaxLongEdge), MIN_LONG_EDGE, MAX_LONG_EDGE);
+        const poseOptions = resolvePoseAlignmentOptions(input.poseAlignment);
         const cacheIdentity = await buildBatchIdentity({
             sources,
             sourceMode,
             maxLongEdge,
-            referenceSourcePath: clean(input.referenceSourcePath) || undefined
+            referenceSourcePath: clean(input.referenceSourcePath) || undefined,
+            poseOptions
         });
         const outputDir = path.join(resolveOutputRoot(input, sources[0].filePath), cacheIdentity.batchId);
         const reportPath = path.join(outputDir, 'report.json');
@@ -988,6 +1011,24 @@ export class SkuRetouchService {
             await assertSourceIdentityUnchanged(cacheIdentity);
             await writeJsonAtomic(reportPath, report);
             return report;
+        }
+
+        // 可选姿态统一（骨架拉直）：在等比缩放之前对每个主体做，矫正后的 shape
+        // 同时供基准选择与缩放使用。强度/袜口锁定由判断者显式传入，默认关。
+        if (poseOptions.strength > 0) {
+            for (const item of working) {
+                const outcome = alignSkuRetouchPose({
+                    raster: item.raster,
+                    mask: item.mask,
+                    shape: item.shape,
+                    options: poseOptions
+                });
+                item.pose = outcome.report;
+                if (!outcome.report.applied) continue;
+                item.raster = outcome.raster;
+                item.mask = outcome.mask;
+                item.shape = analyzeSkuRetouchShape(outcome.mask, outcome.raster.width, outcome.raster.height);
+            }
         }
 
         const requestedReference = clean(input.referenceSourcePath);
@@ -1056,9 +1097,13 @@ export class SkuRetouchService {
                     targetSubjectHeight: referenceSubjectHeight
                 }),
                 alphaSafety: asset.alphaSafety,
+                pose: item.pose,
                 warnings: [
                     ...(item.classification === 'uncertain'
                         ? ['纯底识别置信度处于边界区，最终色卡需要视觉复核。']
+                        : []),
+                    ...(item.pose?.skippedReason
+                        ? [`姿态矫正未执行：${item.pose.skippedReason}`]
                         : [])
                 ]
             };
@@ -1110,7 +1155,9 @@ export class SkuRetouchService {
             },
             warnings: [
                 ...skipped.flatMap((source) => source.warnings.map((warning) => `${source.colorName || source.sourceId}：${warning}`)),
-                '本批产物为等比缩放统一尺度的透明底主体；未做形态变形、阴影与光影修正（属后续精修阶段）。',
+                poseOptions.strength > 0
+                    ? `本批产物为等比缩放统一尺度的透明底主体，并按 strength=${poseOptions.strength} 做了姿态统一（骨架拉直）；阴影与光影修正属后续精修阶段。`
+                    : '本批产物为等比缩放统一尺度的透明底主体；未做形态变形、阴影与光影修正（属后续精修阶段）。',
                 '离线资产通过不等于 Photoshop 色卡完成；仍需可编辑图层写入、同文档读回与最终视觉验收。'
             ]
         };
