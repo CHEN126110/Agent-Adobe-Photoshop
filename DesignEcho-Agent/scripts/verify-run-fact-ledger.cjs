@@ -39,6 +39,9 @@ const {
     ActiveRuntimeAccounting
 } = require(path.join(root, 'src/renderer/services/agent-runtime/active-runtime-accounting.ts'));
 const {
+    buildProviderTransportMetrics
+} = require(path.join(root, 'src/shared/provider-transport-metrics.ts'));
+const {
     buildRuntimeContractStatus
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-selected-skill-handoff.ts'));
 const { buildRunRecordResumeBrief } = require(path.join(root, 'src/shared/agent-run-resume.ts'));
@@ -2007,6 +2010,17 @@ check(
     '公开 history 只按精确原文同步，不用 trim 误命中另一版本'
 );
 
+const providerTransportMetrics = buildProviderTransportMetrics({
+    startedAtMs: 10_000,
+    serializedRequestBytes: 150_000,
+    imageDataUrlBytes: 90_000,
+    adapterFormatMs: 5,
+    payloadMeasurementMs: 3,
+    streamOpenedAtMs: 10_120,
+    firstChunkAtMs: 10_180,
+    firstSemanticDeltaAtMs: 10_240,
+    completedAtMs: 11_100
+});
 let unboundAccounting = createRuntimeAccountingLedger('2026-08-24T00:00:00.000Z');
 unboundAccounting = recordRuntimeModelCall({
     ledger: unboundAccounting,
@@ -2024,7 +2038,8 @@ unboundAccounting = recordRuntimeModelCall({
         messageCount: 3,
         imageBlocks: 1,
         toolCount: 2,
-        toolSchemaChars: 300
+        toolSchemaChars: 300,
+        providerTransportMetrics
     },
     now: '2026-08-24T00:00:01.200Z'
 });
@@ -2069,8 +2084,10 @@ check(
     unboundAccounting.promptShapeSamples[0].cacheHitInputTokens === 200
         && unboundAccounting.promptShapeSamples[0].cacheMissInputTokens === 121
         && unboundAccountingDigest.promptShapeSamples[0].cacheHitInputTokens === 200
-        && unboundAccountingDigest.promptShapeSamples[0].cacheMissInputTokens === 121,
-    'Provider 缓存用量以守恒对写入活动账本和 digest'
+        && unboundAccountingDigest.promptShapeSamples[0].cacheMissInputTokens === 121
+        && unboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100
+        && unboundAccountingDigest.promptShapeSamples[0].providerTransportMetrics.serializedRequestBytes === 150_000,
+    'Provider 缓存与 transport 指标写入同一活动账本和 digest'
 );
 const fractionalInputCacheLedger = recordRuntimeModelCall({
     ledger: createRuntimeAccountingLedger('2026-08-24T00:00:02.000Z'),
@@ -2101,10 +2118,12 @@ const clonedUnboundAccounting = cloneRuntimeAccountingLedger(unboundAccounting);
 clonedUnboundAccounting.stageBuckets[0].modelCallCount = 999;
 clonedUnboundAccounting.performanceUsage.observationKeys.push('visual:clone-only');
 clonedUnboundAccounting.promptShapeSamples[0].systemChars = 999;
+clonedUnboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs = 999;
 check(
     unboundAccounting.stageBuckets[0].modelCallCount === 2
         && !unboundAccounting.performanceUsage.observationKeys.includes('visual:clone-only')
-        && unboundAccounting.promptShapeSamples[0].systemChars === 100,
+        && unboundAccounting.promptShapeSamples[0].systemChars === 100
+        && unboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100,
     'Runtime Accounting 转移使用深拷贝，不让旧 owner 与新 Session 并行共享可变引用'
 );
 const accountingSeedIdentity = createRuntimeSessionIdentity({
@@ -2150,6 +2169,14 @@ activeAccounting.recordModelCall(undefined, {
     durationMs: 420,
     succeeded: true,
     usage: { inputTokens: 40, outputTokens: 8 },
+    outcome: {
+        transportAttempts: [{
+            durationMs: 420,
+            succeeded: true,
+            usage: { inputTokens: 40, outputTokens: 8 },
+            providerTransportMetrics
+        }]
+    },
     promptShape: {
         systemChars: 20,
         historyChars: 60,
@@ -2184,6 +2211,7 @@ const lifecycleDigest = activeAccounting.readDigest(lifecycleSession);
 check(
     lifecycleTransferSeed?.modelCallCount === 1
         && lifecycleTransferSeed.toolCallCount === 0
+        && lifecycleTransferSeed.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100
         && activeAccounting.readUnboundLedgerForTransfer() === undefined
         && lifecycleSession?.accounting.modelCallCount === 2
         && lifecycleSession.accounting.modelFailureCount === 1
@@ -2257,6 +2285,20 @@ accountingWithInconsistentCacheUsage.runtimeAccounting.promptShapeSamples[0].cac
 check(
     !validateAgentRunRecordForPersist(accountingWithInconsistentCacheUsage).ok,
     'runtimeAccounting 拒绝与 inputTokens 不守恒的 Provider 缓存用量'
+);
+const accountingWithNonMonotonicTransport = JSON.parse(JSON.stringify(unboundAccountingRecord));
+accountingWithNonMonotonicTransport.runtimeAccounting.promptShapeSamples[0]
+    .providerTransportMetrics.firstSemanticDeltaMs = 100;
+check(
+    !validateAgentRunRecordForPersist(accountingWithNonMonotonicTransport).ok,
+    'runtimeAccounting 拒绝非单调 Provider transport 时间'
+);
+const accountingWithRawProviderPayload = JSON.parse(JSON.stringify(unboundAccountingRecord));
+accountingWithRawProviderPayload.runtimeAccounting.promptShapeSamples[0]
+    .providerTransportMetrics.rawRequest = 'must-not-persist';
+check(
+    !validateAgentRunRecordForPersist(accountingWithRawProviderPayload).ok,
+    'runtimeAccounting 拒绝 Provider transport 未知字段和原始载荷'
 );
 
 const resolvedAgenticRuntimeContractStatus = buildRuntimeContractStatus({

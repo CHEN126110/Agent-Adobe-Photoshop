@@ -14,6 +14,7 @@ import {
     isHarnessManagedSubscriptionTimeout,
     shouldRetryAutonomousModelTransport
 } from '../../../shared/model-provider-transport-policy';
+import { readProviderTransportMetrics } from '../../../shared/provider-transport-metrics';
 import { buildConversationalUnavailableMessage } from '../../../shared/conversational-unavailable-message';
 import { buildCancelledAutonomousAgentResult } from './autonomous-agent-result-projection';
 import {
@@ -447,7 +448,8 @@ function buildModelTransportAttempt(
     succeeded: boolean,
     usage?: ModelTransportAttemptAccounting['usage'],
     failure?: ModelProviderFailure,
-    visualPresentationReceipt?: unknown
+    visualPresentationReceipt?: unknown,
+    providerTransportMetrics?: unknown
 ): ModelTransportAttemptAccounting {
     const providerCode = String(failure?.providerCode || '').trim().slice(0, 120);
     const numericStatus = Number(failure?.status);
@@ -460,6 +462,9 @@ function buildModelTransportAttempt(
         succeeded,
         receipt: visualPresentationReceipt
     });
+    const transportMetrics = succeeded
+        ? readProviderTransportMetrics(providerTransportMetrics)
+        : undefined;
     return {
         durationMs: Math.max(0, Math.floor(Date.now() - startedAtMs)),
         succeeded,
@@ -469,6 +474,7 @@ function buildModelTransportAttempt(
             ...(providerCode ? { providerCode } : {}),
             ...(status ? { status } : {})
         } : {}),
+        ...(transportMetrics ? { providerTransportMetrics: transportMetrics } : {}),
         ...(receiptRef ? { visualPresentationReceiptRef: receiptRef } : {})
     };
 }
@@ -590,7 +596,8 @@ function createCallModelViaIPC(
                     true,
                     response?.usage,
                     undefined,
-                    response?.visualPresentationReceipt
+                    response?.visualPresentationReceipt,
+                    response?.providerTransportMetrics
                 ));
                 break;
             } catch (error) {
@@ -708,7 +715,8 @@ function createCallModelStreamViaIPC(
                     true,
                     response?.usage,
                     undefined,
-                    response?.visualPresentationReceipt
+                    response?.visualPresentationReceipt,
+                    response?.providerTransportMetrics
                 ));
                 break;
             } catch (error) {

@@ -9,6 +9,7 @@ import type { CurrentDocumentUseMode } from '../../../shared/design-document-rol
 import type { ModelReasoningEffort } from '../../../shared/config/models.config';
 import type { ModelProviderFailureKind } from '../../../shared/model-provider-failure';
 import type { ProviderReportedTokenUsage } from '../../../shared/provider-reported-token-usage';
+import type { ProviderTransportMetrics } from '../../../shared/provider-transport-metrics';
 import type {
     ModelVisualPresentationReceipt,
     ModelVisualPresentationReceiptRef
@@ -703,6 +704,8 @@ export interface ModelTransportAttemptAccounting {
     failureKind?: ModelProviderFailureKind;
     providerCode?: string;
     status?: number;
+    /** Successful Main-process timing/size observation; absent when the transport is uninstrumented. */
+    providerTransportMetrics?: ProviderTransportMetrics;
     /** 成功 attempt 返回的有界视觉回执引用；不保存像素或 Provider 原始标识。 */
     visualPresentationReceiptRef?: ModelVisualPresentationReceiptRef;
 }
@@ -728,6 +731,7 @@ export type CallModelFn = (
     thinking?: string;
     usage?: ProviderReportedTokenUsage;
     stopReason?: string;
+    providerTransportMetrics?: ProviderTransportMetrics;
     transportAttempts?: ModelTransportAttemptAccounting[];
     visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }>;
@@ -762,6 +766,7 @@ export type CallModelStreamFn = (
     usage?: ProviderReportedTokenUsage;
     stopReason?: string;
     streamMode?: 'stream' | 'fallback';
+    providerTransportMetrics?: ProviderTransportMetrics;
     transportAttempts?: ModelTransportAttemptAccounting[];
     visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }>;

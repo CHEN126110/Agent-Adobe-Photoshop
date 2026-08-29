@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 DESIGN-KNOWLEDGE-100：建立有来源、分类型、不可直接进入生产的电商单画布知识候选；只保留中文标题断行、商品照片表达模式与目标变体缩略识别三条可证伪候选，并冻结单变量盲化 A/B。",
-  "currentMilestone": "DESIGN-KNOWLEDGE-100",
-  "milestoneStatus": "source_and_visual_gap_audit_complete_three_unpublished_candidates_and_c1105_single_variable_blind_ab_contract_documented_production_unchanged_documentation_checks_and_independent_commit_complete_no_photoshop_write",
+  "currentFocus": "2026-08-29 DESIGN-EFFICIENCY-101：把 OpenAI-compatible 成功流的真实请求字节、图像 data URL 字节和 adapter、stream open、首块、首语义、Main 完成阶段接入现有 physical attempt、Runtime Accounting、RunRecord 与 debug:runs；不改变运行行为。",
+  "currentMilestone": "DESIGN-EFFICIENCY-101",
+  "milestoneStatus": "provider_stream_phase_and_payload_accounting_code_complete_focused_attacks_typechecks_adjacent_audits_compiled_fake_deepseek_stream_probe_agent_uxp_production_builds_full_core_58_and_independent_commit_complete_live_deepseek_pending_no_photoshop_write",
   "verified": {
     "code": [
+      "Provider stream phase accounting D-101 (2026-08-29): successful OpenAI-compatible streams now report only bounded request/timing facts through the existing Main stream response, physical transport attempt, Runtime Accounting digest, RunRecord and debug:runs path. The metrics include serialized JSON request bytes, image data-URL bytes, adapter formatting, measurement overhead, stream-open, first-chunk, first-semantic-delta and Main completion times. Strict normalization rejects unsafe integers, non-monotonic clocks, oversized image contribution, unknown fields and raw payload injection. Focused attacks, Main/Renderer typechecks, simplification/runtime/business/change-boundary audits, a compiled fake DeepSeek stream probe, Agent/UXP production builds, full core 58/58, final review and an independent commit passed; live DeepSeek evidence remains pending; no Photoshop state was changed.",
       "DeepSeek cache Runtime Accounting D-099 (2026-08-29): official prompt cache hit/miss tokens now travel through the existing Provider, Main/Renderer transport, Runtime Accounting digest, RunRecord and debug:runs path only when both values are safe non-negative integers and conserve inputTokens. DeepSeek tool streaming requests include usage and consume the choices-empty usage tail before delta early return. Partial, inconsistent and non-DeepSeek lookalike fields remain unknown. Focused attacks, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, final review and an independent commit passed; the simplification ratchet stayed at agent.ts 12826 lines; live cache-rate evidence remains pending; no Photoshop state was changed.",
       "Design Experience publication boundary D-098 (2026-08-29): production evaluateDesign no longer consumes provisional evaluation findings or model-authored calibration parameters. Candidate accumulation, provisional curation and rejection rollback remain review-queue behavior; only published project evaluation_calibration samples enter the production evaluator. The reusable learning-candidate attacks, design-authorship boundary, Tool registry, Main/Renderer typechecks, Agent/UXP production builds and the single full core maintenance run 58/58 passed; no Photoshop state was changed.",
       "Design Reliability cooperative Photoshop Runtime lease D-096 (2026-08-29): formal run-live and the official UXP loader acquire one repository-external cross-worktree lease before Attempt events or UDT host mutation. A live owner is never deleted only because TTL elapsed; a dead owner can be reclaimed; release is leaseId-bound. Targeted pure logic, loader self-test, a real two-process pre-UDT rejection canary, adjacent audits, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, an isolated commit and clean post-commit identities passed; live r33 remains pending.",
@@ -77,6 +78,7 @@
       "Live concurrency/resume validation, real Provider-to-Photoshop V0, live validation of the first Photoshop Craft Recipe, Release Gate, reviewed multi-sample design quality and business live E2E are not complete."
     ],
     "build": [
+      "D-101 focused Provider/Runtime attacks, compiled fake DeepSeek stream probe, Main/Renderer typechecks, simplification/runtime/business/change-boundary audits, Agent production build, UXP production build and the single ordered 58-stage maintenance core all passed. This proves the observation path and governance boundary, not a real DeepSeek latency distribution, Photoshop E2E or speed improvement.",
       "D-096 node syntax checks, the official UXP loader self-test and the Design Reliability focused behavior suite passed. A real second process was rejected with runtime_capture_lease_active before UDT connection and the owner released the global lease without residue. Planning, encoding, entry-doc, business-boundary, Main/Renderer typecheck, Agent production build and the complete ordered 58-stage maintenance core including UXP tests/build all passed.",
       "The D-093 focused Design Reliability behavior suite, complete ordered 58-stage maintenance validation, Agent production build and UXP production build passed. Commit/push and live r32 coexistence remain pending and are not implied by this entry.",
       "The 2026-08-29 terminal-lifecycle slice passed the complete ordered 58-stage maintenance core after its planning-card schema and agent.ts complexity failures were fixed at their owners; Agent production build, Main/Renderer typecheck, capability/runtime/authorship/business/simplification audits, UXP tests and UXP production build all exited 0. agent.ts returned to the existing 12,826-line ratchet baseline instead of raising it. This is not an r22 live Photoshop or visual-quality claim.",
@@ -313,36 +315,36 @@
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-KNOWLEDGE-100",
-    "summary": "Build a source-backed, unpublished design-knowledge candidate pack for ecommerce single-canvas hierarchy, product-photo integration and Chinese title composition without changing production behavior.",
-    "status": "research_and_visual_gap_audit_complete_candidate_document_created_production_unchanged_documentation_checks_and_independent_commit_complete",
+    "id": "DESIGN-EFFICIENCY-101",
+    "summary": "Split successful OpenAI-compatible model-call wall time into bounded Main and Provider stream phases, and record the exact SDK request-object size without creating a second accounting owner or changing runtime behavior.",
+    "status": "implementation_focused_attacks_typechecks_adjacent_audits_compiled_fake_stream_probe_agent_uxp_production_builds_full_core_58_final_review_and_independent_commit_complete_live_deepseek_pending_no_photoshop_write",
     "mustDo": [
-      "Classify each source and claim as standard, standards note, research fact, vendor guidance, heuristic, project preference or case observation.",
-      "Audit current Design Kernel, Artifact Knowledge, Craft Recipe and Evaluation before proposing anything new.",
-      "Keep only claims that add a concrete observable distinction and state applicability, failure cases, owner and rollback.",
-      "Freeze one held-out C-1105 B0/B1 case where only the product-photo integration candidate differs.",
-      "Keep Eagle anchors and user-authored finished work on the blinded review side, never in the test Agent context.",
+      "Measure the exact JSON request object handed to the OpenAI-compatible SDK and separately record image data-URL contribution and measurement overhead.",
+      "Capture adapter formatting, stream-open, first-chunk, first-semantic-delta and Main completion from one request-boundary clock.",
+      "Bind the sanitized observation to the existing physical transport attempt and persist it only through the existing Runtime Accounting and RunRecord owner.",
+      "Keep fallback, non-stream and uninstrumented failure calls unknown, and show diagnostic coverage instead of coercing missing values to zero.",
+      "Attack monotonicity, size bounds, unknown fields, raw-payload injection, deep-copy transfer and persisted-record tampering in existing reusable tests.",
       "Keep D-097 worktree unchanged for r32 reconciliation and r33 single-variable DeepSeek verification."
     ],
     "mustNotDo": [
-      "Do not inject candidate text into production Prompt, Knowledge, Craft Recipe, Evaluation or Skill before blinded validation and publication.",
-      "Do not create a second Knowledge Registry, A/B Runtime, Evaluator Gate, Tool, schema, keyword route or fixed template.",
-      "Do not turn CLReq or WCAG into universal aesthetic gates outside their actual scope.",
-      "Do not copy Eagle or user-authored assets, copy, coordinates or brand style into model-visible context.",
-      "Do not claim the research document or visual inspection improves design quality.",
+      "Do not store Prompt text, Tool schema text, image bytes, responses, headers, keys, URLs, errors or Provider raw payloads.",
+      "Do not create a second performance ledger, tracing Runtime, Span Store, budget owner or performance Gate.",
+      "Do not let transport metrics influence prompts, model selection, thinking, budgets, retries, tools, permissions, quality or completion.",
+      "Do not infer an IPC duration, Provider queue duration or missing phase from a residual or absent field.",
+      "Do not claim D-101 improves speed before a fixed real DeepSeek A/B demonstrates it.",
       "Do not stop the user-started normal DesignEcho or save, close or discard any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-KNOWLEDGE-100",
+    "id": "DESIGN-EFFICIENCY-101",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：权威来源、现有生产知识、r32、Eagle 锚点和用户成稿的只读差异审查。",
-      "已完成：只保留中文标题断行、照片表达模式/合成一致性、目标变体缩略显著性三条候选。",
-      "已完成：C-1105 隔离未见 Case、B0/B1 单变量、盲评轴、晋升与撤回条件已冻结。",
-      "已完成：文档治理、规划、JSON、编码、入口同步、变更边界、UTF-8、最终审查和独立提交。",
+      "已完成：Main、stream response、physical attempt、Runtime Accounting、RunRecord 与 debug:runs 接线。",
+      "已完成：正常、时间乱序、未知字段、原始载荷、深拷贝与持久化攻击通过。",
+      "已完成：Main/Renderer 类型检查、简化/Runtime/业务/变更边界审计和编译产物假 DeepSeek 流通过。",
+      "已完成：Agent/UXP production build、唯一一次完整 maintenance:validate 58/58、最终差异审查和独立提交。",
       "待完成：默认端口释放后回到 D-097 worktree，对账 r32 并运行 fresh r33。",
-      "条件后置：r33 技术链闭合后只激活 C-02，建立共同父提交的 B0/B1 Photoshop canary。"
+      "条件后置：在 D-099/D-101 build 上用固定 DeepSeek Case 取得 cache、请求规模和阶段覆盖，再分别做性能 A/B。"
     ]
   },
   "convergenceBaseline": {

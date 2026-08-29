@@ -28,6 +28,7 @@ import {
     recordRuntimeSessionToolCall,
     type RuntimeSession
 } from '../../../shared/agent-runtime-v5/runtime-session';
+import { readProviderTransportMetrics } from '../../../shared/provider-transport-metrics';
 import type { ModelTransportAttemptAccounting } from './types';
 
 interface ModelAccountingInput {
@@ -82,6 +83,9 @@ export class ActiveRuntimeAccounting {
         if (transportAttempts.length > 0) {
             let currentSession = runtimeSession;
             for (const attempt of transportAttempts) {
+                const providerTransportMetrics = readProviderTransportMetrics(
+                    attempt.providerTransportMetrics
+                );
                 currentSession = this.recordSingleModelCall(currentSession, {
                     durationMs: Math.max(0, Math.floor(attempt.durationMs)),
                     succeeded: attempt.succeeded,
@@ -89,7 +93,9 @@ export class ActiveRuntimeAccounting {
                     failureKind: attempt.failureKind,
                     providerCode: attempt.providerCode,
                     status: attempt.status,
-                    promptShape: input.promptShape
+                    promptShape: input.promptShape && providerTransportMetrics
+                        ? { ...input.promptShape, providerTransportMetrics }
+                        : input.promptShape
                 });
             }
             for (let index = 1; index < transportAttempts.length; index += 1) {

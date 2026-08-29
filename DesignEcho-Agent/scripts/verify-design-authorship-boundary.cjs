@@ -136,6 +136,10 @@ const { OllamaAdapter } = require(path.join(root, 'src/main/services/provider-ad
 const { BaseStreamAdapter } = require(path.join(root, 'src/main/services/stream-adapter.ts'));
 const { ProviderSseDecoder } = require(path.join(root, 'src/main/services/provider-sse-decoder.ts'));
 const {
+    buildProviderTransportMetrics,
+    readProviderTransportMetrics
+} = require(path.join(root, 'src/shared/provider-transport-metrics.ts'));
+const {
     buildRuntimeAccountingDigest,
     createRuntimeAccountingLedger,
     measureRuntimePromptShape,
@@ -1945,6 +1949,26 @@ const openAiNamedCacheUsage = new OpenAIAdapter('openai').parseResponse({
         prompt_cache_miss_tokens: 25
     }
 });
+const validProviderTransportMetrics = buildProviderTransportMetrics({
+    startedAtMs: 1_000,
+    serializedRequestBytes: 120_000,
+    imageDataUrlBytes: 80_000,
+    adapterFormatMs: 4,
+    payloadMeasurementMs: 2,
+    streamOpenedAtMs: 1_120,
+    firstChunkAtMs: 1_180,
+    firstSemanticDeltaAtMs: 1_240,
+    completedAtMs: 2_500
+});
+const nonMonotonicProviderTransportMetrics = readProviderTransportMetrics({
+    ...validProviderTransportMetrics,
+    firstSemanticDeltaMs: 100,
+    firstChunkMs: 180
+});
+const unknownProviderTransportMetrics = readProviderTransportMetrics({
+    ...validProviderTransportMetrics,
+    rawRequest: 'must-not-cross-boundary'
+});
 check(
     '各 Provider 非完整终态优先隔离残缺 Tool，不能被句号或已解析参数升级为成功',
     openAiUnknownTerminal.stopReason === 'stream_incomplete'
@@ -1989,6 +2013,25 @@ check(
         && openAiCompatibleToolStreamSource.includes('stream_options: { include_usage: true }')
         && openAiCompatibleToolStreamSource.indexOf('if (chunk.usage) {')
             < openAiCompatibleToolStreamSource.indexOf('if (!delta) continue;')
+);
+check(
+    'Provider transport 只保存单调时间与有界负载规模，Main 流式边界真实采集后随终态返回',
+    validProviderTransportMetrics?.serializedRequestBytes === 120_000
+        && validProviderTransportMetrics.imageDataUrlBytes === 80_000
+        && validProviderTransportMetrics.streamOpenMs === 120
+        && validProviderTransportMetrics.firstChunkMs === 180
+        && validProviderTransportMetrics.firstSemanticDeltaMs === 240
+        && validProviderTransportMetrics.completedMs === 1_500
+        && nonMonotonicProviderTransportMetrics === undefined
+        && unknownProviderTransportMetrics === undefined
+        && openAiCompatibleToolStreamSource.includes('const requestBody = {')
+        && openAiCompatibleToolStreamSource.includes('measureProviderRequestPayload(requestBody, formatted)')
+        && openAiCompatibleToolStreamSource.indexOf('firstChunkAtMs = firstChunkAtMs ?? chunkObservedAtMs')
+            < openAiCompatibleToolStreamSource.indexOf('if (chunk.usage) {')
+        && openAiCompatibleToolStreamSource.includes('hasOpenAICompatibleSemanticDelta(choice)')
+        && openAiCompatibleToolStreamSource.includes('buildProviderTransportMetrics({')
+        && openAiCompatibleToolStreamSource.includes('...(providerTransportMetrics ? { providerTransportMetrics } : {})'),
+    JSON.stringify(validProviderTransportMetrics)
 );
 let providerRecoveryLedger = recordRuntimeProviderOutputRecoveryAttempt(
     createRuntimeAccountingLedger('2026-08-26T00:00:00.000Z'),

@@ -1042,6 +1042,59 @@ function printPromptShapeSamples(record) {
         const cacheHitRate = cacheInputTokens > 0 ? cacheHitInputTokens / cacheInputTokens : 0;
         console.log(`  Provider 缓存：命中 ${cacheHitInputTokens} / ${cacheInputTokens} 输入 token（${(cacheHitRate * 100).toFixed(1)}%）；上报覆盖 ${cacheSamples.length}/${samples.length} 次调用。`);
     }
+    const transportSamples = samples.filter((sample) => {
+        const metrics = sample.providerTransportMetrics;
+        return metrics?.version === 'provider-transport-metrics/v1'
+            && [
+                metrics.serializedRequestBytes,
+                metrics.imageDataUrlBytes,
+                metrics.adapterFormatMs,
+                metrics.payloadMeasurementMs,
+                metrics.streamOpenMs,
+                metrics.completedMs
+            ].every((value) => Number.isSafeInteger(value) && value >= 0)
+            && (metrics.firstChunkMs === undefined
+                || (Number.isSafeInteger(metrics.firstChunkMs) && metrics.firstChunkMs >= 0))
+            && (metrics.firstSemanticDeltaMs === undefined
+                || (Number.isSafeInteger(metrics.firstSemanticDeltaMs)
+                    && metrics.firstSemanticDeltaMs >= 0));
+    });
+    if (transportSamples.length > 0) {
+        console.log('\nProvider 流式分段（Main 同一请求时钟；未覆盖调用保持 unknown）：');
+        console.log('  #   请求KiB  图片KiB  格式化  测量税  流打开  首块  首语义  流读取  Main总计  边界差');
+        for (const sample of transportSamples) {
+            const metrics = sample.providerTransportMetrics;
+            const streamReadMs = metrics.firstChunkMs === undefined
+                ? undefined
+                : metrics.completedMs - metrics.firstChunkMs;
+            const boundaryDeltaMs = sample.durationMs - metrics.completedMs;
+            console.log('  ' + [
+                String(sample.seq).padStart(3),
+                (metrics.serializedRequestBytes / 1024).toFixed(1).padStart(9),
+                (metrics.imageDataUrlBytes / 1024).toFixed(1).padStart(8),
+                `${metrics.adapterFormatMs}ms`.padStart(7),
+                `${metrics.payloadMeasurementMs}ms`.padStart(7),
+                `${metrics.streamOpenMs}ms`.padStart(7),
+                String(metrics.firstChunkMs === undefined ? '-' : `${metrics.firstChunkMs}ms`).padStart(6),
+                String(metrics.firstSemanticDeltaMs === undefined ? '-' : `${metrics.firstSemanticDeltaMs}ms`).padStart(8),
+                String(streamReadMs === undefined ? '-' : `${streamReadMs}ms`).padStart(7),
+                `${metrics.completedMs}ms`.padStart(9),
+                `${boundaryDeltaMs}ms`.padStart(7)
+            ].join(' '));
+        }
+        const requestSizes = transportSamples
+            .map((sample) => sample.providerTransportMetrics.serializedRequestBytes)
+            .sort((a, b) => a - b);
+        const semanticLatencies = transportSamples
+            .map((sample) => sample.providerTransportMetrics.firstSemanticDeltaMs)
+            .filter((value) => Number.isSafeInteger(value))
+            .sort((a, b) => a - b);
+        console.log(
+            `  覆盖：${transportSamples.length}/${samples.length} 次；请求中位 ${(median(requestSizes) / 1024).toFixed(1)} KiB；`
+            + `首语义中位 ${semanticLatencies.length > 0 ? `${median(semanticLatencies)}ms` : 'unknown'}。`
+        );
+        console.log('  口径：边界差 = Renderer 端到端 attempt - Main 总计，包含 IPC/调度/终态投影，不等同于纯 IPC。');
+    }
     console.log('  看法：系统提示 + 工具 schema 是每次都重发的固定开销；历史增长是 ReAct 的轮次税。哪个大就先砍哪个。');
 }
 

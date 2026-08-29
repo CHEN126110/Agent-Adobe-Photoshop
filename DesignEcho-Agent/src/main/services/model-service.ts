@@ -38,6 +38,10 @@ import type {
     AgentToolStreamToolCall
 } from '../../shared/agent-tool-stream';
 import type { ProviderReportedTokenUsage } from '../../shared/provider-reported-token-usage';
+import {
+    buildProviderTransportMetrics,
+    type ProviderTransportMetrics
+} from '../../shared/provider-transport-metrics';
 import { extractThinkingFromModel, getThinkingRequestParams } from './thinking-extractor';
 import { getProviderAdapter, readOpenAICompatibleTokenUsage } from './provider-adapters';
 import type { ToolSchema, AdapterMessage, ProviderResponse } from './provider-adapters';
@@ -330,6 +334,59 @@ interface AccumulatedToolCall {
     id?: string;
     name?: string;
     argumentsText: string;
+}
+
+interface ProviderTransportPreparation {
+    startedAtMs: number;
+    adapterFormatMs: number;
+}
+
+interface ProviderRequestPayloadMeasurement {
+    serializedRequestBytes?: number;
+    imageDataUrlBytes: number;
+    durationMs: number;
+}
+
+function measureProviderImageDataUrlBytes(formatted: any): number {
+    let bytes = 0;
+    for (const message of Array.isArray(formatted?.messages) ? formatted.messages : []) {
+        for (const block of Array.isArray(message?.content) ? message.content : []) {
+            const url = typeof block?.image_url?.url === 'string' ? block.image_url.url : '';
+            if (url.startsWith('data:image/')) bytes += Buffer.byteLength(url, 'utf8');
+        }
+    }
+    return Number.isSafeInteger(bytes) ? bytes : 0;
+}
+
+function measureProviderRequestPayload(requestBody: unknown, formatted: any): ProviderRequestPayloadMeasurement {
+    const startedAtMs = Date.now();
+    let serializedRequestBytes: number | undefined;
+    try {
+        const serialized = JSON.stringify(requestBody);
+        if (typeof serialized === 'string') {
+            serializedRequestBytes = Buffer.byteLength(serialized, 'utf8');
+        }
+    } catch {
+        // The Provider SDK remains the serialization authority. Measurement failure stays unknown.
+    }
+    return {
+        ...(serializedRequestBytes === undefined ? {} : { serializedRequestBytes }),
+        imageDataUrlBytes: measureProviderImageDataUrlBytes(formatted),
+        durationMs: Math.max(0, Math.floor(Date.now() - startedAtMs))
+    };
+}
+
+function hasOpenAICompatibleSemanticDelta(choice: any): boolean {
+    const delta = choice?.delta;
+    if (!delta) return false;
+    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return true;
+    if (typeof delta.content === 'string' && delta.content) return true;
+    if (String(delta.refusal || '').trim()) return true;
+    return Array.isArray(delta.tool_calls) && delta.tool_calls.some((toolCall: any) => (
+        Boolean(String(toolCall?.id || '').trim())
+        || Boolean(String(toolCall?.function?.name || '').trim())
+        || Boolean(String(toolCall?.function?.arguments || ''))
+    ));
 }
 
 function safeParseToolArguments(value: string): Record<string, any> {
@@ -2386,6 +2443,7 @@ export class ModelService {
         signal: AbortSignal,
         emitChunk: (chunk: AgentToolStreamChunk) => void
     ): Promise<void> {
+        const transportStartedAtMs = Date.now();
         const debugProjectReferenceCandidate = prepareDebugProjectReferenceProviderCandidate(
             messages,
             'chat_with_tools_stream',
@@ -2464,6 +2522,7 @@ export class ModelService {
         const thinkingRequestParams = configuredModel
             ? this.resolveThinkingRequestParams(configuredModel, options)
             : {};
+        const adapterFormatStartedAtMs = Date.now();
         const formatted = adapter.formatMessages(messages, tools, {
             maxTokens: options?.maxTokens,
             temperature: options?.temperature,
@@ -2471,6 +2530,7 @@ export class ModelService {
             thinkingEnabled: options?.thinkingEnabled,
             thinkingRequestParams
         });
+        const adapterFormatMs = Math.max(0, Math.floor(Date.now() - adapterFormatStartedAtMs));
 
         if (provider === 'openrouter') {
             await this.streamOpenRouterWithTools(
@@ -2490,6 +2550,7 @@ export class ModelService {
                 client,
                 apiModelName,
                 formatted,
+                { startedAtMs: transportStartedAtMs, adapterFormatMs },
                 options?.timeoutMs,
                 signal,
                 emitChunk
@@ -2534,6 +2595,7 @@ export class ModelService {
         client: OpenAI,
         model: string,
         formatted: any,
+        transportPreparation: ProviderTransportPreparation,
         timeoutMs: number | undefined,
         signal: AbortSignal,
         emitChunk: (chunk: AgentToolStreamChunk) => void
@@ -2547,18 +2609,23 @@ export class ModelService {
         let providerFinishReason: string | undefined;
         let protocolInvalid = false;
         let providerRefusalSeen = false;
+        let firstChunkAtMs: number | undefined;
+        let firstSemanticDeltaAtMs: number | undefined;
+
+        const requestBody = {
+            model,
+            ...formatted,
+            stream: true,
+            ...(provider === 'deepseek' ? {
+                stream_options: { include_usage: true }
+            } : {})
+        };
+        const payloadMeasurement = measureProviderRequestPayload(requestBody, formatted);
 
         let stream: any;
         try {
-            stream = await client.chat.completions.create({
-                model,
-                ...formatted,
-                stream: true,
-                ...(provider === 'deepseek' ? {
-                    stream_options: { include_usage: true }
-                } : {})
-                // thinking 请求参数已由 adapter.formatMessages 写入 formatted；这里不按 provider 名覆盖。
-            } as any, {
+            // thinking 请求参数已由 adapter.formatMessages 写入 requestBody；这里不按 provider 名覆盖。
+            stream = await client.chat.completions.create(requestBody as any, {
                 signal,
                 timeout: resolveOpenAICompatibleTimeoutMs({ timeoutMs })
             } as any);
@@ -2568,11 +2635,18 @@ export class ModelService {
             }
             throw error;
         }
+        const streamOpenedAtMs = Date.now();
 
         try {
             for await (const chunk of stream as any) {
                 if (signal.aborted) return;
+                const chunkObservedAtMs = Date.now();
+                firstChunkAtMs = firstChunkAtMs ?? chunkObservedAtMs;
                 const choice = chunk?.choices?.[0];
+                if (firstSemanticDeltaAtMs === undefined
+                    && hasOpenAICompatibleSemanticDelta(choice)) {
+                    firstSemanticDeltaAtMs = chunkObservedAtMs;
+                }
                 if (choice?.finish_reason) {
                     const merged = mergeProviderFinishReason(
                         providerFinishReason,
@@ -2639,6 +2713,20 @@ export class ModelService {
         const citations = provider === 'xiaomi'
             ? normalizeProviderNativeToolCitations(annotations, { provider: 'xiaomi' })
             : [];
+        const providerTransportMetrics: ProviderTransportMetrics | undefined =
+            payloadMeasurement.serializedRequestBytes === undefined
+                ? undefined
+                : buildProviderTransportMetrics({
+                    startedAtMs: transportPreparation.startedAtMs,
+                    serializedRequestBytes: payloadMeasurement.serializedRequestBytes,
+                    imageDataUrlBytes: payloadMeasurement.imageDataUrlBytes,
+                    adapterFormatMs: transportPreparation.adapterFormatMs,
+                    payloadMeasurementMs: payloadMeasurement.durationMs,
+                    streamOpenedAtMs,
+                    firstChunkAtMs,
+                    firstSemanticDeltaAtMs,
+                    completedAtMs: Date.now()
+                });
         for (const toolCall of toolCalls) {
             emitChunk({ type: 'tool_call_ready', toolCall });
         }
@@ -2655,7 +2743,8 @@ export class ModelService {
                     ? [{ provider: 'xiaomi', toolType: 'web_search', rawUsage: webSearchUsage }]
                     : undefined,
                 stopReason,
-                streamMode: 'stream'
+                streamMode: 'stream',
+                ...(providerTransportMetrics ? { providerTransportMetrics } : {})
             }
         });
     }

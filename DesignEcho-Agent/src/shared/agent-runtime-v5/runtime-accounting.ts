@@ -12,6 +12,10 @@ import { sha256Hex } from './content-hash';
 import type { RuntimeStage } from './contracts';
 import type { ModelProviderFailureKind } from '../model-provider-failure';
 import type { ProviderReportedTokenUsage } from '../provider-reported-token-usage';
+import {
+    readProviderTransportMetrics,
+    type ProviderTransportMetrics
+} from '../provider-transport-metrics';
 
 export type RuntimeAccountingStage = RuntimeStage | 'unscoped';
 
@@ -66,6 +70,8 @@ export interface RuntimePromptShapeSample {
     /** Provider 完整报告且与 inputTokens 守恒的缓存未命中输入 token；缺失保持 unknown。 */
     cacheMissInputTokens?: number;
     durationMs: number;
+    /** Main-process size/timing facts for the physical Provider attempt, when instrumented. */
+    providerTransportMetrics?: ProviderTransportMetrics;
     /** 系统提示字符数（策略 + 原则 + 知识 + 项目状态 + 历史摘要） */
     systemChars: number;
     /** 非系统消息（用户 / 助手 / 工具结果）总字符数 */
@@ -290,6 +296,7 @@ const RUNTIME_ACCOUNTING_PROMPT_SAMPLE_ALLOWED_KEYS = new Set([
     'cacheHitInputTokens',
     'cacheMissInputTokens',
     'durationMs',
+    'providerTransportMetrics',
     'systemChars',
     'historyChars',
     'reasoningChars',
@@ -542,6 +549,10 @@ export function validateRuntimeAccountingDigest(
             )) {
                 return { ok: false, reason: 'Runtime accounting prompt cache usage 非法或与 inputTokens 不守恒' };
             }
+            if (sample.providerTransportMetrics !== undefined
+                && !readProviderTransportMetrics(sample.providerTransportMetrics)) {
+                return { ok: false, reason: 'Runtime accounting Provider transport 指标非法' };
+            }
         }
     }
 
@@ -676,7 +687,12 @@ function clonePromptShapeSamples(
     values: readonly RuntimePromptShapeSample[] | undefined
 ): RuntimePromptShapeSample[] | undefined {
     if (!Array.isArray(values) || values.length === 0) return undefined;
-    return values.map((sample) => ({ ...sample }));
+    return values.map((sample) => ({
+        ...sample,
+        ...(sample.providerTransportMetrics
+            ? { providerTransportMetrics: { ...sample.providerTransportMetrics } }
+            : {})
+    }));
 }
 
 function cloneModelFailureSamples(
@@ -1000,8 +1016,20 @@ export function recordRuntimeModelCall(input: {
             === Number(input.usage?.inputTokens);
     const cacheHitInputTokens = hasReportedCacheUsage ? Number(rawCacheHitInputTokens) : 0;
     const cacheMissInputTokens = hasReportedCacheUsage ? Number(rawCacheMissInputTokens) : 0;
+    let sanitizedPromptShape = input.promptShape;
+    if (input.promptShape) {
+        const {
+            providerTransportMetrics: rawProviderTransportMetrics,
+            ...basePromptShape
+        } = input.promptShape;
+        const providerTransportMetrics = readProviderTransportMetrics(rawProviderTransportMetrics);
+        sanitizedPromptShape = {
+            ...basePromptShape,
+            ...(providerTransportMetrics ? { providerTransportMetrics } : {})
+        };
+    }
     const previousSamples = Array.isArray(input.ledger.promptShapeSamples) ? input.ledger.promptShapeSamples : [];
-    const promptShapeSamples = input.promptShape
+    const promptShapeSamples = sanitizedPromptShape
         ? [
             ...previousSamples,
             {
@@ -1010,7 +1038,7 @@ export function recordRuntimeModelCall(input: {
                 ...(hasReportedUsage ? { inputTokens, outputTokens } : {}),
                 ...(hasReportedCacheUsage ? { cacheHitInputTokens, cacheMissInputTokens } : {}),
                 durationMs,
-                ...input.promptShape
+                ...sanitizedPromptShape
             }
         ].slice(-MAX_PROMPT_SHAPE_SAMPLES)
         : previousSamples;

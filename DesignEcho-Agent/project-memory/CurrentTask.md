@@ -1,5 +1,46 @@
 # Current Task
 
+## 2026-08-29 DESIGN-EFFICIENCY-101：Provider 流式阶段与请求负载进入现有 Runtime Accounting
+
+### 目标
+
+把当前“模型调用总耗时”拆成可归因的 Main / Provider 流式阶段，并记录 Provider SDK 实际收到的序列化请求体与图像 data URL 规模。D-101 只回答慢在请求准备、流建立、首块、首个有效输出、持续生成还是 Renderer/Main 边界，不改变 Prompt、模型、思考、Token 预算、Tool surface、重试、权限、完成判定或 Photoshop 行为。
+
+### 当前事实
+
+- r32 普通重发共 32 次模型调用、约 578,942ms 模型耗时和 2,619,699 input tokens；DeepSeek 输出吞吐高于 r31 Codex，但总墙钟仍更长。现有 `promptShapeSamples` 已能量系统提示、历史、Tool schema、图像数和 Provider token，却只有一个 `durationMs`，无法区分大请求上传 /排队、首 token 等待和长输出流。
+- D-099 已把 DeepSeek cache hit / miss 接入同一 Runtime Accounting。缓存命中仍不能回答流建立、首语义延迟和持续生成分别占多少，也不能证明完整历史与 40k–50k 字符 Tool schema 是合理成本。
+- 当前正式 Agent 工具路径使用 OpenAI-compatible stream；Main 进程拥有 Provider 格式化结果、请求对象和原始流时间点，Renderer 只拥有端到端 physical attempt。由 Main 采集、transport attempt 绑定、Runtime Accounting 持久化可以复用唯一 owner，不需要第二 tracing 系统。
+- 本切片从 D-100 干净提交 `9e34d8b9` 建立独立 worktree；D-097 继续承担 r32 reconciliation / r33 单变量真机。实时只读刷新确认用户普通 DesignEcho 仍占用 8765–8769，Photoshop 有 6 个打开文档且 5 个 dirty，因此本切片不启动、停止或替换应用，也不触碰 Photoshop。
+
+### 实施边界
+
+- 共享 `provider-transport-metrics/v1` 只包含：序列化 JSON 请求字节、图像 data URL 字节、adapter 格式化耗时、测量税、流建立、首块、首语义和 Main 完成时间；不保存消息、Tool schema 正文、图像、响应、Header、URL、Key 或错误正文。
+- Main 对交给 OpenAI-compatible SDK 的同一个 request object 做 UTF-8 字节测量；额外 JSON 序列化的观测成本单独记录，不能把监测开销藏进 Provider 等待。
+- 只有单调时间、非负安全整数、`imageDataUrlBytes <= serializedRequestBytes` 的完整对象才能跨 IPC；未知字段、非单调时间和夹带原始载荷全部拒绝。
+- Renderer 将指标绑定到现有 `ModelTransportAttemptAccounting`；唯一 Runtime Accounting 把它放入对应 `promptShapeSample`。`debug:runs` 显示逐调用分段和覆盖率；fallback、非流式与失败路径暂未取得完整指标时保持 unknown，不补 0。
+- 指标是 observation-only：不进入 Agent Prompt / UI，不执行预算、路由、重试、权限、质量或完成决策；D-101 不实施任何性能优化。
+
+### 下一步
+
+1. `[已完成]` Main → stream response → Renderer physical attempt → Runtime Accounting digest → RunRecord / `debug:runs` 接线完成。
+2. `[已完成]` 现有设计作者权与运行事实测试新增正常、时间乱序、未知字段 /原始载荷、深拷贝和持久化攻击；Main /Renderer 类型检查、简化棘轮、Runtime 与业务边界审计通过。
+3. `[已完成]` 编译产物上的假 DeepSeek 流真实执行采集方法，保留 Tool call、usage 与 cache hit / miss，同时返回请求字节、图像字节和流阶段时间。
+4. `[已完成]` Agent /UXP production build 与唯一一次完整 `maintenance:validate` 58/58 已通过；最终差异审查、项目状态投影和独立提交均已收口。
+5. `[后续独立]` r33 仍使用 D-097 单变量基线；之后在包含 D-099 /D-101 的固定 DeepSeek Case 上采集真实覆盖，再按证据分别 A/B 调用数、历史、Tool schema、重复观察和无效参数。
+
+### 验证与未知
+
+- 已验证纯逻辑校验、持久化、类型与假 DeepSeek 工具流；尚未用真实 DeepSeek 网络请求证明 Provider 实际阶段分布、请求规模与 cache 命中率。
+- `streamOpenMs` 是从 Main 请求入口到 SDK 返回 stream handle 的累计时间；`firstSemanticDeltaMs` 是首个非空 reasoning /content /Tool delta；Renderer attempt 与 Main 完成的差值还包含 IPC、调度和终态投影，不能直接命名为纯 IPC。
+- 当前只观测成功的 OpenAI-compatible 流。失败 /fallback 未覆盖必须显示 unknown；不能因为覆盖缺失就推断耗时为 0，也不能用本切片宣称速度已经提高。
+
+### 状态
+
+`validated / code_complete / focused_attacks_typechecks_and_adjacent_audits_passed / compiled_fake_deepseek_stream_probe_passed / agent_uxp_production_builds_and_full_core_58_passed / independent_commit_complete / live_deepseek_pending / no_photoshop_write`
+
+---
+
 ## 2026-08-29 DESIGN-KNOWLEDGE-100：电商单画布设计知识候选研究包
 
 ### 目标
