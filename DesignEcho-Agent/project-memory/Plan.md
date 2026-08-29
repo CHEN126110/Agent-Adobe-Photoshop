@@ -1,6 +1,6 @@
 # Current Implementation Plan
 
-## 2026-08-29 唯一当前顺序：`D-095 → D-096 → D-097 → D-098（隔离）→ D-099（观测隔离）→ D-100（研究候选，不入生产）→ D-101（观测隔离）→ r32 reconciliation → r33`
+## 2026-08-29 唯一当前顺序：`D-095 → D-096 → D-097 → D-098（隔离）→ D-099（观测隔离）→ D-100（研究候选，不入生产）→ D-101（观测隔离）→ D-102（语义集成隔离）→ r32 reconciliation → r33 → D-102 真机复验`
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 
@@ -29,9 +29,10 @@
 23. `[D-099 已完成 / 独立 worktree]`：把 DeepSeek 官方 cache hit / miss token 沿现有 Provider → Runtime Accounting → RunRecord / `debug:runs` 链路保存。只有完整守恒数据入账；流式请求显式启用 usage 并消费 `choices=[]` 尾块。专项、类型、Agent /UXP production build、完整核心闸门 58/58、最终差异审查与独立提交均已完成；真实 DeepSeek 命中率采集后置。该切片不进入 D-097 的 r33 单变量基线。
 24. `[D-100 已完成 / 独立 worktree]`：基于 W3C、Figma、IBM、Adobe、Shopify、Baymard、三个 Eagle 锚点与 C-1204/C-1105 用户成稿完成设计知识差异审查。只保留中文标题断行、商品照片表达模式/合成一致性、目标变体缩略图显著性三条未发布候选；首个 A/B 固定为 C-1105 隔离未见 Case，B1 只测试 C-02。生产 Knowledge /Recipe /Evaluation 未改变，文档快速检查、最终审查与独立提交均已完成。
 25. `[D-101 已完成 / 独立 worktree]`：OpenAI-compatible 成功流的请求 JSON /图像 data URL 字节、adapter /测量税、stream open、首块、首语义和 Main 完成时间已沿现有 physical attempt → Runtime Accounting → RunRecord / `debug:runs` 接线。专项攻击、编译产物假流、Main /Renderer 类型检查、相邻审计、Agent /UXP production build、唯一一次完整核心闸门 58/58 与独立代码提交均已完成。最小真实 DeepSeek 双请求进一步取得 2/2 cache usage 与阶段覆盖：冷请求 872ms，精确重复前缀第二次命中 256/313 input tokens、完成 765ms；没有执行 Tool 或触碰 Photoshop。完整 Case /RunRecord 采集仍后置，该切片不进入 D-097 的 r33 单变量基线。
-26. `[待完成 r32 reconciliation]`：r32 fixture 设计文档已经关闭，但用户启动的普通 DesignEcho 当前占用默认端口且未绑定 r32。最新只读刷新确认 Photoshop 当前有 5 个打开文档且 4 个 dirty，活动文档是外部 Eagle 素材；不保存、关闭或丢弃这些文档。待默认端口自然释放后用 clean Debug Runtime 完成唯一 reconciliation，不移动账本或跳过 `unreconciled_live_attempt_exists`。
-27. `[待完成 r33]`：对账后使用已冻结的全新 r33 fixture，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；验证 D-095 正确首写恢复、D-096 loader 互斥、D-097 Final Judge 完整终态、外部 dirty 文档零改动与同 revision PSD/JPG。
-28. `[条件后置]`：r33 技术成功后，对候选、用户成稿和三个固定 Eagle 锚点做匿名质量比较；D-100 的每条知识候选必须单独 A/B，不能把三条一起塞入 Prompt。性能治理使用 D-099 cache 与 D-101 阶段 /负载真实证据，优先压缩全历史重放、重复 Capability 发现、无效 compose 参数和重复快照，不通过减少必要观察换速度。
+26. `[D-102 代码与工程验证完成 / 独立 worktree]`：从 D-101 `c0b358fb` 逐提交移植已真机暴露过的语义抠图工作流、Agent 实例引导、目标守恒、scope owner、sourceBounds 和同步读回修复；旧项目记忆与旧依赖声明未合并。依赖预检、专项攻击、作者权、181 Tool 注册、Main /Renderer 类型、Agent /UXP production build、相邻审计、文件 parity 和唯一一次完整核心闸门 59/59 均通过。D-097 不含本改动；D-102 exact build 真机复验后置于 r33。
+27. `[待完成 r32 reconciliation]`：r32 fixture 设计文档已经关闭，但用户启动的普通 DesignEcho 当前占用默认端口且未绑定 r32。最新只读刷新确认 Photoshop 当前有 5 个打开文档且 4 个 dirty，活动文档是外部 Eagle 素材；不保存、关闭或丢弃这些文档。待默认端口自然释放后用 clean Debug Runtime 完成唯一 reconciliation，不移动账本或跳过 `unreconciled_live_attempt_exists`。
+28. `[待完成 r33]`：对账后使用已冻结的全新 r33 fixture，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；验证 D-095 正确首写恢复、D-096 loader 互斥、D-097 Final Judge 完整终态、外部 dirty 文档零改动与同 revision PSD/JPG。
+29. `[条件后置]`：r33 技术成功后，先用 D-102 exact clean Agent /UXP build 复跑固定语义抠图案例，再对候选、用户成稿和三个固定 Eagle 锚点做匿名质量比较。D-100 的每条知识候选必须单独 A/B；性能治理使用 D-099 /D-101 真实证据，不通过减少必要观察换速度。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

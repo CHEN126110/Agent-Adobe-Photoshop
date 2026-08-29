@@ -1,5 +1,51 @@
 # Current Task
 
+## 2026-08-29 SEMANTIC-MATTING-INTEGRATION-102：语义抠图能力进入当前可靠性与观测主链
+
+### 目标
+
+1. 把已在独立分支完成真实 Photoshop 固定案例的语义抠图工作流移植到 D-101 当前主链，保留 D-094～D-101 的文档隔离、Runtime lease、完整终态、Experience 发布边界、DeepSeek cache 与 Provider 阶段观测。
+2. 保持单一执行责任链：Agent /用户选择语义目标与实例引导；Main Host 复用现有 workflow dispatcher；UXP 负责绑定 document /history /layer 的原子取像与蒙版写入；真实收据和同目标读回决定是否完成。
+3. D-097 继续作为 r32 reconciliation / r33 单变量真机基线；D-102 只在独立 worktree 集成和验证，不抢占当前普通 DesignEcho，不改变 Photoshop 现场。
+
+### 当前事实
+
+- 原语义分支 0c404cda 已用 DSC08187.jpg 的两个可见袜子实例完成一次隔离 Main → UXP → Photoshop 固定案例：45.3 秒完成检测、MobileSAM 分割、BiRefNet 边缘融合、二进制 mask 写入和 user-mask-enabled 读回，history 4091→4092。该事实只覆盖原提交与一个可见双袜 mask 案例。
+- 原分支与 D-097 /D-101 从 de628ade 分叉，29 个语义变更文件与可靠性线存在 11 个重叠文件；直接 merge 会同时覆盖当前项目记忆、Tool /preload、执行器和 UXP 测试，破坏 r33 单变量基线。
+- 原分支的旧依赖声明不自洽：根 @anthropic-ai/sdk ^0.30.0 与 @anthropic-ai/claude-agent-sdk ^0.3.241 的 peer >=0.93.0 冲突，精确 npm ci 在写入前以 ERESOLVE 停止；D-097 /D-101 已使用 @anthropic-ai/sdk ^0.122.0，当前依赖预检为 Agent 636/636、UXP 148/148。
+- D-102 从 D-101 证据提交 c0b358fb 建立独立 worktree，按原顺序移植五个功能提交并形成 09cfbbff → e7f1f9e9 → 6c05c51a → 0f702f4c → f6db8b27。旧分支的四份项目记忆没有进入集成提交；冲突只在变更边界、模型下载归类和 UXP 双方测试组合处按 owner 合并。
+- 当前普通 DesignEcho PID 48836 仍占用 8765–8769，Host build identity 不可验证；Photoshop 仍有 5 个文档、4 个 dirty。D-102 尚未加载到用户应用或 Photoshop，本切片没有执行 Photoshop Tool 或写入画面。
+
+### 实施边界
+
+- 不新增第二 Runtime、Task Store、Capability Registry、事务 owner、评测 Gate 或 Release owner；公开 removeBackground 只进入现有 Main 完整工作流，不能把 UXP 导出原子动作冒充完成。
+- Harness 只校验版本化正负点、候选 /选中 /未选计数、document /history /layer、source bounds、取消和 mutation receipt；不得替 Agent 选择目标、候选或遮挡恢复内容。
+- 已知截断、歧义点、部分检测、部分分割、Provider 内部坐标冒充文档坐标、目标漂移或读回缺失全部失败关闭；不得恢复整层回退、活动图层回退或空 Alpha 通道假成功。
+- 不修补旧语义分支 lock，不用 --force / --legacy-peer-deps 制造假绿；当前主链的依赖迁移事实是唯一安装基线。
+- D-102 不进入 r33；r33 只验证 D-095～D-097。D-102 exact build 的固定真机复验在 r33 后独立进行。
+
+### 下一步
+
+1. [已完成] 五个语义功能提交已移植到 D-101 主链，旧项目记忆与过时依赖声明未合并。
+2. [已完成] 依赖完整性、语义生命周期、SAM scope、Photoshop workflow dispatch、设计作者权、181 Tool 注册、Main /Renderer 类型检查、UXP 核心测试与 production build、业务 /Runtime /Capability /Skill /Executor /Handler 相邻审计通过。
+3. [已完成] 唯一一次完整 maintenance:validate 59/59 通过，新增 Photoshop workflow dispatch 与原有 D-094～D-101、Agent /UXP 核心检查共同闭合。
+4. [已完成] Agent production build、最终差异 /边界 /编码审查与文件 parity 检查通过；D-102 独立功能提交和状态提交均已收口。
+5. [后续真机] r32 对账与 r33 完成后，加载 D-102 exact clean Agent /UXP build，在隔离 Photoshop 副本复跑固定双袜案例；核对目标守恒、source bounds、同 document /history /layer、视觉结果和 mutation readback。
+
+### 验证与未知
+
+- 已验证：D-102 当前源码的专项攻击、作者权、工具注册、类型检查、Agent /UXP production build 与唯一一次完整核心闸门 59/59 均通过；依赖树与当前 lock 精确一致。
+- 已验证：原语义分支 18 个未与 D-101 重叠的功能文件在 D-102 中逐字节一致；11 个重叠文件只在当前 owner 处合并，旧项目记忆没有进入，HEAD 无冲突标记，提交差异检查通过。
+- 已验证：原 0c404cda 语义链曾通过一个真实 Photoshop 固定案例；该证据证明工作流和两个真机根因，不自动证明 D-102 新集成提交已经 photoshop_e2e_verified。
+- 未验证：D-102 exact build 的真实 Photoshop 运行、重复稳定性、selection /channel 独立输出、任意商品 /任意遮挡，以及整个专业设计 Agent 的商业质量。
+- 当前不能宣称语义能力已进入用户正在运行的 DesignEcho，也不能用旧分支截图或专项绿色替代 D-102 真机复验。
+
+### 状态
+
+validated / integration_code_complete / dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_and_full_core_59_passed / final_parity_review_passed / independent_integration_and_state_commits_complete / exact_d102_photoshop_canary_pending / d097_r33_baseline_unchanged / no_photoshop_write
+
+---
+
 ## 2026-08-29 DESIGN-EFFICIENCY-101：Provider 流式阶段与请求负载进入现有 Runtime Accounting
 
 ### 目标

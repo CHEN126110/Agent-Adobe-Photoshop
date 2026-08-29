@@ -2,6 +2,15 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-102 语义抠图能力集成到 D-101 当前主链
+
+- 原 `0c404cda` 分支已完成一次 `DSC08187.jpg` 双袜固定 Photoshop E2E，证明语义检测、Agent 正负点实例引导、MobileSAM /BiRefNet、二进制 mask 写入、history `4091→4092` 和 `user-mask-enabled` 读回可以闭合；该证据不自动覆盖新集成提交。
+- D-102 从 D-101 `c0b358fb` 建立独立 worktree，逐提交移植 MCP 完整工作流、目标实例绑定、scope owner、Provider sourceBounds 和 synchronous batchPlay 读回修复。D-097 未改变，仍是 r32 /r33 单变量基线。
+- 旧语义分支的 `@anthropic-ai/sdk ^0.30.0` 与 Claude Agent SDK peer 冲突；没有用 `--force` 或兼容兜底修 lock。D-102 复用当前主链 `^0.122.0`，依赖预检 Agent 636/636、UXP 148/148 通过。
+- D-102 专项语义契约、SAM、Photoshop workflow dispatch、设计作者权、181 Tool 注册、Main /Renderer 类型检查、Agent /UXP production build、业务 /Runtime /Capability /Skill /Executor /Handler 审计和唯一一次完整 `maintenance:validate` 59/59 均通过。
+- 原语义分支 18 个未与 D-101 重叠的功能文件在 D-102 中逐字节一致；11 个重叠文件按当前 owner 合并，旧项目记忆未进入，HEAD 无冲突标记，提交范围为 25 个功能文件。该工程证据仍不能替代 D-102 exact build 的真实 Photoshop canary。
+- 当前用户 DesignEcho /Photoshop 未加载 D-102；默认端口仍由 PID 48836 占用，Host identity 不可验证，5 个文档中 4 个 dirty。本切片没有执行 Photoshop Tool 或修改画面，D-102 exact build 的固定真机复验仍为未验证。
+
 ## 2026-08-29 D-101 Provider 流式阶段与请求负载观测
 
 - r32 普通重发的模型总耗时、token、Prompt 体量已经可见，但仍无法拆分请求准备、流建立、首块、首语义和持续输出。D-101 复用现有 physical transport attempt 与 Runtime Accounting，不新增 tracing Store、Span Runtime 或性能 Gate。
