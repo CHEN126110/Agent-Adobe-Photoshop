@@ -8,8 +8,8 @@
 - Main 只对当前正式路径使用的 OpenAI-compatible 成功流采集 `serializedRequestBytes / imageDataUrlBytes / adapterFormatMs / payloadMeasurementMs / streamOpenMs / firstChunkMs / firstSemanticDeltaMs / completedMs`；非流式、fallback 和失败路径保持 unknown。
 - 共享边界拒绝非安全整数、图像字节大于总请求、非单调时间和任何未知字段。Runtime digest 不保存 Prompt、Tool schema、图片、响应、Header、Key、URL 或错误正文；指标也不进入 Agent Prompt、预算、路由、权限、质量或完成判断。
 - 现有设计作者权与运行事实测试已覆盖合法投影、时间乱序、未知字段 /原始载荷、深拷贝和持久化篡改；Main /Renderer 类型检查、简化棘轮、Runtime 与业务边界审计、变更边界均通过。编译产物假 DeepSeek 流同时证明 Tool call、usage、cache hit / miss 和新阶段指标可以共同闭合。
-- Agent /UXP production build、完整 `maintenance:validate` 58/58、最终差异审查和独立提交均已完成；真实 DeepSeek 网络阶段分布与观测覆盖仍待后续固定 Case 采集，当前不能宣称性能已经改善。
-- 实时只读现场为：默认 8765–8769 仍由用户普通 DesignEcho PID 48836 占用；Host build identity 不可验证；UXP 为 clean D-096；Photoshop 有 6 个文档且 5 个 dirty。本切片没有启动、停止、替换应用或写入 Photoshop。
+- Agent /UXP production build、完整 `maintenance:validate` 58/58、最终差异审查和独立代码提交均已完成。提交后最小真实 DeepSeek 双请求取得 2/2 usage 与 transport 覆盖：两次请求均为 582 bytes、313 input /53 output；冷请求 cache 0/313、首语义 544ms、完成 872ms，第二次 cache hit 256 /miss 57、首语义 469ms、完成 765ms。该 micro-canary 证明真实 Provider 协议和指标接线，不证明完整 Agent 性能或稳定提速。
+- 最新实时只读现场为：默认 8765–8769 仍由用户普通 DesignEcho PID 48836 占用；Host build identity 不可验证；UXP 为 clean D-096；Photoshop 有 5 个文档且 4 个 dirty，活动文档是外部 Eagle 素材。本切片没有启动、停止、替换应用或写入 Photoshop；真实 Provider canary 未执行返回的 Tool call。
 
 ## 2026-08-29 D-100 电商单画布设计知识候选研究
 

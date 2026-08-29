@@ -11,7 +11,8 @@
 - r32 普通重发共 32 次模型调用、约 578,942ms 模型耗时和 2,619,699 input tokens；DeepSeek 输出吞吐高于 r31 Codex，但总墙钟仍更长。现有 `promptShapeSamples` 已能量系统提示、历史、Tool schema、图像数和 Provider token，却只有一个 `durationMs`，无法区分大请求上传 /排队、首 token 等待和长输出流。
 - D-099 已把 DeepSeek cache hit / miss 接入同一 Runtime Accounting。缓存命中仍不能回答流建立、首语义延迟和持续生成分别占多少，也不能证明完整历史与 40k–50k 字符 Tool schema 是合理成本。
 - 当前正式 Agent 工具路径使用 OpenAI-compatible stream；Main 进程拥有 Provider 格式化结果、请求对象和原始流时间点，Renderer 只拥有端到端 physical attempt。由 Main 采集、transport attempt 绑定、Runtime Accounting 持久化可以复用唯一 owner，不需要第二 tracing 系统。
-- 本切片从 D-100 干净提交 `9e34d8b9` 建立独立 worktree；D-097 继续承担 r32 reconciliation / r33 单变量真机。实时只读刷新确认用户普通 DesignEcho 仍占用 8765–8769，Photoshop 有 6 个打开文档且 5 个 dirty，因此本切片不启动、停止或替换应用，也不触碰 Photoshop。
+- 本切片从 D-100 干净提交 `9e34d8b9` 建立独立 worktree；D-097 继续承担 r32 reconciliation / r33 单变量真机。最新只读刷新确认用户普通 DesignEcho 仍占用 8765–8769，Host build identity 不可验证，Photoshop 有 5 个打开文档且 4 个 dirty，活动对象是外部 Eagle 素材，因此本切片不启动、停止或替换应用，也不触碰 Photoshop。
+- 提交后真实 DeepSeek 双请求 micro-canary 使用同一个 `deepseek-v4-flash-vision-exp`、相同 582-byte 请求和相同最小 Tool schema：冷请求 313 input /53 output、cache hit 0 /miss 313、首语义 544ms、Main 完成 872ms；第二次 hit 256 /miss 57、首语义 469ms、Main 完成 765ms。两次都只返回 `telemetryProbe` Tool call，实际 Tool 执行为 0，密钥未进入命令参数、日志或输出。
 
 ### 实施边界
 
@@ -27,17 +28,17 @@
 2. `[已完成]` 现有设计作者权与运行事实测试新增正常、时间乱序、未知字段 /原始载荷、深拷贝和持久化攻击；Main /Renderer 类型检查、简化棘轮、Runtime 与业务边界审计通过。
 3. `[已完成]` 编译产物上的假 DeepSeek 流真实执行采集方法，保留 Tool call、usage 与 cache hit / miss，同时返回请求字节、图像字节和流阶段时间。
 4. `[已完成]` Agent /UXP production build 与唯一一次完整 `maintenance:validate` 58/58 已通过；最终差异审查、项目状态投影和独立提交均已收口。
-5. `[后续独立]` r33 仍使用 D-097 单变量基线；之后在包含 D-099 /D-101 的固定 DeepSeek Case 上采集真实覆盖，再按证据分别 A/B 调用数、历史、Tool schema、重复观察和无效参数。
+5. `[已完成·最小真实 Provider canary]` D-099 /D-101 已取得两次同请求 cache 与阶段事实；r33 仍使用 D-097 单变量基线。之后再在包含 D-099 /D-101 的固定完整 Case 上采集真实 RunRecord 覆盖，并分别 A/B 调用数、历史、Tool schema、重复观察和无效参数。
 
 ### 验证与未知
 
-- 已验证纯逻辑校验、持久化、类型与假 DeepSeek 工具流；尚未用真实 DeepSeek 网络请求证明 Provider 实际阶段分布、请求规模与 cache 命中率。
+- 已验证纯逻辑校验、持久化、类型、假流和最小真实 DeepSeek 网络工具流。真实 canary 证明 D-099 usage 尾块与 D-101 阶段指标能同时工作，也证明精确重复前缀在第二次请求命中 256 /313 input tokens；它不是完整 Agent /RunRecord、视觉输入或 r32 大上下文性能证明。
 - `streamOpenMs` 是从 Main 请求入口到 SDK 返回 stream handle 的累计时间；`firstSemanticDeltaMs` 是首个非空 reasoning /content /Tool delta；Renderer attempt 与 Main 完成的差值还包含 IPC、调度和终态投影，不能直接命名为纯 IPC。
 - 当前只观测成功的 OpenAI-compatible 流。失败 /fallback 未覆盖必须显示 unknown；不能因为覆盖缺失就推断耗时为 0，也不能用本切片宣称速度已经提高。
 
 ### 状态
 
-`validated / code_complete / focused_attacks_typechecks_and_adjacent_audits_passed / compiled_fake_deepseek_stream_probe_passed / agent_uxp_production_builds_and_full_core_58_passed / independent_commit_complete / live_deepseek_pending / no_photoshop_write`
+`validated / code_complete / focused_attacks_typechecks_and_adjacent_audits_passed / compiled_fake_and_minimal_live_deepseek_stream_probes_passed / agent_uxp_production_builds_and_full_core_58_passed / independent_code_commit_and_live_evidence_commit_complete / full_case_runrecord_pending / no_photoshop_write`
 
 ---
 
