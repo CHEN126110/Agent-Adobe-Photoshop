@@ -1383,8 +1383,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             referenceNote: { type: 'string', description: '可选：一句话说明参考是什么、为什么选它对照。' },
             deliverable: { type: 'string', description: '交付物名（点击图 / 详情页首屏 / SKU 组合图…）。' },
             rationale: { type: 'object', properties: { purpose: { type: 'string' }, claim: { type: 'string' }, materials: { type: 'string' }, structure: { type: 'string' }, scale: { type: 'string' }, visual: { type: 'string' }, copySource: { type: 'string' } }, description: '你的设计说明（与 composeDesign 同结构），评审据此判断说的和做的是否一致。' },
-            hardFindings: { type: 'array', items: { type: 'string' }, description: '可选：你希望隔离评审重点核对的画面观察或疑点。这是模型自报的待验证假设，不是规则硬伤或已证事实；评审只能在像素确实支持时采纳。' },
-            calibration: { type: 'array', items: { type: 'object', properties: { kind: { type: 'string', enum: ['good', 'bad'] }, why: { type: 'string' }, ref: { type: 'string' } } }, description: '可选：用户的品味校准样本（好 / 差各一句为什么）。' }
+            hardFindings: { type: 'array', items: { type: 'string' }, description: '可选：你希望隔离评审重点核对的画面观察或疑点。这是模型自报的待验证假设，不是规则硬伤或已证事实；评审只能在像素确实支持时采纳。' }
         })
     },
     {

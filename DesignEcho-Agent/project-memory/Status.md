@@ -2,6 +2,13 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-098 未发布经验与模型伪校准退出生产 Evaluation
+
+- 当前代码审计证实两条发布旁路：自动晋升的 provisional evaluation finding 会由专用 helper 注入 `evaluateDesign`，且模型可见 Tool schema 允许直接传入 `calibration`。两者都绕过了当前唯一 Experience Publisher /项目校准发布边界。
+- D-098 删除 provisional 生产读取 helper、executor 注入和 Prompt 字段，同时删除模型可见 `evaluateDesign.calibration` 与参数解析。候选累计、provisional 策展、否决回退、人工 /离线送审以及正式 `recordDesignVerdict → published evaluation_calibration` 路径保持不变。
+- 现有学习候选专项新增攻击断言：试用状态继续存在但不进入生产，模块不再导出旁路，旧参数不能污染 Prompt，生产源码不读该字段，Tool schema 也不允许模型伪造用户校准。专项、设计作者权、Tool 注册、Main /Renderer 类型检查、Agent /UXP production build、唯一一次完整 `maintenance:validate` 58/58、最终差异审查与独立提交均已完成。
+- 本切片在 D-097 提交上独立开发，没有启动或替换 DesignEcho、没有连接 Photoshop、没有修改 r32/r33 fixture。代码绿色只证明发布边界收口，不证明设计质量提高。
+
 ## 2026-08-29 D-097 DeepSeek Final Judge 完整终态代码收口
 
 - r32 普通重发的最后一次模型调用是 3 图、0 Tool 的 Final Judge：输入 3,907、输出恰好 4,320 tokens、耗时 40,205ms；12 项断言的代码预算也恰好是 4,320。Provider accounting 无调用失败，但协议最终为 `judge_unavailable`、质量覆盖 0/12。原始 `finish_reason` 没有进入 RunRecord，因此当前把隐藏思考触发 `max_tokens` 视为最强可证伪解释，不冒充真机已证实。

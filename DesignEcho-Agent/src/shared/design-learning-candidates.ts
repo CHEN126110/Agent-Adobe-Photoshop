@@ -522,7 +522,8 @@ export function recordDesignRunOutcome(
 /**
  * 保守自动晋升（晋升层，2026-08-23 自主沉淀 P1）：观察在 ≥3 次评审中重复、来自 ≥2 次不同运行、
  * 关联稿件 ≥1 次导出交付且 0 次否决 → provisional 试用。依据全部是 Harness 采集的确定性行为事实，
- * 不是模型自评；provisional 不进入任何生产消费面（消费在 P2 单独治理），转正与回退仍受本账本管辖。
+ * 不是模型自评；provisional 只用于人工 / 离线评测排队，不进入生产 Evaluation、Prompt 或 Knowledge，
+ * 转正与回退仍受本账本管辖。
  */
 export function applyAutoPromotionRules(
     sourceLedger: DesignLearningLedger,
@@ -624,23 +625,6 @@ export function listPromotableCandidates(sourceLedger: DesignLearningLedger): De
 }
 
 /** 生产评审器唯一允许读取的经验出口：已发布到 evaluation_calibration 的结构化样本。 */
-/**
- * 自主沉淀 P2（2026-08-24）：行为验证晋升的试用经验进入评审上下文的唯一出口。
- * 只回 provisional（≥3 次任务重复 + 关联稿件 ≥1 次交付 + 0 否决的行为事实验证），
- * 上限默认 3 条、按支持度降序；消费端必须标注「非用户拍板，仅作观察线索」。
- */
-export function listProvisionalExperienceNotes(
-    sourceLedger: DesignLearningLedger,
-    limit: number = 3
-): string[] {
-    const ledger = normalizeDesignLearningLedger(sourceLedger);
-    return ledger.candidates
-        .filter((item) => item.status === 'provisional' && item.kind === 'evaluation_finding')
-        .sort((a, b) => (b.support || 0) - (a.support || 0))
-        .slice(0, Math.max(0, limit))
-        .map((item) => item.text);
-}
-
 export function listPublishedEvaluationCalibrationSamples(
     sourceLedger: DesignLearningLedger,
     limit: number = 10

@@ -1,7 +1,9 @@
 // 经验治理纯逻辑回归：候选隔离、用户校准发布、v1 迁移、作用域去重和生产读取出口。
+const fs = require('fs');
 const path = require('path');
 const root = path.resolve(__dirname, '..');
 require('ts-node').register({ transpileOnly: true, project: path.join(root, 'tsconfig.main.json') });
+const designLearningCandidates = require(path.join(root, 'src/shared/design-learning-candidates.ts'));
 const {
     addDesignLearningCandidate,
     applyAutoPromotionRules,
@@ -11,12 +13,17 @@ const {
     decideDesignLearningCandidate,
     listPromotableCandidates,
     listPublishedEvaluationCalibrationSamples,
-    listProvisionalExperienceNotes,
     curateProvisionalExperience,
     normalizeDesignLearningLedger,
     recordDesignRunOutcome,
     renderDesignLearningTimeline
-} = require(path.join(root, 'src/shared/design-learning-candidates.ts'));
+} = designLearningCandidates;
+const {
+    buildDesignEvaluationPrompt
+} = require(path.join(root, 'src/shared/design-workshop/design-evaluator.ts'));
+const {
+    generateToolSchemas
+} = require(path.join(root, 'src/renderer/services/agent-runtime/tool-schemas.ts'));
 const {
     buildWorkshopReferenceLearningCandidate
 } = require(path.join(root, 'src/shared/design-learning-experience.ts'));
@@ -199,9 +206,29 @@ check('人工审核后才能进入可检索长期知识', (
         promotion.promoted.length === 1 && p1.candidates[0].status === 'provisional'
     );
     check('试用知识不进入评审校准消费面', listPublishedEvaluationCalibrationSamples(p1).length === 0);
-    // P2（2026-08-24）：试用经验有且只有 listProvisionalExperienceNotes 一个消费出口（上限+仅 provisional）。
-    check('试用经验经专用出口进入评审观察线索', listProvisionalExperienceNotes(p1).length === 1);
-    check('试用经验出口上限生效', listProvisionalExperienceNotes(p1, 0).length === 0);
+    check('候选模块不再导出 provisional 生产读取出口', (
+        designLearningCandidates.listProvisionalExperienceNotes === undefined
+    ));
+    const provisionalText = p1.candidates[0].text;
+    const prompt = buildDesignEvaluationPrompt({
+        provisionalNotes: [provisionalText]
+    });
+    check('评审提示忽略旧调用方传入的 provisional 经验', !prompt.includes(provisionalText));
+    const productionEvaluationSources = [
+        'src/renderer/services/design-workshop/evaluate-design.executor.ts',
+        'src/shared/design-workshop/design-evaluator.ts'
+    ].map((file) => fs.readFileSync(path.join(root, file), 'utf8'));
+    check('生产 Evaluation 不读取或透传 provisional 经验', productionEvaluationSources.every((source) => (
+        !source.includes('listProvisionalExperienceNotes')
+        && !source.includes('provisionalNotes')
+    )));
+    const evaluateDesignTool = generateToolSchemas().find((tool) => tool.name === 'evaluateDesign');
+    check('模型可见 evaluateDesign schema 不允许伪造用户校准', (
+        evaluateDesignTool
+        && !Object.prototype.hasOwnProperty.call(evaluateDesignTool.inputSchema.properties, 'calibration')
+        && !productionEvaluationSources[0].includes('params?.calibration')
+        && !productionEvaluationSources[0].includes('readCalibration(')
+    ));
     p1 = addDesignLearningCandidate(p1, observationFromRun('run-c')).ledger;
     check('试用候选继续合并不分裂重复条目', p1.candidates.length === 1 && p1.candidates[0].support === 4);
     p1 = recordDesignRunOutcome(p1, 'run-c', 'rejected').ledger;

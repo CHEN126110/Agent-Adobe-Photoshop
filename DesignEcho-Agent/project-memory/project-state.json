@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-096：D-095 已提交；r32 第二 Run 已证实为编辑消息后的新 branch 顶层重发而非自动 guard 逃逸。当前只在开发评测面让正式 run-live 与官方 UXP loader 竞争同一跨进程 Runtime 租约，避免共享 Host 在高成本采集中被替换。",
-  "currentMilestone": "DESIGN-RELIABILITY-096",
-  "milestoneStatus": "d095_committed_r32_second_run_attributed_to_explicit_message_edit_d096_runtime_lease_targeted_two_process_canary_adjacent_typechecks_production_build_full_core_58_commit_and_clean_identities_passed_reconciliation_and_r33_pending",
+  "currentFocus": "2026-08-29 DESIGN-EXPERIENCE-098：在 D-097 独立 worktree 上切断 provisional finding 与模型参数伪校准进入生产 Evaluation 的两条旁路；候选策展和正式用户反馈发布保持不变，r32/r33 继续使用未包含本改动的 D-097 单变量基线。",
+  "currentMilestone": "DESIGN-EXPERIENCE-098",
+  "milestoneStatus": "provisional_and_model_parameter_evaluation_bypasses_removed_focused_boundary_tool_typechecks_agent_uxp_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write",
   "verified": {
     "code": [
+      "Design Experience publication boundary D-098 (2026-08-29): production evaluateDesign no longer consumes provisional evaluation findings or model-authored calibration parameters. Candidate accumulation, provisional curation and rejection rollback remain review-queue behavior; only published project evaluation_calibration samples enter the production evaluator. The reusable learning-candidate attacks, design-authorship boundary, Tool registry, Main/Renderer typechecks, Agent/UXP production builds and the single full core maintenance run 58/58 passed; no Photoshop state was changed.",
       "Design Reliability cooperative Photoshop Runtime lease D-096 (2026-08-29): formal run-live and the official UXP loader acquire one repository-external cross-worktree lease before Attempt events or UDT host mutation. A live owner is never deleted only because TTL elapsed; a dead owner can be reclaimed; release is leaseId-bound. Targeted pure logic, loader self-test, a real two-process pre-UDT rejection canary, adjacent audits, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, an isolated commit and clean post-commit identities passed; live r33 remains pending.",
       "Design Reliability recoverable non-mutating first-tool rejection D-095 (2026-08-29): a first write tool rejected before Photoshop dispatch for first_mutation_must_create_task_document no longer permanently poisons the TaskRun. The baseline returns to pending, clears the rejected candidate and re-observes full runtime and document revisions; only createDocument can pass. Runtime identity, inventory, fixture, preexisting-object and revision drift still latch blocked. Targeted attacks, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58 and commit d8ce40ef passed; live r33 remains pending.",
       "Design Reliability protected preexisting revision baseline D-094 live negative evidence (2026-08-29): clean commit eb40a93c and matching Agent/UXP builds passed r32 preflight with unsaved 800 open. The failed r32 run used DeepSeek V4 Flash Vision and recorded 8 failed mutation attempts with mutationObserved=false and zero successful mutations; runtime binding rejected a later dirty UXP generation. This proves safety containment, not technical delivery or design quality.",
@@ -114,6 +115,7 @@
     ]
   },
   "unverified": [
+    "An isolated production Evaluation canary with candidate, provisional and published entries in the same project ledger, proving the exact model-visible prompt contains only the published calibration sample after D-098 is loaded.",
     "D-096 full maintenance validation, clean commit/build identities, a whole formal run-live window that rejects another worktree loader, real dead-owner recovery, and manual UDT reload detection through the existing runtime binding.",
     "A legal r32 reconciliation after the user finishes viewing and closes every r32 fixture document, followed by a fresh r33 DeepSeek V4 Flash Vision Provider-to-Photoshop attempt that preserves all external documents and produces same-revision PSD/JPG.",
     "A disposable live Photoshop regression for sku-color-card and the ten migrated write tools, including forced verification failure, real History rollback, document-switch rebinding and end-to-end editable output readback.",
@@ -308,43 +310,37 @@
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-RELIABILITY-097",
-    "summary": "Make the bounded DeepSeek final visual Judge return one complete terminal JSON result without spending its exact output budget on hidden reasoning, while preserving strict completion, revision and visual-evidence boundaries before r32 reconciliation and r33.",
-    "status": "root_cause_hypothesis_supported_final_judge_thinking_policy_code_build_full_core_58_and_independent_commit_complete_live_r33_pending_no_photoshop_write",
+    "id": "DESIGN-EXPERIENCE-098",
+    "summary": "Keep online evaluation findings as isolated candidates or provisional review-queue entries, and allow production evaluateDesign to consume only explicitly published project evaluation calibration.",
+    "status": "two_production_bypasses_removed_focused_tests_typechecks_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write",
     "mustDo": [
-      "Explicitly disable Provider-native thinking for the no-Tool fixed-JSON final Judge and diagnosis-only repair calls.",
-      "Keep the existing 4320-token twelve-assertion budget and require a complete end_turn before parsing any score.",
-      "Preserve the current Photoshop history, ReviewSet, visual candidate and Codex receipt verification boundaries.",
-      "Preserve D-095 first-write recovery, D-094 protected-document completion reconciliation and every existing target/revision guard.",
-      "Use DeepSeek official deepseek-v4-flash-vision-exp with the existing secure key and real Agent image/tool transport.",
-      "After D-097 validation and commit, reconcile r32 without touching external documents and then verify complete final quality plus same-revision PSD/JPG in fresh r33."
+      "Remove the provisional experience production-read helper and every evaluateDesign Prompt injection path.",
+      "Remove model-authored calibration from the evaluateDesign Tool schema and executor parameters.",
+      "Keep candidate accumulation, provisional curation, rejection rollback and manual or offline review queues intact.",
+      "Keep the existing recordDesignVerdict to published evaluation_calibration path as the only project production calibration source.",
+      "Extend the existing reusable design-learning test instead of adding a one-off smoke or second Evaluation gate.",
+      "Keep D-097 worktree unchanged for r32 reconciliation and r33 single-variable DeepSeek verification."
     ],
     "mustNotDo": [
-      "Do not change the DeepSeek visual receipt contract without evidence that it caused the r32 unavailable Judge.",
-      "Do not accept max_tokens, incomplete JSON or partial scores as a completed visual judgment.",
-      "Do not disable thinking for the main autonomous Agent or override the user's normal model-thinking preference.",
-      "Do not raise the output budget as a substitute for removing hidden reasoning from this bounded auxiliary call.",
-      "Do not delete the r32 RunRecord or Attempt events to reuse a consumed fixture.",
-      "Do not create a second transaction, runtime, document store or completion gate.",
-      "Do not weaken the existing target/revision preflight or unique PhotoshopTransactionRunner.",
-      "Do not stop the user-started normal DesignEcho or save, close or discard 800, 详情页.psb or any other user document for this code slice."
+      "Do not delete the learning ledger, provisional status or evidence used for review prioritization.",
+      "Do not promote candidate or provisional experience to published merely because it repeated or accompanied a delivery.",
+      "Do not create a second Memory Engine, Experience Publisher, Evaluation Gate or interaction system.",
+      "Do not modify the r32 RunRecord, D-097 runtime, DeepSeek settings or Photoshop transaction boundaries.",
+      "Do not treat focused tests or production builds as evidence of design-quality improvement.",
+      "Do not stop the user-started normal DesignEcho or save, close or discard any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-RELIABILITY-097",
+    "id": "DESIGN-EXPERIENCE-098",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：D-095 专项、相邻审计、Main/Renderer 类型检查、Agent/UXP production build、完整 maintenance:validate 58/58 和独立提交 d8ce40ef。",
-      "已完成归因：r32 第二 Run 是编辑消息后的新 branch 顶层重发，不是自动 generation escape；不新增错误 Guard。",
-      "已完成 D-096 专项：正式采集与 loader 共用租约，并发拒绝、错误释放、存活 owner、死亡 owner 和旧 owner 攻击均通过。",
-      "已完成 canary：真实第二进程 loader 在 UDT 连接前被拒绝，原 owner 释放后全局租约 absent，Photoshop 零变更。",
-      "已收敛 D-097 可证伪根因：r32 Final Judge 的 4320 输出 token 与十二项预算上限精确相等，严格终态读取会拒绝 max_tokens；原始 finish_reason 未持久化，需由 r33 证实，DeepSeek optional 回执不是已证实 owner。",
-      "已完成：Final Judge 与 diagnosis repair 显式关闭原生 thinking，保留既有 token、revision、ReviewSet、receipt 和完整终态边界，并补现有审计。",
-      "已完成：专项、Main/Renderer 类型检查、Agent production build 和一次完整 maintenance:validate 58/58。",
-      "已完成：最终差异复核和独立提交；提交后 clean identity 由 production build 重建。",
-      "待完成：不触碰现有文档，待用户普通 DesignEcho 释放默认端口后执行合法 r32 reconciliation。",
-      "待完成：重建 clean 双 Runtime，创建 fresh r33，以 DeepSeek V4 Flash Vision 验证 D-095/D-096/D-097。",
-      "条件后置：技术成功后完成同版本交付复核、匿名视觉比较和有证据的上下文 /Tool 往返性能治理。"
+      "已完成审计：确认 provisional helper 与模型可见 evaluateDesign.calibration 是两条生产发布旁路。",
+      "已完成实现：删除两条旁路，保留候选、provisional 策展和正式用户反馈发布 owner。",
+      "已完成专项：学习候选、作者权、Tool 注册、Main/Renderer 类型检查和 Agent/UXP production build 通过。",
+      "已完成：规划/边界检查和唯一一次完整 maintenance:validate 58/58。",
+      "已完成：最终差异审查和独立提交。",
+      "待完成：默认端口释放后回到未包含 D-098 的 D-097 worktree，对账 r32 并运行 fresh r33。",
+      "条件后置：以带 candidate/provisional/published 三态账本的隔离 Evaluation canary 验证生产上下文只投影 published calibration。"
     ]
   },
   "convergenceBaseline": {

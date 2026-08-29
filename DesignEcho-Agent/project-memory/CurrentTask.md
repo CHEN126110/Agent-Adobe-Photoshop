@@ -1,5 +1,43 @@
 # Current Task
 
+## 2026-08-29 DESIGN-EXPERIENCE-098：未发布经验不得进入生产 Evaluation
+
+### 目标
+
+收口 `Prompt.md` 已生效的 Experience Publisher / Evaluation 边界：在线评审 finding 可以在项目候选账本中累计并自动标为 `provisional` 供人工或离线评测排队，但生产 `evaluateDesign` 只能消费正式发布到当前项目 `evaluation_calibration` 的结构化用户反馈。模型参数、candidate、provisional、旧 promoted 或参考学习结论均不能形成第二条校准入口。
+
+### 当前事实
+
+- 生效边界明确规定在线模型不能自我转正，原始候选、模型自评、使用次数和 Tool success 不得进入生产 Prompt；项目级生产校准只来自用户明确的“留 / 改 / 弃 + 原因”发布记录。
+- 代码却存在两条可达旁路：`listProvisionalExperienceNotes` 把自动晋升的 evaluation finding 注入评审提示；模型可见 `evaluateDesign.calibration` 又允许 Tool 参数直接伪造“用户校准”。这不是知识质量问题，而是发布 owner 被绕过。
+- D-098 从 D-097 干净提交 `100a4268` 建立独立 worktree。D-097 worktree 与构建保持不变，继续作为 r32 reconciliation /r33 单变量真机基线；本切片不启动、停止或替换 DesignEcho，不连接或修改 Photoshop。
+
+### 实施边界
+
+- 删除 provisional 的生产读取 helper、executor 读取和 Prompt 字段；保留候选生成、行为事实累计、provisional 策展、否决回退、人工 /离线送审和发布记录。
+- 删除模型可见 `evaluateDesign.calibration` schema 与 executor 参数解析；production Evaluation 只通过 `listPublishedEvaluationCalibrationSamples` 读取当前项目已发布样本。
+- 扩展现有 `test:design-learning-candidates`，证明 provisional 仍可进入试用队列但不能进入校准或提示、旧调用参数被忽略、生产源码不读取该字段且 Tool schema 不再暴露伪校准入口。
+- 不新建 Memory Engine、Evaluation Gate、Interaction Runtime 或用户动作收据；`recordDesignVerdict` 的既有用户反馈发布路径和 `decideDesignLearningCandidate` 对模型观察的拒绝保持不变。
+
+### 下一步
+
+1. `[已完成]` 两条生产旁路已删除；差异为净删代码，不改变候选账本和正式发布结构。
+2. `[已完成]` `test:design-learning-candidates`、`test:design-authorship-boundary`、`audit:tools`、Main /Renderer 类型检查、Agent /UXP production build 均通过。
+3. `[已完成]` 规划 /边界快速检查、唯一一次完整 `maintenance:validate` 58/58、最终差异审查与独立提交均已完成。
+4. `[后续独立]` r32 /r33 仍使用未包含 D-098 的 D-097 干净 worktree，避免把终局 Judge 修复与经验隔离混成两个变量；D-098 只在后续合并或独立 Evaluation canary 中验证。
+
+### 验证与未知
+
+- 已验证代码级生产读取面只剩 `listPublishedEvaluationCalibrationSamples`；模型可见 schema 不再包含 `calibration`，旧对象额外携带 `provisionalNotes` 也不会进入提示。
+- 当前固定 r32 fixture 没有 `.designecho/learning-candidates.json`，因此 D-098 不解释 r32 低质量，也不能冒充设计质量提升；它只消除未来未发布经验污染评审的确定性风险。
+- 本切片不新增真实 Photoshop E2E 要求，因为它不改变 Photoshop、Provider 图像传输或设计生成；后续需用带 candidate /provisional /published 三态账本的隔离 Evaluation canary 验证生产上下文投影，但代码和构建通过不等于该 canary 已完成。
+
+### 状态
+
+`validated / code_complete / focused_and_production_builds_passed / full_core_58_passed / committed / no_photoshop_write`
+
+---
+
 ## 2026-08-29 DESIGN-RELIABILITY-097：DeepSeek 终局视觉 Judge 必须取得完整终态
 
 ### 目标
