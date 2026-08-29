@@ -14,7 +14,7 @@ import type {
     ToolCall, ToolResult, ImageAttachment,
     CallModelFn, ExecuteToolFn, ContentBlock,
     AgentExecutionSummary, AgentStopReason, AgentToolCallLogEntry, AgentStepEvent,
-    AgentThinkingEventMeta, ToolSchema, TaskCompletionContract, TaskCompletionContext, TaskCompletionReferenceObservation
+    AgentThinkingEventMeta, ToolSchema, TaskCompletionContract, TaskCompletionContext, TaskCompletionReferenceObservation, ModelTransportAttemptAccounting
 } from './types';
 import { bindCanvasSnapshotExpectedDocumentId } from './canvas-snapshot-target-binding';
 import {
@@ -2458,7 +2458,7 @@ export class Agent {
     private recordModelAccounting(input: {
         startedAtMs: number;
         succeeded: boolean;
-        usage?: { inputTokens: number; outputTokens: number };
+        usage?: ModelTransportAttemptAccounting['usage'];
         promptShape?: ReturnType<typeof measureRuntimePromptShape>;
         outcome?: unknown;
     }): void {

@@ -2012,7 +2012,12 @@ unboundAccounting = recordRuntimeModelCall({
     ledger: unboundAccounting,
     durationMs: 1200,
     succeeded: true,
-    usage: { inputTokens: 321, outputTokens: 45 },
+    usage: {
+        inputTokens: 321,
+        outputTokens: 45,
+        cacheHitInputTokens: 200,
+        cacheMissInputTokens: 121
+    },
     promptShape: {
         systemChars: 100,
         historyChars: 200,
@@ -2060,6 +2065,38 @@ const unboundAccountingDigest = buildRuntimeAccountingDigest({
     ledger: unboundAccounting,
     now: '2026-08-24T00:00:01.580Z'
 });
+check(
+    unboundAccounting.promptShapeSamples[0].cacheHitInputTokens === 200
+        && unboundAccounting.promptShapeSamples[0].cacheMissInputTokens === 121
+        && unboundAccountingDigest.promptShapeSamples[0].cacheHitInputTokens === 200
+        && unboundAccountingDigest.promptShapeSamples[0].cacheMissInputTokens === 121,
+    'Provider 缓存用量以守恒对写入活动账本和 digest'
+);
+const fractionalInputCacheLedger = recordRuntimeModelCall({
+    ledger: createRuntimeAccountingLedger('2026-08-24T00:00:02.000Z'),
+    durationMs: 10,
+    succeeded: true,
+    usage: {
+        inputTokens: 321.5,
+        outputTokens: 1,
+        cacheHitInputTokens: 200,
+        cacheMissInputTokens: 121
+    },
+    promptShape: {
+        systemChars: 1,
+        historyChars: 1,
+        messageCount: 1,
+        imageBlocks: 0,
+        toolCount: 0,
+        toolSchemaChars: 0
+    },
+    now: '2026-08-24T00:00:02.010Z'
+});
+check(
+    fractionalInputCacheLedger.promptShapeSamples[0].cacheHitInputTokens === undefined
+        && fractionalInputCacheLedger.promptShapeSamples[0].cacheMissInputTokens === undefined,
+    'Runtime Accounting 不会把非法 inputTokens 归一化后伪造成缓存守恒'
+);
 const clonedUnboundAccounting = cloneRuntimeAccountingLedger(unboundAccounting);
 clonedUnboundAccounting.stageBuckets[0].modelCallCount = 999;
 clonedUnboundAccounting.performanceUsage.observationKeys.push('visual:clone-only');
@@ -2208,6 +2245,18 @@ check(
 check(
     validateAgentRunRecordForPersist(unboundAccountingRecord).ok,
     '合法的 plan-neutral Runtime Accounting 通过持久化校验'
+);
+const accountingWithPartialCacheUsage = JSON.parse(JSON.stringify(unboundAccountingRecord));
+delete accountingWithPartialCacheUsage.runtimeAccounting.promptShapeSamples[0].cacheMissInputTokens;
+check(
+    !validateAgentRunRecordForPersist(accountingWithPartialCacheUsage).ok,
+    'runtimeAccounting 拒绝只包含单边字段的 Provider 缓存用量'
+);
+const accountingWithInconsistentCacheUsage = JSON.parse(JSON.stringify(unboundAccountingRecord));
+accountingWithInconsistentCacheUsage.runtimeAccounting.promptShapeSamples[0].cacheMissInputTokens = 120;
+check(
+    !validateAgentRunRecordForPersist(accountingWithInconsistentCacheUsage).ok,
+    'runtimeAccounting 拒绝与 inputTokens 不守恒的 Provider 缓存用量'
 );
 
 const resolvedAgenticRuntimeContractStatus = buildRuntimeContractStatus({

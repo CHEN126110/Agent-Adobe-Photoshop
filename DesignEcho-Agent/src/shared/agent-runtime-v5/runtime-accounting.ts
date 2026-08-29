@@ -11,6 +11,7 @@
 import { sha256Hex } from './content-hash';
 import type { RuntimeStage } from './contracts';
 import type { ModelProviderFailureKind } from '../model-provider-failure';
+import type { ProviderReportedTokenUsage } from '../provider-reported-token-usage';
 
 export type RuntimeAccountingStage = RuntimeStage | 'unscoped';
 
@@ -60,6 +61,10 @@ export interface RuntimePromptShapeSample {
     /** provider 报告的用量；未报告为 undefined，不估算 */
     inputTokens?: number;
     outputTokens?: number;
+    /** Provider 完整报告且与 inputTokens 守恒的缓存命中输入 token；缺失保持 unknown。 */
+    cacheHitInputTokens?: number;
+    /** Provider 完整报告且与 inputTokens 守恒的缓存未命中输入 token；缺失保持 unknown。 */
+    cacheMissInputTokens?: number;
     durationMs: number;
     /** 系统提示字符数（策略 + 原则 + 知识 + 项目状态 + 历史摘要） */
     systemChars: number;
@@ -282,6 +287,8 @@ const RUNTIME_ACCOUNTING_PROMPT_SAMPLE_ALLOWED_KEYS = new Set([
     'stage',
     'inputTokens',
     'outputTokens',
+    'cacheHitInputTokens',
+    'cacheMissInputTokens',
     'durationMs',
     'systemChars',
     'historyChars',
@@ -521,6 +528,19 @@ export function validateRuntimeAccountingDigest(
             }
             if (sample.outputTokens !== undefined && !isNonNegativeSafeInteger(sample.outputTokens)) {
                 return { ok: false, reason: 'Runtime accounting prompt sample outputTokens 非法' };
+            }
+            const hasCacheHit = sample.cacheHitInputTokens !== undefined;
+            const hasCacheMiss = sample.cacheMissInputTokens !== undefined;
+            if (hasCacheHit !== hasCacheMiss) {
+                return { ok: false, reason: 'Runtime accounting prompt cache usage 必须成对存在' };
+            }
+            if (hasCacheHit && (
+                !isNonNegativeSafeInteger(sample.cacheHitInputTokens)
+                || !isNonNegativeSafeInteger(sample.cacheMissInputTokens)
+                || !isNonNegativeSafeInteger(sample.inputTokens)
+                || Number(sample.cacheHitInputTokens) + Number(sample.cacheMissInputTokens) !== Number(sample.inputTokens)
+            )) {
+                return { ok: false, reason: 'Runtime accounting prompt cache usage 非法或与 inputTokens 不守恒' };
             }
         }
     }
@@ -952,7 +972,7 @@ export function recordRuntimeModelCall(input: {
     stage?: RuntimeStage;
     durationMs: number;
     succeeded: boolean;
-    usage?: { inputTokens?: number; outputTokens?: number };
+    usage?: Partial<ProviderReportedTokenUsage>;
     failureKind?: ModelProviderFailureKind;
     providerCode?: string;
     status?: number;
@@ -967,6 +987,19 @@ export function recordRuntimeModelCall(input: {
     );
     const inputTokens = hasReportedUsage ? nonNegativeInteger(input.usage?.inputTokens) : 0;
     const outputTokens = hasReportedUsage ? nonNegativeInteger(input.usage?.outputTokens) : 0;
+    const rawCacheHitInputTokens = input.usage?.cacheHitInputTokens;
+    const rawCacheMissInputTokens = input.usage?.cacheMissInputTokens;
+    const hasReportedCacheUsage = hasReportedUsage
+        && Number.isSafeInteger(input.usage?.inputTokens)
+        && Number(input.usage?.inputTokens) >= 0
+        && Number.isSafeInteger(rawCacheHitInputTokens)
+        && Number(rawCacheHitInputTokens) >= 0
+        && Number.isSafeInteger(rawCacheMissInputTokens)
+        && Number(rawCacheMissInputTokens) >= 0
+        && Number(rawCacheHitInputTokens) + Number(rawCacheMissInputTokens)
+            === Number(input.usage?.inputTokens);
+    const cacheHitInputTokens = hasReportedCacheUsage ? Number(rawCacheHitInputTokens) : 0;
+    const cacheMissInputTokens = hasReportedCacheUsage ? Number(rawCacheMissInputTokens) : 0;
     const previousSamples = Array.isArray(input.ledger.promptShapeSamples) ? input.ledger.promptShapeSamples : [];
     const promptShapeSamples = input.promptShape
         ? [
@@ -975,6 +1008,7 @@ export function recordRuntimeModelCall(input: {
                 seq: input.ledger.modelCallCount + 1,
                 stage: normalizeStage(input.stage),
                 ...(hasReportedUsage ? { inputTokens, outputTokens } : {}),
+                ...(hasReportedCacheUsage ? { cacheHitInputTokens, cacheMissInputTokens } : {}),
                 durationMs,
                 ...input.promptShape
             }

@@ -246,6 +246,10 @@ const streamChatSource = source('src/renderer/services/stream-chat.service.ts');
 const agentToolStreamSource = source('src/renderer/services/agent-tool-stream.service.ts');
 const streamAdapterSource = source('src/main/services/stream-adapter.ts');
 const modelServiceSource = source('src/main/services/model-service.ts');
+const openAiCompatibleToolStreamSource = modelServiceSource.slice(
+    modelServiceSource.indexOf('private async streamOpenAICompatibleWithTools'),
+    modelServiceSource.indexOf('private streamOpenRouterWithTools')
+);
 const skuRetouchServiceSource = source('src/main/services/sku-retouch-service.ts');
 const skuRetouchContractSource = source('src/shared/sku-retouch-contract.ts');
 const claudeSubscriptionSource = source('src/main/services/claude-subscription-service.ts');
@@ -1894,6 +1898,53 @@ const openAiRefusalTerminal = new OpenAIAdapter('openai').parseResponse({
     }],
     usage: { prompt_tokens: 11, completion_tokens: 3 }
 });
+const deepSeekCacheUsage = new OpenAIAdapter('deepseek').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 75,
+        prompt_cache_miss_tokens: 25
+    }
+});
+const deepSeekPartialCacheUsage = new OpenAIAdapter('deepseek').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 75
+    }
+});
+const deepSeekInconsistentCacheUsage = new OpenAIAdapter('deepseek').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 80,
+        prompt_cache_miss_tokens: 25
+    }
+});
+const openAiNamedCacheUsage = new OpenAIAdapter('openai').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: '完成' }
+    }],
+    usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 75,
+        prompt_cache_miss_tokens: 25
+    }
+});
 check(
     '各 Provider 非完整终态优先隔离残缺 Tool，不能被句号或已解析参数升级为成功',
     openAiUnknownTerminal.stopReason === 'stream_incomplete'
@@ -1920,6 +1971,24 @@ check(
         && openAiRefusalTerminal.usage.outputTokens === 3
         && agentRuntime.includes('(response.incompleteToolCallNames || [])')
         && agentRuntime.includes('.filter((name) => visibleToolNames.has(name))')
+);
+check(
+    'DeepSeek 缓存用量只在完整守恒时贯穿普通与流式模型传输',
+    deepSeekCacheUsage.usage.inputTokens === 100
+        && deepSeekCacheUsage.usage.outputTokens === 10
+        && deepSeekCacheUsage.usage.cacheHitInputTokens === 75
+        && deepSeekCacheUsage.usage.cacheMissInputTokens === 25
+        && deepSeekPartialCacheUsage.usage.cacheHitInputTokens === undefined
+        && deepSeekPartialCacheUsage.usage.cacheMissInputTokens === undefined
+        && deepSeekInconsistentCacheUsage.usage.cacheHitInputTokens === undefined
+        && deepSeekInconsistentCacheUsage.usage.cacheMissInputTokens === undefined
+        && openAiNamedCacheUsage.usage.cacheHitInputTokens === undefined
+        && openAiNamedCacheUsage.usage.cacheMissInputTokens === undefined
+        && (modelServiceSource.match(/readOpenAICompatibleTokenUsage\(/g) || []).length === 2
+        && openAiCompatibleToolStreamSource.includes("provider === 'deepseek' ? {")
+        && openAiCompatibleToolStreamSource.includes('stream_options: { include_usage: true }')
+        && openAiCompatibleToolStreamSource.indexOf('if (chunk.usage) {')
+            < openAiCompatibleToolStreamSource.indexOf('if (!delta) continue;')
 );
 let providerRecoveryLedger = recordRuntimeProviderOutputRecoveryAttempt(
     createRuntimeAccountingLedger('2026-08-26T00:00:00.000Z'),

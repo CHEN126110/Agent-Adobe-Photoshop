@@ -37,8 +37,9 @@ import type {
     AgentToolStreamResponse,
     AgentToolStreamToolCall
 } from '../../shared/agent-tool-stream';
+import type { ProviderReportedTokenUsage } from '../../shared/provider-reported-token-usage';
 import { extractThinkingFromModel, getThinkingRequestParams } from './thinking-extractor';
-import { getProviderAdapter } from './provider-adapters';
+import { getProviderAdapter, readOpenAICompatibleTokenUsage } from './provider-adapters';
 import type { ToolSchema, AdapterMessage, ProviderResponse } from './provider-adapters';
 import { configureProcessProxyFromSystem, getOpenAIHttpAgent } from './network-proxy';
 import type { ProviderNativeToolRequest, ProviderNativeToolCitation } from '../../shared/provider-native-tools';
@@ -317,10 +318,7 @@ export interface MessageContent {
 export interface ModelResponse {
     text: string;
     thinking?: string;  // 模型的思维过程（如果有）
-    usage?: {
-        inputTokens: number;
-        outputTokens: number;
-    };
+    usage?: ProviderReportedTokenUsage;
     visualPresentationReceipt?: unknown;
 }
 
@@ -1664,10 +1662,7 @@ export class ModelService {
         return {
             text: content,
             thinking: thinking || undefined,
-            usage: {
-                inputTokens: response.usage?.prompt_tokens || 0,
-                outputTokens: response.usage?.completion_tokens || 0
-            }
+            usage: readOpenAICompatibleTokenUsage(providerName, response.usage)
         };
     }
 
@@ -2546,7 +2541,7 @@ export class ModelService {
         const accumulatedToolCalls = new Map<number, AccumulatedToolCall>();
         let content = '';
         let thinking = '';
-        let usage = { inputTokens: 0, outputTokens: 0 };
+        let usage: ProviderReportedTokenUsage = { inputTokens: 0, outputTokens: 0 };
         const annotations: unknown[] = [];
         let webSearchUsage: unknown;
         let providerFinishReason: string | undefined;
@@ -2558,7 +2553,10 @@ export class ModelService {
             stream = await client.chat.completions.create({
                 model,
                 ...formatted,
-                stream: true
+                stream: true,
+                ...(provider === 'deepseek' ? {
+                    stream_options: { include_usage: true }
+                } : {})
                 // thinking 请求参数已由 adapter.formatMessages 写入 formatted；这里不按 provider 名覆盖。
             } as any, {
                 signal,
@@ -2583,6 +2581,13 @@ export class ModelService {
                     providerFinishReason = merged.finishReason;
                     protocolInvalid = protocolInvalid || merged.conflict;
                 }
+                // DeepSeek include_usage 的尾块 choices=[]，必须在 delta 早退前消费。
+                if (chunk.usage) {
+                    usage = readOpenAICompatibleTokenUsage(provider, chunk.usage);
+                    if (chunk.usage.web_search_usage) {
+                        webSearchUsage = chunk.usage.web_search_usage;
+                    }
+                }
                 const delta = choice?.delta;
                 if (!delta) continue;
                 if (String(delta.refusal || '').trim()) {
@@ -2606,15 +2611,6 @@ export class ModelService {
 
                 this.consumeToolCallDeltas(delta.tool_calls, accumulatedToolCalls, emitChunk);
 
-                if (chunk.usage) {
-                    usage = {
-                        inputTokens: chunk.usage.prompt_tokens || 0,
-                        outputTokens: chunk.usage.completion_tokens || 0
-                    };
-                    if (chunk.usage.web_search_usage) {
-                        webSearchUsage = chunk.usage.web_search_usage;
-                    }
-                }
             }
         } catch (error: any) {
             if (provider === 'xiaomi') {

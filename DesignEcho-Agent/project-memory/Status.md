@@ -2,6 +2,15 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-099 DeepSeek 缓存事实进入 Runtime Accounting
+
+- r32 普通重发的 262 万 input token 暴露了完整历史、Tool schema 和重复观察成本，但旧账本无法判断 DeepSeek 上下文缓存真实命中情况。D-099 只补官方 cache hit / miss 观测，不修改模型、Prompt、工具、预算、权限、价格或 Photoshop 行为。
+- 官方流式协议要求 `stream_options.include_usage=true`，并通过 `choices=[]` 的独立尾块返回 usage。现有工具流既未请求该尾块，又会在缺少 delta 时提前跳过；两个断点均已在 Provider 请求 /解析点修复。
+- 共享 usage 投影只接受 DeepSeek 完整、非负安全整数且 `hit + miss = inputTokens` 的数据。缺失、单边、矛盾或其他 Provider 的同名字段保持 unknown；Runtime digest 和 `debug:runs` 只在真实上报时显示命中率及调用覆盖率。
+- 现有设计作者权与运行事实测试已覆盖完整、部分、矛盾、跨 Provider 冒充和持久化篡改；Main /Renderer 类型检查、Agent /UXP production build、完整 `maintenance:validate` 58/58、最终差异审查和独立提交均已完成。第一次核心运行被 `agent.ts` 行数棘轮拦截后，没有调高基线，而是复用已有类型导入使主循环恢复 12,826 行；随后完整 58 阶段通过。
+- 真实 DeepSeek 热 /冷命中率采集仍待完成，当前不能宣称缓存提高了速度；D-099 只把后续性能决策所需的 Provider 事实变成可查询证据。
+- 本切片来自 D-098 独立 worktree，没有启动或替换 DesignEcho，也没有连接、保存、关闭、丢弃或修改 Photoshop 文档；D-097 继续承担 r32 reconciliation / r33 单变量真机验证。
+
 ## 2026-08-29 D-098 未发布经验与模型伪校准退出生产 Evaluation
 
 - 当前代码审计证实两条发布旁路：自动晋升的 provisional evaluation finding 会由专用 helper 注入 `evaluateDesign`，且模型可见 Tool schema 允许直接传入 `calibration`。两者都绕过了当前唯一 Experience Publisher /项目校准发布边界。

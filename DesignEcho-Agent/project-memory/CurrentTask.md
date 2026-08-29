@@ -1,5 +1,45 @@
 # Current Task
 
+## 2026-08-29 DESIGN-EFFICIENCY-099：DeepSeek 缓存事实进入现有 Runtime Accounting
+
+### 目标
+
+把 DeepSeek 官方返回的 prompt cache hit / miss token 作为只读 Provider 事实，沿现有 Provider → Main → Renderer → transport attempt → Runtime Accounting → RunRecord / `debug:runs` 链路保存。D-099 只回答“重复上下文到底命中了多少缓存”，不改变 Prompt、Tool surface、模型思考、预算、重试、价格、权限、完成判定或 Photoshop 行为。
+
+### 当前事实
+
+- r32 普通重发共发送 2,619,699 input tokens，单次 Tool 回合的工具 schema 约 42.7k–50.5k 字符，历史峰值约 245k 字符。DeepSeek 输出 token 速度高于 r31 Codex，但总耗时仍更长；当前账本无法区分“上下文缓存未命中”“Provider 未上报”与“传输链丢字段”。
+- [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 的 `usage` 定义 `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`。流式请求只有显式发送 `stream_options.include_usage=true` 才会在 `[DONE]` 前追加 `choices=[]` 的 usage 尾块；[Context Caching](https://api-docs.deepseek.com/guides/kv_cache/) 说明缓存默认启用、依赖精确前缀重合且属于 best-effort 行为。
+- 现有 DeepSeek 工具流既未请求 `include_usage`，又在 `delta` 不存在时提前跳过，因此即使 Provider 返回独立 usage 尾块也无法入账；这是真实协议断点，不是模型性能推测。
+- 本切片从 D-098 干净提交 `c591cbc5` 建立独立 worktree；D-097 继续作为 r32 reconciliation / r33 单变量真机基线。D-099 不启动、停止或替换 DesignEcho，也不连接或修改 Photoshop。
+
+### 实施边界
+
+- 新增一个共享 `ProviderReportedTokenUsage` 类型；cache hit / miss 仅为可选字段，不新增账本、缓存层、Span 系统或价格估算 owner。
+- OpenAI-compatible usage 由一个投影函数读取：只有 provider 精确为 DeepSeek、hit / miss 均为非负安全整数且两者之和等于 input tokens 时才保留；缺失、单边、矛盾或其他 Provider 的同名字段全部保持 unknown。
+- DeepSeek 工具流在请求点显式启用 `include_usage`，并在 `delta` 早退前消费独立 usage 尾块；普通非流式和流式传输共用同一投影规则。
+- 缓存字段只进入每次模型调用的 `promptShapeSamples` 和有界 digest；`diagnose-runs` 仅在实际上报时显示命中率与覆盖率，不把缺失当 0，也不据此改变运行策略。
+- 扩展现有设计作者权与运行事实测试，攻击正常守恒、单边缺失、合计矛盾、非 DeepSeek 冒充同名字段和持久化篡改；不新增一次性 smoke。
+
+### 下一步
+
+1. `[已完成]` Provider、Main、Renderer、Runtime Accounting、RunRecord /诊断链路实现完成；官方流式协议缺口已修复。
+2. `[已完成]` `test:design-authorship-boundary`、`test:run-fact-ledger`、Main /Renderer 类型检查、Agent /UXP production build 已通过。
+3. `[已完成]` 变更边界、规划 /编码 /JSON 检查和完整 `maintenance:validate` 58/58 已通过；第一次核心命令被 `agent.ts` 行数棘轮正确拦截，删除新增主循环行数且不调高基线后，唯一一次完整 58 阶段运行通过。最终差异审查与独立提交已完成。
+4. `[后续独立]` D-097 仍负责 r32 reconciliation 与 r33；D-099 在后续固定 DeepSeek 性能采集中提供逐调用 cache hit / miss 事实，用同一 Case 对比 schema、历史和重复观察治理前后变化。
+
+### 验证与未知
+
+- 已验证代码能保留完整守恒数据并拒绝伪造 /部分数据；已验证 DeepSeek 流式请求会请求 usage，且独立尾块不会再被 `delta` 早退丢弃。
+- 尚未用真实 DeepSeek Run 验证实际命中率、首轮冷缓存、后续精确前缀命中和 Provider 最佳努力行为；D-099 不能宣称缓存提高了速度，也不能解释设计质量。
+- 缓存命中只说明 Provider 可能减少重复前缀计算，不代表 Harness 应继续发送无价值的完整历史。调用次数、历史增长、工具 schema、重复观察与无效 Tool 参数仍需分别做 A/B，不能把缓存当架构治理替代品。
+
+### 状态
+
+`validated / code_complete / focused_tests_typechecks_and_production_builds_passed / full_core_58_passed / committed / no_photoshop_write`
+
+---
+
 ## 2026-08-29 DESIGN-EXPERIENCE-098：未发布经验不得进入生产 Evaluation
 
 ### 目标

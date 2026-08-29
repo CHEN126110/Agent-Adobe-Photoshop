@@ -33,7 +33,7 @@ import type { ModelTransportAttemptAccounting } from './types';
 interface ModelAccountingInput {
     durationMs: number;
     succeeded: boolean;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: ModelTransportAttemptAccounting['usage'];
     failureKind?: ModelTransportAttemptAccounting['failureKind'];
     providerCode?: string;
     status?: number;

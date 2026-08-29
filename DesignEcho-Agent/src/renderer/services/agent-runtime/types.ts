@@ -8,6 +8,7 @@ import type { ChatComposerContentPart } from '../../../shared/chat-composer-cont
 import type { CurrentDocumentUseMode } from '../../../shared/design-document-role';
 import type { ModelReasoningEffort } from '../../../shared/config/models.config';
 import type { ModelProviderFailureKind } from '../../../shared/model-provider-failure';
+import type { ProviderReportedTokenUsage } from '../../../shared/provider-reported-token-usage';
 import type {
     ModelVisualPresentationReceipt,
     ModelVisualPresentationReceiptRef
@@ -697,7 +698,7 @@ export interface AgentRunResult {
 export interface ModelTransportAttemptAccounting {
     durationMs: number;
     succeeded: boolean;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: ProviderReportedTokenUsage;
     /** 失败尝试只保留有界结构身份；禁止保存错误正文、堆栈或请求载荷。 */
     failureKind?: ModelProviderFailureKind;
     providerCode?: string;
@@ -725,7 +726,7 @@ export type CallModelFn = (
     toolCalls?: ToolCall[];
     incompleteToolCallNames?: string[];
     thinking?: string;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: ProviderReportedTokenUsage;
     stopReason?: string;
     transportAttempts?: ModelTransportAttemptAccounting[];
     visualPresentationReceipt?: ModelVisualPresentationReceipt;
@@ -758,7 +759,7 @@ export type CallModelStreamFn = (
     toolCalls?: ToolCall[];
     incompleteToolCallNames?: string[];
     thinking?: string;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: ProviderReportedTokenUsage;
     stopReason?: string;
     streamMode?: 'stream' | 'fallback';
     transportAttempts?: ModelTransportAttemptAccounting[];

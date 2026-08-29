@@ -445,7 +445,7 @@ type ModelErrorWithTransportAttempts = Error & {
 function buildModelTransportAttempt(
     startedAtMs: number,
     succeeded: boolean,
-    usage?: { inputTokens: number; outputTokens: number },
+    usage?: ModelTransportAttemptAccounting['usage'],
     failure?: ModelProviderFailure,
     visualPresentationReceipt?: unknown
 ): ModelTransportAttemptAccounting {

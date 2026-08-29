@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 DESIGN-EXPERIENCE-098：在 D-097 独立 worktree 上切断 provisional finding 与模型参数伪校准进入生产 Evaluation 的两条旁路；候选策展和正式用户反馈发布保持不变，r32/r33 继续使用未包含本改动的 D-097 单变量基线。",
-  "currentMilestone": "DESIGN-EXPERIENCE-098",
-  "milestoneStatus": "provisional_and_model_parameter_evaluation_bypasses_removed_focused_boundary_tool_typechecks_agent_uxp_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write",
+  "currentFocus": "2026-08-29 DESIGN-EFFICIENCY-099：把 DeepSeek 官方 prompt cache hit / miss token 作为只读事实接入现有 Provider、transport attempt、Runtime Accounting、RunRecord 与 debug:runs 链路；不改变 Prompt、模型、工具、预算、权限、完成判定或 Photoshop。",
+  "currentMilestone": "DESIGN-EFFICIENCY-099",
+  "milestoneStatus": "deepseek_cache_usage_projection_and_stream_include_usage_tail_consumption_complete_focused_tests_typechecks_agent_uxp_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write_live_cache_rate_pending",
   "verified": {
     "code": [
+      "DeepSeek cache Runtime Accounting D-099 (2026-08-29): official prompt cache hit/miss tokens now travel through the existing Provider, Main/Renderer transport, Runtime Accounting digest, RunRecord and debug:runs path only when both values are safe non-negative integers and conserve inputTokens. DeepSeek tool streaming requests include usage and consume the choices-empty usage tail before delta early return. Partial, inconsistent and non-DeepSeek lookalike fields remain unknown. Focused attacks, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, final review and an independent commit passed; the simplification ratchet stayed at agent.ts 12826 lines; live cache-rate evidence remains pending; no Photoshop state was changed.",
       "Design Experience publication boundary D-098 (2026-08-29): production evaluateDesign no longer consumes provisional evaluation findings or model-authored calibration parameters. Candidate accumulation, provisional curation and rejection rollback remain review-queue behavior; only published project evaluation_calibration samples enter the production evaluator. The reusable learning-candidate attacks, design-authorship boundary, Tool registry, Main/Renderer typechecks, Agent/UXP production builds and the single full core maintenance run 58/58 passed; no Photoshop state was changed.",
       "Design Reliability cooperative Photoshop Runtime lease D-096 (2026-08-29): formal run-live and the official UXP loader acquire one repository-external cross-worktree lease before Attempt events or UDT host mutation. A live owner is never deleted only because TTL elapsed; a dead owner can be reclaimed; release is leaseId-bound. Targeted pure logic, loader self-test, a real two-process pre-UDT rejection canary, adjacent audits, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, an isolated commit and clean post-commit identities passed; live r33 remains pending.",
       "Design Reliability recoverable non-mutating first-tool rejection D-095 (2026-08-29): a first write tool rejected before Photoshop dispatch for first_mutation_must_create_task_document no longer permanently poisons the TaskRun. The baseline returns to pending, clears the rejected candidate and re-observes full runtime and document revisions; only createDocument can pass. Runtime identity, inventory, fixture, preexisting-object and revision drift still latch blocked. Targeted attacks, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58 and commit d8ce40ef passed; live r33 remains pending.",
@@ -310,37 +311,37 @@
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-EXPERIENCE-098",
-    "summary": "Keep online evaluation findings as isolated candidates or provisional review-queue entries, and allow production evaluateDesign to consume only explicitly published project evaluation calibration.",
-    "status": "two_production_bypasses_removed_focused_tests_typechecks_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write",
+    "id": "DESIGN-EFFICIENCY-099",
+    "summary": "Preserve DeepSeek official prompt cache hit and miss token facts through the existing Runtime Accounting and RunRecord path so Harness latency work can distinguish cache behavior from call-count, history, schema and observation costs.",
+    "status": "implementation_focused_tests_typechecks_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write_live_cache_rate_pending",
     "mustDo": [
-      "Remove the provisional experience production-read helper and every evaluateDesign Prompt injection path.",
-      "Remove model-authored calibration from the evaluateDesign Tool schema and executor parameters.",
-      "Keep candidate accumulation, provisional curation, rejection rollback and manual or offline review queues intact.",
-      "Keep the existing recordDesignVerdict to published evaluation_calibration path as the only project production calibration source.",
-      "Extend the existing reusable design-learning test instead of adding a one-off smoke or second Evaluation gate.",
+      "Request usage on DeepSeek tool streams and consume the official choices-empty usage tail before delta early return.",
+      "Accept cache hit and miss only as a complete non-negative safe-integer pair whose sum equals provider inputTokens.",
+      "Carry the optional pair through the existing transport attempts, prompt-shape samples, bounded digest, RunRecord and debug:runs output.",
+      "Keep missing, partial, contradictory or non-DeepSeek lookalike fields unknown rather than coercing them to zero.",
+      "Attack the Provider projection and persisted digest in existing reusable tests instead of adding a one-off smoke or second telemetry store.",
       "Keep D-097 worktree unchanged for r32 reconciliation and r33 single-variable DeepSeek verification."
     ],
     "mustNotDo": [
-      "Do not delete the learning ledger, provisional status or evidence used for review prioritization.",
-      "Do not promote candidate or provisional experience to published merely because it repeated or accompanied a delivery.",
-      "Do not create a second Memory Engine, Experience Publisher, Evaluation Gate or interaction system.",
-      "Do not modify the r32 RunRecord, D-097 runtime, DeepSeek settings or Photoshop transaction boundaries.",
-      "Do not treat focused tests or production builds as evidence of design-quality improvement.",
+      "Do not change prompts, tool schemas, model selection, thinking, budgets, retries, pricing, permissions or completion behavior.",
+      "Do not create a second accounting ledger, tracing platform, cache implementation or performance gate.",
+      "Do not infer zero misses or zero hits when the Provider did not report a complete valid pair.",
+      "Do not modify historical r32 records or claim D-099 explains design quality or proves a speed improvement.",
+      "Do not put D-099 into the D-097 r33 single-variable runtime baseline.",
       "Do not stop the user-started normal DesignEcho or save, close or discard any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-EXPERIENCE-098",
+    "id": "DESIGN-EFFICIENCY-099",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成审计：确认 provisional helper 与模型可见 evaluateDesign.calibration 是两条生产发布旁路。",
-      "已完成实现：删除两条旁路，保留候选、provisional 策展和正式用户反馈发布 owner。",
-      "已完成专项：学习候选、作者权、Tool 注册、Main/Renderer 类型检查和 Agent/UXP production build 通过。",
-      "已完成：规划/边界检查和唯一一次完整 maintenance:validate 58/58。",
-      "已完成：最终差异审查和独立提交。",
+      "已完成审计：确认 DeepSeek 流式 usage 需要 include_usage 且 choices-empty 尾块被现有 delta 早退丢弃。",
+      "已完成实现：Provider 完整守恒投影、普通/流式传输、Runtime Accounting digest、RunRecord 与 debug:runs 接线。",
+      "已完成专项：Provider/持久化攻击、Main/Renderer 类型检查和 Agent/UXP production build 通过。",
+      "已完成：规划、变更边界、编码和 JSON 检查；简化棘轮拒绝新增 agent.ts 行数后以零基线放宽完成修正。",
+      "已完成：唯一一次完整 maintenance:validate 58/58、最终差异审查和独立提交。",
       "待完成：默认端口释放后回到未包含 D-098 的 D-097 worktree，对账 r32 并运行 fresh r33。",
-      "条件后置：以带 candidate/provisional/published 三态账本的隔离 Evaluation canary 验证生产上下文只投影 published calibration。"
+      "条件后置：在 D-099 build 上用固定 DeepSeek Case 采集逐调用 cache hit/miss，再分别 A/B 历史、Tool schema、重复观察与调用次数。"
     ]
   },
   "convergenceBaseline": {

@@ -1002,7 +1002,7 @@ function printPromptShapeSamples(record) {
     const samples = accounting?.promptShapeSamples;
     if (!Array.isArray(samples) || samples.length === 0) return;
     console.log('\n提示体量（每次模型调用；字符数 / token）：');
-    console.log('  #    阶段  系统提示   历史     工具schema  工具数  图  消息数   输入token  输出token   耗时');
+    console.log('  #    阶段  系统提示   历史     工具schema  工具数  图  消息数   输入token  输出token  缓存命中  缓存未中   耗时');
     for (const sample of samples) {
         const cells = [
             String(sample.seq).padStart(3),
@@ -1015,6 +1015,8 @@ function printPromptShapeSamples(record) {
             String(sample.messageCount).padStart(6),
             String(sample.inputTokens ?? '-').padStart(10),
             String(sample.outputTokens ?? '-').padStart(9),
+            String(sample.cacheHitInputTokens ?? '-').padStart(8),
+            String(sample.cacheMissInputTokens ?? '-').padStart(8),
             `${sample.durationMs}ms`.padStart(8)
         ];
         console.log('  ' + cells.join(' '));
@@ -1024,6 +1026,22 @@ function printPromptShapeSamples(record) {
     const maxSystem = Math.max(...samples.map((s) => s.systemChars));
     const maxTools = Math.max(...samples.map((s) => s.toolSchemaChars));
     console.log(`  小结：系统提示 ${first.systemChars}→${last.systemChars} 字（峰值 ${maxSystem}），工具 schema 峰值 ${maxTools} 字，历史 ${first.historyChars}→${last.historyChars} 字。`);
+    const cacheSamples = samples.filter((sample) => (
+        Number.isSafeInteger(sample.cacheHitInputTokens)
+        && sample.cacheHitInputTokens >= 0
+        && Number.isSafeInteger(sample.cacheMissInputTokens)
+        && sample.cacheMissInputTokens >= 0
+        && Number.isSafeInteger(sample.inputTokens)
+        && sample.inputTokens >= 0
+        && sample.cacheHitInputTokens + sample.cacheMissInputTokens === sample.inputTokens
+    ));
+    if (cacheSamples.length > 0) {
+        const cacheHitInputTokens = cacheSamples.reduce((sum, sample) => sum + sample.cacheHitInputTokens, 0);
+        const cacheMissInputTokens = cacheSamples.reduce((sum, sample) => sum + sample.cacheMissInputTokens, 0);
+        const cacheInputTokens = cacheHitInputTokens + cacheMissInputTokens;
+        const cacheHitRate = cacheInputTokens > 0 ? cacheHitInputTokens / cacheInputTokens : 0;
+        console.log(`  Provider 缓存：命中 ${cacheHitInputTokens} / ${cacheInputTokens} 输入 token（${(cacheHitRate * 100).toFixed(1)}%）；上报覆盖 ${cacheSamples.length}/${samples.length} 次调用。`);
+    }
     console.log('  看法：系统提示 + 工具 schema 是每次都重发的固定开销；历史增长是 ReAct 的轮次税。哪个大就先砍哪个。');
 }
 
