@@ -1865,7 +1865,20 @@ async function verifyComposeDesignResultProjection() {
         executeToolCall: async (toolName, params) => {
             executedCalls.push({ toolName, params });
             if (toolName === 'createDocument') {
-                return { success: true, documentId: 701 };
+                return {
+                    success: true,
+                    documentId: 701,
+                    photoshopMutationCommit: {
+                        version: 'photoshop-mutation-commit/v1',
+                        basis: 'same_execute_as_modal',
+                        bindingStrength: 'unguarded',
+                        changeKind: 'document_creation',
+                        beforeOpenDocumentIds: [],
+                        createdDocumentId: 701,
+                        after: { documentId: 701, historyStateId: 2, activeLayerId: null },
+                        toolActionCompleted: true
+                    }
+                };
             }
             if (toolName === 'createRectangle') {
                 return { success: true, layerId: toolLayerIds.createRectangle };
@@ -1951,6 +1964,14 @@ async function verifyComposeDesignResultProjection() {
         'composeDesign 新文档使用透明机械底，不在显式背景步骤前注入白色视觉答案',
         executedCalls.find((call) => call.toolName === 'createDocument')?.params?.backgroundColor === 'transparent',
         JSON.stringify(executedCalls.find((call) => call.toolName === 'createDocument'))
+    );
+    check(
+        'composeDesign(mode=new) 最终结果必须带出创建 commit，让 TaskRun 文档创建台账登记新画布（r37 弃稿 6073 绕过结算的根因）',
+        result.photoshopMutationCommit?.changeKind === 'document_creation'
+            && result.photoshopMutationCommit?.createdDocumentId === 701
+            && result.photoshopMutationCommit?.after?.documentId === 701
+            && result.photoshopMutationCommit?.after?.historyStateId === 2,
+        JSON.stringify(result.photoshopMutationCommit)
     );
     check(
         'composeDesign 保留图片落位与 owner 收据，并在后续投影写入后重建最终视觉版本',

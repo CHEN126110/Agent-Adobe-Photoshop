@@ -527,6 +527,11 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
     const mutationToolResults: Array<{ toolName: string; result: unknown }> = [];
     let composeStartHistoryStateRef: PhotoshopHistoryStateRef | undefined;
     let documentId: number | undefined;
+    // mode=new 时内部 createDocument 的创建 commit。必须随最终结果带出：
+    // TaskRun 文档创建台账只认结果里 changeKind=document_creation 的 commit，
+    // 丢掉它会让 compose 新建的画布绕过 D-113 结算（真机 r37：弃稿 6073 未被
+    // 完成契约点名，直到正式收据才以 new_outside_document_opened 拒绝）。
+    let documentCreationCommit: Record<string, unknown> | undefined;
     const { executeToolCall, inferLayerId, invokeMain, options } = deps;
 
     const normalized = normalizeComposeDesignSpec(rawParams);
@@ -578,6 +583,7 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
             && mutationCommit?.changeKind === 'document_creation'
             && mutationCommit.createdDocumentId) {
             documentId = mutationCommit.createdDocumentId;
+            documentCreationCommit = mutationCommit as unknown as Record<string, unknown>;
         }
         const mutationEvidence = {
             ...(mutationCommit?.mutationObserved === true ? { photoshopMutationCommit: mutationCommit } : {}),
@@ -752,6 +758,8 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         return executionFailure(step, reason, spec, documentId, steps, {
             ...extra,
             ...latestMutationEvidence,
+            // 失败也要带出创建 commit：半途失败留下的新画布同样必须进结算台账。
+            ...(documentCreationCommit ? { photoshopMutationCommit: documentCreationCommit } : {}),
             ...latestEnvironmentRecoveryEvidence,
             toolResults: mutationToolResults,
             data: {
@@ -1812,6 +1820,9 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
             }
         } : {}),
         ...latestMutationEvidence,
+        // 创建 commit 优先于最后一次内部写入的 commit：创建事实只有内部管线知道，
+        // 最终 revision 已由 finalStructureReadback / 外层 acceptance transition 另行携带。
+        ...(documentCreationCommit ? { photoshopMutationCommit: documentCreationCommit } : {}),
         created: layoutResult?.created,
         createdLayerIds: layoutResult?.createdLayerIds,
         imagePlacementReceipts: layoutResult?.imagePlacementReceipts,
