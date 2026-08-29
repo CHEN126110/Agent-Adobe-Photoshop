@@ -2,11 +2,20 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 r31 首个零人工技术成功与 D-093 对象级文档隔离
+
+- `972baf75` 已补齐终局质量 Host 调用预算，`a56d62c1` 已阻止 Suite loader 把内部 locator 注入 Case /Rubric，`8ccda924` 已让 Main 对请求绑定的 UI 交互收据重新验签；三次提交均已推送，提交时完整核心闸门 58/58、Agent /UXP production build 与提交后双 Runtime identity 均通过。
+- r31 Attempt `main-image-pink-coffee-unseen-v1-attempt-20260829030300-d3e055211c70` / Run `main-image-pink-coffee-unseen-v1-run-20260829031200-b6f8c117-9e00` 是首个同时取得正式技术交付和 `userInterventionCount=0` 收据的样本：15 项机器检查通过、Harness 写入 0、5 次真实 model-owned mutation、19 次模型调用、26 次 Tool Call、约 8 分 59 秒完成。
+- r31 PSD 为 16,087,874 字节、SHA-256 `c6a5de30afceecbffffa3ea316e81f49dfb311a20d3de4b6fb4b0094145cd6d4`；JPG 为 889,003 字节、SHA-256 `5930817666232cc4412195850e4d418fa0f171c3bc70cc1e2654e5b25408afc2`。Final Judge 为 85 / `needs_review`：结果可用但鞋体权重、副文案缩略可读性和完整色系表达仍弱；当前官方 cohort 只有 1/5 Case、1 次重复，不能宣称稳定成功率或专业质量达标。
+- r31 返回后的活动文档仍是同一路径，但现为 `dirty`、history `164:345`，画面与终态 JPG 不同；磁盘 PSD/JPG 摘要保持 r31 终态 history `164:197` 的原值。变化发生在终态之后且来源无法归属，系统没有自动保存、关闭或丢弃，也不能把未知外部变化倒算为 Agent 失败。
+- D-093 已将正式 Debug 协议升级到 `debug-bridge-chat-submit-receipt/v3`，首次写入基线升级到 v1：提交时冻结文档对象，允许路径明确的 fixture 外部 dirty 文档保留；普通写入不能作用于外部活动文档，`createDocument` 可建立新目标，同请求后打开的 fixture 活动文档可承接写入。路径未知、提交时已有 fixture 文档或后来新开的外部文档继续 fail closed。
+- D-093 的 Design Reliability 专项行为验证、完整 `maintenance:validate` 58/58、Agent /UXP production build、`git diff --check` 与独立 Git 提交已完成；r32 外部 dirty 文档共存真机尚未完成，远端发布状态由 Git 记录。
+
 ## 2026-08-29 D-092 文档事实与 reconciliation 范围收敛
 
 - 用户指出无关 `SKU.psb` 不应成为全局阻塞。现有产品能力并非完全不知道环境：`listDocuments` 已读取文档路径，Renderer 已计算 `projectAffinity` 与文档性质，Operating Context 也会把完整清单交给模型。真实缺口是没有区分“文档有文件路径”和“文件自上次保存后又被修改”，而开发 reconciliation 又绕过上述事实，只检查打开文档数量。
 - D-092 新增 `editState=clean|dirty|unknown`：UXP 从官方 `Document.saved` 属性读取，`getDocumentInfo` 与 `listDocuments` 都返回；`pathState` 继续只表达本地路径是否存在。Renderer 兼容旧 Provider 结果并默认 unknown，把 editState、路径和项目归属共同放进 Operating Context，同时明确 dirty 不是 TaskRun 所有权、保存授权或关闭授权。
-- Design Reliability 保留正式新 Attempt 的 `none_open` 写前隔离，但 reconciliation 改用 `no_fixture_documents`：路径明确且在原 fixture 外的用户文档不阻塞；路径未知 /未保存文档和原 fixture 内文档仍阻断。对账还新增“Photoshop Runtime 必须在异常后重新加载”，与既有 Agent Runtime 重启、0 pending、原项目绑定共同闭合未知写状态。
+- D-092 当时先把 reconciliation 改为 `no_fixture_documents`：路径明确且在原 fixture 外的用户文档不阻塞；路径未知 /未保存文档和原 fixture 内文档仍阻断。正式 Attempt 残留的 `none_open` 已由后续 D-093 收敛为对象级写前隔离。对账还要求 Photoshop Runtime 在异常后重新加载，与 Agent Runtime 重启、0 pending 和原项目绑定共同闭合未知写状态。
 - 专项回归、完整 `maintenance:validate` 58/58、Agent /UXP production build、提交 `3532985b`、GitHub 推送和提交后 clean Runtime identity 均已通过。真机临时文档依次返回 `unsaved /clean`、`saved /clean`、`saved /dirty`，证明路径和保存后修改是独立事实；文档已按 ID 关闭，Photoshop 回到 0 文档。
 - r26 已在 dirty 外部临时文档仍打开时完成 reconciliation；正式事件记录 Agent /Photoshop Runtime 均在异常后重启、0 pending、原 fixture 文档 0、外部文档 1、所有权已解析。Design Reliability 账本现为 6 次 submission、6 次 terminal、0 次未闭合、0 条写状态未清账。r26 没有 Run /产物，仍不能计为技术成功。
 - 探针 PSD 为 27,302 字节，终端安全策略拒绝直接删除后仍留在系统 Temp 的 `designecho-document-state-probe-3532985b` 目录；它不属于用户项目、运行证据目录或 Git 工作树。

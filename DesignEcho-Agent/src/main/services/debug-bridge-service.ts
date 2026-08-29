@@ -125,8 +125,8 @@ export interface DebugBridgeChatSubmitInput {
     expectedModelId?: string;
     /** 正式成功率样本不接受从 dirty worktree 启动的 Runtime。 */
     requireCleanRuntimeGitState?: boolean;
-    /** 从零创作的隔离 Case 要求提交时 Photoshop 没有任何既有文档。 */
-    requireNoOpenPhotoshopDocuments?: boolean;
+    /** 隔离 Case 允许保留路径明确的外部文档，但提交时不能已有当前 fixture 文档或未知归属文档。 */
+    requireNoOpenFixtureDocuments?: boolean;
     publicPlanConfirmationSourceMessageId?: string;
     publicPlanConfirmationRequestId?: string;
     publicPlanDisposableLiveAdapter?: boolean;
@@ -729,7 +729,7 @@ export class DebugBridgeService {
                 && typeof body.expectedWorkspaceSemanticDigest === 'string'
                 && /^sha256:[0-9a-f]{64}$/.test(body.expectedWorkspaceSemanticDigest.trim())
                 && body.requireCleanRuntimeGitState === true
-                && body.requireNoOpenPhotoshopDocuments === true;
+                && body.requireNoOpenFixtureDocuments === true;
             if (!hasFormalWriteGuard) {
                 sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
                     stage: 'bridge_preflight',
@@ -822,7 +822,7 @@ export class DebugBridgeService {
                     ? body.expectedModelId.trim().slice(0, 256)
                     : undefined,
                 requireCleanRuntimeGitState: body.requireCleanRuntimeGitState === true,
-                requireNoOpenPhotoshopDocuments: body.requireNoOpenPhotoshopDocuments === true,
+                requireNoOpenFixtureDocuments: body.requireNoOpenFixtureDocuments === true,
                 publicPlanConfirmationSourceMessageId: typeof body.publicPlanConfirmationSourceMessageId === 'string'
                     ? body.publicPlanConfirmationSourceMessageId
                     : undefined,

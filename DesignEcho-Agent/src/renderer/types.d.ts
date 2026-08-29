@@ -952,7 +952,7 @@ export interface DesignEchoAPI {
         expectedProvider?: string;
         expectedModelId?: string;
         requireCleanRuntimeGitState?: boolean;
-        requireNoOpenPhotoshopDocuments?: boolean;
+        requireNoOpenFixtureDocuments?: boolean;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;

@@ -8,7 +8,7 @@ export const MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS = 40 * 60 * 1000;
 export const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = 'debug-bridge-chat-preflight/v2' as const;
 export const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = 'debug-bridge-chat-execution-failure/v1' as const;
 export const DEBUG_BRIDGE_CHAT_FAILURE_ENVELOPE_VERSION = 'debug-bridge-chat-failure-envelope/v1' as const;
-export const DEBUG_BRIDGE_CHAT_SUBMIT_RECEIPT_VERSION = 'debug-bridge-chat-submit-receipt/v2' as const;
+export const DEBUG_BRIDGE_CHAT_SUBMIT_RECEIPT_VERSION = 'debug-bridge-chat-submit-receipt/v3' as const;
 export const DEBUG_BRIDGE_INTERACTION_RECEIPT_VERSION = 'debug-bridge-interaction-receipt/v1' as const;
 export const DEBUG_BRIDGE_PHOTOSHOP_RUNTIME_BINDING_VERSION =
     'debug-bridge-photoshop-runtime-binding/v1' as const;

@@ -313,7 +313,7 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
         && String(input.expectedProvider || '').trim()
         && String(input.expectedModelId || '').trim()
         && input.requireCleanRuntimeGitState === true
-        && input.requireNoOpenPhotoshopDocuments === true
+        && input.requireNoOpenFixtureDocuments === true
     );
     if (!completeGuard) {
         return Promise.reject(buildDebugChatError({

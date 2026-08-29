@@ -66,6 +66,7 @@ import {
 } from '../../shared/agent-tool-execution-preflight';
 import {
     enforceGuardedPhotoshopExecutionBaseline,
+    type GuardedPhotoshopDocumentFact,
     type GuardedPhotoshopExecutionBaseline
 } from '../../shared/guarded-photoshop-execution-baseline';
 import {
@@ -2433,10 +2434,24 @@ function readGuardedPhotoshopRuntimeIdentity(
     return readDebugBridgePhotoshopRuntimeLiveIdentity(runtime);
 }
 
-function readGuardedOpenDocumentCount(value: unknown): number | undefined {
+function readGuardedOpenDocuments(
+    value: unknown,
+    expectedProjectPath: string
+): GuardedPhotoshopDocumentFact[] | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     if ((value as any).success === false || !Array.isArray((value as any).documents)) return undefined;
-    return (value as any).documents.length;
+    const inventory = enrichPhotoshopDocumentInventory(
+        value as Record<string, unknown>,
+        expectedProjectPath
+    );
+    return inventory.documents.map((document) => ({
+        id: document.id,
+        name: document.name,
+        isActive: document.isActive,
+        pathState: document.pathState,
+        editState: document.editState,
+        projectAffinity: document.projectAffinity
+    }));
 }
 
 function buildCancelledToolResult(toolName: string): Record<string, any> {
@@ -2477,12 +2492,12 @@ async function sendToPluginWithCancellation(
                         { signal, timeoutMs: 5_000 }
                     ))
                 ),
-                observeOpenDocumentCount: async (): Promise<number | undefined> => (
-                    readGuardedOpenDocumentCount(await callPhotoshopMcpTool(
+                observeOpenDocuments: async (): Promise<GuardedPhotoshopDocumentFact[] | undefined> => (
+                    readGuardedOpenDocuments(await callPhotoshopMcpTool(
                         'listDocuments',
-                        { includeDetails: false },
+                        { includeDetails: true, includePaths: true },
                         { signal, timeoutMs: 5_000 }
-                    ))
+                    ), guardedBaseline.expectedProjectPath)
                 )
             }
         );

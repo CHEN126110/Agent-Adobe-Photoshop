@@ -1031,7 +1031,7 @@ const api = {
         expectedProvider?: string;
         expectedModelId?: string;
         requireCleanRuntimeGitState?: boolean;
-        requireNoOpenPhotoshopDocuments?: boolean;
+        requireNoOpenFixtureDocuments?: boolean;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;

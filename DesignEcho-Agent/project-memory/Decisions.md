@@ -2,6 +2,17 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-093 Photoshop 隔离按对象身份与写入目标判断，禁止 `none_open` 全局锁
+
+- 状态：已采用并形成独立 Git 提交；Design Reliability 专项行为验证、完整核心闸门 58/58、Agent /UXP production build 均已通过，带外部 dirty 文档的正式真机 Attempt 待完成；远端发布状态由 Git 记录，不进入产品运行状态。
+- 触发事实：D-092 已让产品 Runtime 区分 `pathState`、`editState`、`projectAffinity` 和 TaskRun mutation 所有权，reconciliation 也允许路径明确且位于原 fixture 外的 dirty 文档继续打开；但正式 Attempt 与首次 mutation baseline 仍要求 `none_open`，导致开发 Harness 继续要求用户关闭无关 `SKU.psb`，与产品事实模型和低人工介入目标矛盾。
+- 决定：正式受控请求在提交时冻结完整文档清单。已有文档只有在路径状态已解析且属于 fixture 外部时才可保留，`dirty` 事实照实记录但不产生保存、关闭或写入授权；提交时已有 fixture 文档、路径未知 /未保存文档继续失败关闭。首次 Photoshop mutation 前重新读取清单：新出现的外部文档阻断；外部活动文档不能承接普通写入；`createDocument` 可以在外部文档仍打开时建立新的 TaskRun 目标；同一请求随后打开并激活的 fixture 文档可以承接精确写入。后续 mutation 继续经过现有 TaskRun、target /revision 与 Provider preflight，不由该基线取得额外权限。
+- Owner：`guarded-photoshop-execution-baseline` 只拥有正式 Debug 请求的两次对象级隔离事实和收据；`photoshop-document-inventory` 继续拥有路径 /项目归属投影；TaskRun 与 Photoshop execution preflight 继续拥有真实写目标，Agent 继续决定复用、切换或新建哪个合法对象。
+- 正面经验：环境安全应比较“哪个对象、属于谁、哪项动作会碰它”，而不是把应用全局状态压成一个布尔值。这样既能保护用户未保存工作，也不会让无关文档拖慢或阻塞新任务。
+- 禁止反例：不得恢复“有任意文档打开就阻断”、不得因 `dirty` 自动保存 /关闭、不得把 fixture 外部文档设为当前写目标、不得用文件名或活动标签猜所有权，也不得把 benchmark 洁净条件写回普通产品 Harness。
+- 回滚点：协议版本分别升级为 `guarded-photoshop-execution-baseline/v1`、`guarded-photoshop-execution-baseline-receipt/v1` 和 `debug-bridge-chat-submit-receipt/v3`；若真机发现目标归属误判，可独立回滚 D-093，但不得退回全局 `none_open`，应保留 D-092 的四类事实并收紧具体对象条件。
+- 验证边界：纯逻辑已覆盖外部 dirty 文档 + `createDocument` 通过、直接写外部活动文档阻断、提交后新外部文档阻断、同请求打开 fixture 文档后写入通过、未知文档和提交时已有 fixture 文档阻断；完整核心闸门 58/58 与 Agent /UXP production build 已通过。尚未用提交后新构建在真实 Photoshop 中完成 r32，因此不能宣称真机低介入率已提高。
+
 ## D-091 文件交付 revision 只能由拥有该 revision 的 Host 协议闭合
 
 - 状态：已采用；受控前后对照真机探针、定向回归、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 已通过，提交推送和 r26 正式 Attempt 尚待完成。

@@ -929,10 +929,20 @@ async function main() {
     runtimeDigest: `sha256:${"d".repeat(64)}`,
     manifestDigest: `sha256:${"e".repeat(64)}`
   };
+  const dirtyOutsideDocument = {
+    id: 41,
+    name: "用户工作稿.psd",
+    isActive: true,
+    pathState: "saved",
+    editState: "dirty",
+    projectAffinity: "outside_current_project"
+  };
   const passingBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
     requestId: "debug-request-pass",
     expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
-    expectedPhotoshopRuntimeBinding: baselineRuntimeBinding
+    expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+    expectedProjectPath: "C:/fixture-r32",
+    initialDocuments: [dirtyOutsideDocument]
   });
   let runtimeObservationCount = 0;
   let documentObservationCount = 0;
@@ -942,9 +952,9 @@ async function main() {
       runtimeObservationCount += 1;
       return baselineRuntimeIdentity;
     },
-    observeOpenDocumentCount: async () => {
+    observeOpenDocuments: async () => {
       documentObservationCount += 1;
-      return 0;
+      return [dirtyOutsideDocument];
     },
     now: () => "2026-08-26T00:00:00.000Z"
   };
@@ -965,8 +975,10 @@ async function main() {
   }
   assert(concurrentBaselineDecisions.every((decision) => decision.ready === true));
   assert.strictEqual(runtimeObservationCount, 1, "并发首次写只能读取一次 Runtime Build");
-  assert.strictEqual(documentObservationCount, 1, "并发首次写只能读取一次 no-open baseline");
+  assert.strictEqual(documentObservationCount, 1, "并发首次写只能读取一次对象级文档 baseline");
   assert.strictEqual(fakeMutationDispatchCount, 2, "通过后同一请求的后续 mutation 可继续执行");
+  assert.strictEqual(concurrentBaselineDecisions[0].receipt.initialDirtyOutsideFixtureDocumentCount, 1,
+    "外部 dirty 文档必须被记录但不能升级成全局阻塞");
 
   for (const blockedCase of [
     {
@@ -975,27 +987,87 @@ async function main() {
         ...baselineRuntimeIdentity,
         loadedAt: "2026-08-26T00:00:02.000Z"
       },
-      openDocuments: 0
+      toolName: "createDocument",
+      openDocuments: [dirtyOutsideDocument]
     },
-    { name: "document already open", runtimeIdentity: baselineRuntimeIdentity, openDocuments: 1 },
-    { name: "document state unavailable", runtimeIdentity: baselineRuntimeIdentity, openDocuments: undefined }
+    {
+      name: "new outside document",
+      runtimeIdentity: baselineRuntimeIdentity,
+      toolName: "createDocument",
+      openDocuments: [dirtyOutsideDocument, { ...dirtyOutsideDocument, id: 42, name: "后来打开.psd" }]
+    },
+    {
+      name: "outside document write target",
+      runtimeIdentity: baselineRuntimeIdentity,
+      toolName: "createRectangle",
+      openDocuments: [dirtyOutsideDocument]
+    },
+    {
+      name: "document state unavailable",
+      runtimeIdentity: baselineRuntimeIdentity,
+      toolName: "createDocument",
+      openDocuments: undefined
+    }
   ]) {
     const baseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
       requestId: `debug-request-${blockedCase.name}`,
       expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
-      expectedPhotoshopRuntimeBinding: baselineRuntimeBinding
+      expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+      expectedProjectPath: "C:/fixture-r32",
+      initialDocuments: [dirtyOutsideDocument]
     });
     const decision = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
       baseline,
-      "createDocument",
+      blockedCase.toolName,
       {
         observePhotoshopRuntimeIdentity: async () => blockedCase.runtimeIdentity,
-        observeOpenDocumentCount: async () => blockedCase.openDocuments
+        observeOpenDocuments: async () => blockedCase.openDocuments
       }
     );
     assert.strictEqual(decision.ready, false, `${blockedCase.name} must block before mutation dispatch`);
     assert.strictEqual(decision.receipt.status, "blocked");
   }
+  assert.throws(() => guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+    requestId: "debug-request-fixture-already-open",
+    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+    expectedProjectPath: "C:/fixture-r32",
+    initialDocuments: [{
+      ...dirtyOutsideDocument,
+      id: 51,
+      name: "fixture.psd",
+      editState: "clean",
+      projectAffinity: "current_project"
+    }]
+  }), /fixture_document_already_open/,
+  "提交时已存在 fixture 文档必须视为样本污染，而不是要求用户关闭所有其它文档");
+  const openedFixtureBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+    requestId: "debug-request-fixture-opened-by-run",
+    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+    expectedProjectPath: "C:/fixture-r32",
+    initialDocuments: [dirtyOutsideDocument]
+  });
+  const openedFixtureDecision = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+    openedFixtureBaseline,
+    "createRectangle",
+    {
+      observePhotoshopRuntimeIdentity: async () => baselineRuntimeIdentity,
+      observeOpenDocuments: async () => [{
+        ...dirtyOutsideDocument,
+        isActive: false
+      }, {
+        id: 52,
+        name: "fixture.psd",
+        isActive: true,
+        pathState: "saved",
+        editState: "clean",
+        projectAffinity: "current_project"
+      }]
+    }
+  );
+  assert.strictEqual(openedFixtureDecision.ready, true,
+    "同一请求开始后打开并激活的 fixture 文档必须允许承接首次精确写入");
 
   const duplicatePixelFixture = buildDebugProviderReceiptFixture({
     duplicateNormalizedPixels: true
@@ -2157,7 +2229,7 @@ async function main() {
   "不得再用错误文案猜测写入安全性");
 
   const validDebugReceipt = {
-    version: "debug-bridge-chat-submit-receipt/v2",
+    version: "debug-bridge-chat-submit-receipt/v3",
     requestId: "debug-request-1",
     conversationId: "conversation-1",
     submittedProjectPath: "C:/fixture/project",
@@ -2177,9 +2249,13 @@ async function main() {
     runtimeBuildIdentity: safeLiveEnvironmentInput.systemStatus.result.runtimeBuildIdentity,
     completedRuntimeBuildIdentity: safeLiveEnvironmentInput.systemStatus.result.runtimeBuildIdentity,
     runtimeArtifactsUnchangedThroughCompletion: true,
-    photoshopDocumentPolicy: "none_open",
+    photoshopDocumentPolicy: "preserve_outside_project_documents",
     photoshopDocumentGuardPassedAtSubmission: true,
-    openPhotoshopDocumentCountAtSubmission: 0,
+    openPhotoshopDocumentCountAtSubmission: 1,
+    openFixtureDocumentCountAtSubmission: 0,
+    openOutsideFixtureDocumentCountAtSubmission: 1,
+    unresolvedDocumentOwnershipCountAtSubmission: 0,
+    dirtyOutsideFixtureDocumentCountAtSubmission: 1,
     expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
     expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
     submittedPhotoshopRuntimeIdentity: safePhotoshopRuntime,
@@ -2191,9 +2267,14 @@ async function main() {
     photoshopRuntimeBindingMatchedAtSubmission: true,
     photoshopRuntimeBindingUnchangedThroughCompletion: true,
     firstPhotoshopMutationBaseline: {
-      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      version: "guarded-photoshop-execution-baseline-receipt/v1",
       status: "not_reached",
       requestId: "debug-request-1",
+      documentPolicy: "preserve_outside_project_documents",
+      expectedProjectPath: "C:/fixture/project",
+      initialOpenDocumentCount: 1,
+      initialOpenOutsideFixtureDocumentCount: 1,
+      initialDirtyOutsideFixtureDocumentCount: 1,
       expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
       expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding
     },
@@ -2288,14 +2369,23 @@ async function main() {
   const mutationAfterReferenceReceipt = {
     ...referenceBoundReceipt,
     firstPhotoshopMutationBaseline: {
-      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      version: "guarded-photoshop-execution-baseline-receipt/v1",
       status: "passed",
       requestId: "debug-request-1",
+      documentPolicy: "preserve_outside_project_documents",
+      expectedProjectPath: "C:/fixture/project",
+      initialOpenDocumentCount: 1,
+      initialOpenOutsideFixtureDocumentCount: 1,
+      initialDirtyOutsideFixtureDocumentCount: 1,
       expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
       expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
       firstMutationToolName: "createDocument",
       checkedAt: "2026-08-26T00:00:03.000Z",
-      openDocumentCount: 0,
+      openDocumentCount: 1,
+      openFixtureDocumentCount: 0,
+      openOutsideFixtureDocumentCount: 1,
+      unresolvedOwnershipDocumentCount: 0,
+      dirtyOutsideFixtureDocumentCount: 1,
       observedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
       observedPhotoshopRuntimeIdentity: safePhotoshopRuntime
     }
@@ -2414,9 +2504,14 @@ async function main() {
   const blockedMutationReceipt = {
     ...validDebugReceipt,
     firstPhotoshopMutationBaseline: {
-      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      version: "guarded-photoshop-execution-baseline-receipt/v1",
       status: "blocked",
       requestId: "debug-request-1",
+      documentPolicy: "preserve_outside_project_documents",
+      expectedProjectPath: "C:/fixture/project",
+      initialOpenDocumentCount: 1,
+      initialOpenOutsideFixtureDocumentCount: 1,
+      initialDirtyOutsideFixtureDocumentCount: 1,
       expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
       expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
       error: "Photoshop 当前已有既有文档"
@@ -2434,14 +2529,23 @@ async function main() {
   const passedMutationReceipt = {
     ...validDebugReceipt,
     firstPhotoshopMutationBaseline: {
-      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      version: "guarded-photoshop-execution-baseline-receipt/v1",
       status: "passed",
       requestId: "debug-request-1",
+      documentPolicy: "preserve_outside_project_documents",
+      expectedProjectPath: "C:/fixture/project",
+      initialOpenDocumentCount: 1,
+      initialOpenOutsideFixtureDocumentCount: 1,
+      initialDirtyOutsideFixtureDocumentCount: 1,
       expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
       expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
       observedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
       observedPhotoshopRuntimeIdentity: safePhotoshopRuntime,
-      openDocumentCount: 0,
+      openDocumentCount: 1,
+      openFixtureDocumentCount: 0,
+      openOutsideFixtureDocumentCount: 1,
+      unresolvedOwnershipDocumentCount: 0,
+      dirtyOutsideFixtureDocumentCount: 1,
       firstMutationToolName: "createDocument"
     }
   };
@@ -2481,7 +2585,7 @@ async function main() {
     }
   });
   assert.strictEqual(unrelatedDocumentReconciliation.ready, true,
-    "有明确外部路径的无关文档不得阻塞原 fixture reconciliation");
+    "有明确外部路径的无关文档不得阻塞正式 Attempt 或原 fixture reconciliation");
   assert.strictEqual(unrelatedDocumentReconciliation.checks.noOpenPhotoshopDocuments, false);
   assert.strictEqual(unrelatedDocumentReconciliation.checks.noOpenFixtureDocuments, true);
   assert.strictEqual(unrelatedDocumentReconciliation.checks.openDocumentOwnershipResolved, true);

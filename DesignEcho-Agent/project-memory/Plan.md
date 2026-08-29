@@ -15,10 +15,11 @@
 9. `[已定位 r25 首个偏差]`：真实 renderer 探针证明 `quickExport` 重定向写出的 JPG 缺少 `sourceHistoryStateRef`；E2 正确拒绝无法绑定终审 revision 的文件，而 `production-delivery` 只按文件格式计数。进一步证伪确认 ExtendScript 与 UXP history id 不在同一身份空间，不能互相包装。
 10. `[已完成 D-091 / 1a3f95d3]`：JSX 只在写前核对实际源文档 ID；UXP 是 revision 唯一 owner，在导出前冻结并在导出后读回同一 history，再返回收据。修复后同形探针的 renderer 收据、导出前 /后 revision 均为 `4492:4497`；完整 `maintenance:validate` 58/58、Agent /UXP production build、独立提交、GitHub 推送和提交后双 Runtime identity 均已完成。
 11. `[r26 已提交但未闭合]`：全新 fixture 与干净 `1a3f95d3` 写前预检通过；Agent 自主观察并选择 A01 后，外部 Codex 执行回合关闭了原 CLI、Runtime 与 Photoshop。Attempt 只有 `armed / submission_started`，无 terminal、Run Record 或产物；当前正式账本为 6 次 submission、5 次 terminal、1 次未闭合。
-12. `[已完成 D-092 / 3532985b]`：复用现有 `listDocuments`、Operating Context、TaskRun 创建 /mutation 收据和项目路径真相，不新建状态中心。UXP 区分本地路径 `pathState` 与保存后修改 `editState`；模型看到项目内外和 dirty 状态，但不因此取得保存 /关闭权限。正式 Attempt 继续 `none_open`，reconciliation 改为 `no_fixture_documents`。专项回归、完整核心闸门 58/58、Agent /UXP production build、提交推送和提交后 clean identity 均通过。
-13. `[已完成 r26 对账]`：真机探针依次证明 unsaved /clean、saved /clean 和 saved /dirty；随后在该 dirty 外部文档仍打开时完成 r26 reconciliation，事件明确记录原 fixture 文档 0、外部文档 1、所有权已解析。探针文档已关闭，账本现为 6 submission /6 terminal /0 未闭合 /0 未清账。
-14. `[待完成 r27]`：从锁定源创建全新 fixture，以同一句需求、GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布执行；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-15. `[条件后置]`：r27 技术成功后再对 r24 /r25 /r27 与用户成稿 /Eagle 做匿名质量比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
+12. `[已完成 D-092 / 3532985b]`：复用现有 `listDocuments`、Operating Context、TaskRun 创建 /mutation 收据和项目路径真相，不新建状态中心。UXP 区分本地路径 `pathState` 与保存后修改 `editState`；模型看到项目内外和 dirty 状态，但不因此取得保存 /关闭权限。reconciliation 使用 `no_fixture_documents`，专项回归、完整核心闸门 58/58、Agent /UXP production build、提交推送和提交后 clean identity 均通过。
+13. `[已完成 r28-r31 终局纵切]`：r28 完成精确文档对账；`972baf75` 修正终审 Host 预算，`a56d62c1` 清除 Suite locator 对 Case schema 的污染，`8ccda924` 增加 Main 验真的请求级交互收据并均已推送。r31 取得首个 15 项技术检查通过、同版本 PSD/JPG、Harness 0 写入且 `userInterventionCount=0` 的正式样本；19 次模型、26 次 Tool、约 8 分 59 秒，视觉 85 / `needs_review`，当前只覆盖 1/5 Case。
+14. `[已完成 D-093]`：正式 Attempt 和首次 mutation baseline 从全局 `none_open` 收敛为对象级冻结。路径明确的 fixture 外部 dirty 文档可以保留但不能成为写目标；提交时已有 fixture /未知归属文档、新出现的外部文档和对外部活动文档的普通写入继续阻断；`createDocument` 与同请求后打开的 fixture 活动目标可继续。专项行为验证、完整核心闸门 58/58、Agent /UXP production build 与独立 Git 提交均已完成；远端发布状态由 Git 记录。
+15. `[待完成 r32]`：保留 r31 路径明确但 dirty 的外部文档，不保存、不关闭；从锁定源创建全新 fixture，以同一句需求、GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt。除同 revision 交付和零人工收据外，还必须证明外部 documentId/history 未被任务改变。
+16. `[条件后置]`：r32 技术成功后，对候选、用户成稿和三个固定 Eagle 锚点做匿名质量比较；专业质量稳定后再单独治理首次写入与总耗时，不通过减少必要观察换速度。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

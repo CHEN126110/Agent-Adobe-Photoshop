@@ -33,9 +33,16 @@
 - r26 中断时的 Design Reliability 报告曾为 6 次 submission、5 次 terminal、1 次未闭合和 1 条写状态未清账；它已进入提交分母但没有产品终态，不能归因为 D-091 失败。D-092 后已按原 fixture 身份完成 reconciliation；r26 fixture 只用于该次对账，仍不得复用为下一次样本。
 - 用户指出“无关 SKU 文档打开”不应成为全局阻塞。代码审计确认产品 Runtime 已通过 `listDocuments` 提供真实路径状态、当前项目归属和文档性质，并注入 Operating Context；首个偏差是保存后修改状态缺失，第二个偏差是 Design Reliability reconciliation 丢弃上述事实，只按打开文档数量判定安全。
 - D-092 已把四类事实拆开：`pathState` 只表示是否存在本地路径，`editState` 表示自上次保存后是否还有修改，`projectAffinity` 表示是否位于当前项目，TaskRun 创建 /mutation 收据才表示当前任务所有权。UXP 的 `getDocumentInfo` /`listDocuments` 已读取 `Document.saved`，Operating Context 明确告诉模型 dirty /项目内外状态，并声明 dirty 不产生保存或关闭授权。
-- D-092 reconciliation 使用 `no_fixture_documents` 策略：新正式 Attempt 仍保持 `none_open` 写前基线；中断对账允许路径明确且位于原 fixture 外的文档继续打开，但任何路径未知 /未保存文档、原 fixture 内文档、待处理请求、未重启 Agent Runtime 或未重新加载 Photoshop Runtime 都继续 fail closed。完整核心闸门 58/58、Agent /UXP production build、提交 `3532985b`、GitHub 推送和提交后双 Runtime identity 均已通过。
+- D-092 reconciliation 使用 `no_fixture_documents` 策略：中断对账允许路径明确且位于原 fixture 外的文档继续打开，但任何路径未知 /未保存文档、原 fixture 内文档、待处理请求、未重启 Agent Runtime 或未重新加载 Photoshop Runtime 都继续 fail closed。完整核心闸门 58/58、Agent /UXP production build、提交 `3532985b`、GitHub 推送和提交后双 Runtime identity 均已通过。
 - D-092 真机探针在 Temp 创建 320×240 文档：新建时得到 `pathState=unsaved / editState=clean`，另存为 PSD 后得到 `saved / clean`，创建文字层后得到 `saved / dirty`；这实证了路径状态与保存后修改状态不能合并。探针文档 `documentId=33` 已按明确 ID 关闭且 Photoshop 回到 0 文档；27,302 字节 PSD 因终端删除策略拒绝仍留在 `C:\Users\12611\AppData\Local\Temp\designecho-document-state-probe-3532985b`，未进入项目或 Git。
 - r26 已在该 dirty 外部探针文档仍打开时完成 reconciliation。`04-reconciled.json` 绑定 clean Agent `designecho-3532985b5328-7f66b5e85f0a`、clean UXP `designecho-uxp-production-3532985b5328-197781aa5a08`，并记录 Agent /Photoshop Runtime 均在异常后重启、0 pending、原 fixture 文档 0、外部文档 1、所有权已解析。当前账本为 6 次 submission、6 次 terminal、0 次未闭合、0 条写状态未清账；r26 仍是外部中断样本，不是技术成功样本。
+- r28 已按精确 documentId、fixture 路径、clean 状态与 PSD/JPG 摘要完成 reconciliation；r29 暴露 Suite loader 把内部 `__file` 注入 Case 的开发契约污染，已由 `a56d62c1` 根治并加入严格 schema 回归。终局质量 Host 预算自相矛盾已由 `972baf75` 修正为允许完整的结构、像素、Judge 后版本闭合。
+- r30 首次取得 15 项技术检查全部通过、同版本 PSD/JPG 与 Harness 0 写入，但旧完成收据不能证明人工介入计数，因此只能记为技术链候选，不能计入零人工成功率。
+- `8ccda924` 已把 UI 真实交互做成请求绑定收据：普通追加用户消息、确认 /卡片 /画面修正与停止均按协议或设计纠错分开计数；Debug 初始提交和内部自动续接不伪造人工介入。专项验证、Main /Renderer 类型检查、完整核心闸门 58/58、Agent /UXP production build、提交与推送均已完成。
+- r31 是首个“技术交付 + 零人工纠偏收据”同时成立的正式样本：Attempt `main-image-pink-coffee-unseen-v1-attempt-20260829030300-d3e055211c70`、Run `main-image-pink-coffee-unseen-v1-run-20260829031200-b6f8c117-9e00`，15 项机器检查通过，10 次用户交付类写调用中 5 次形成真实 mutation，Harness 写入为 0，19 次模型调用、26 次 Tool Call、总耗时约 8 分 59 秒、首次写入约 2 分 56 秒。PSD 16,087,874 字节、SHA-256 `c6a5de30afceecbffffa3ea316e81f49dfb311a20d3de4b6fb4b0094145cd6d4`；JPG 889,003 字节、SHA-256 `5930817666232cc4412195850e4d418fa0f171c3bc70cc1e2654e5b25408afc2`。
+- r31 自动质量为 85 / `needs_review`，真实成稿有明确左图右文、主标题与加厚标签，已达到可用候选但仍未达到用户成稿 /Eagle 的成熟设计师上限：鞋体视觉重量偏强，副文案和列表缩略层级偏弱，未展示完整色系。正式 cohort 当前只覆盖 1/5 Case、1 次重复，不能由单样本宣称成功率达标。
+- r31 返回后的活动 Photoshop 文档现为同一文件路径、`editState=dirty`、history `164:345`，画面版式与终态 JPG 不同；磁盘 PSD/JPG 摘要仍精确匹配 Run Observation 的终态 history `164:197` 交付。该变化发生在任务终态之后，现有证据无法区分用户手动修改与其它外部写入，因此不得归因给 Agent、不得自动保存 /关闭，也不得倒改 r31 已发生的终态结果。
+- D-093 已把正式写前隔离从 `none_open` 改为请求级对象集合：提交时只禁止 fixture 文档和未知归属文档，路径明确的外部 dirty 文档可以保留；首次 mutation 前重新核对，`createDocument` 可在外部文档仍打开时建立新目标，普通写入不得落到外部活动文档，同请求随后打开的 fixture 文档可以承接写入。协议升级为 guarded baseline /receipt v1 与 Debug receipt v3；专项验证、完整核心闸门 58/58、Agent /UXP production build 和独立 Git 提交已完成，r32 真机待完成；远端发布状态由 Git 记录，不作为产品运行状态。
 
 ### 实施边界
 
@@ -73,6 +80,7 @@
 8. 版本相同不等于语义对象相同；document/history 只能证明时间一致性，ReviewSet source /coverage 才能证明“看的是成品还是辅助素材”。
 9. 跨宿主协议的数字字段不能因同名就假定同一身份空间；文件提交的源 revision 必须由拥有该 revision 的 UXP 在写前 /写后闭合，JSX 只证明自己选中了哪一个文档。
 10. 环境安全应按对象身份和副作用范围判断；“任意文档打开即阻塞”会把无关用户工作错误升级成全局锁，既增加人工介入，也掩盖系统已有的路径与项目归属事实。
+11. 测试隔离应冻结“提交时哪些外部对象已存在、首次写入准备碰哪个对象”，而不是要求用户把宿主应用清空；对象级收据比全局空状态更接近真实产品可靠性。
 
 ### 负面教训与禁止反例
 
@@ -88,11 +96,13 @@
 10. 禁止把 `single || bundle` 之类“有证据就先用”的降级写进终局选择；它会把素材、局部裁切或多屏集合偷换成单画布成品，并在 Judge、E2 与恢复 Artifact 之间制造多套事实。
 11. 禁止用真实存在的文件路径、导出成功文案或 ExtendScript history id 补造 UXP `sourceHistoryStateRef`；缺少同版本收据必须修复 Provider 返回链，不能放宽 E2 或扫描目录。
 12. 禁止用 `pathState=unsaved` 同时表达“没有路径”和“已有文件但有未保存修改”；也禁止把 `editState=dirty` 解释成当前 TaskRun 所有权、保存授权或关闭授权。
+13. 禁止把 benchmark 的洁净前提扩张为普通 Harness 的全局锁；也禁止为了让新 Attempt 启动而要求用户关闭、保存或放弃与当前 fixture 无关的工作文档。
 
 ### 下一步
 
-1. 从锁定源创建全新 r27 fixture，以同一句需求、同一 GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-2. r27 技术成功后，对 r24 /r25 /r27 可评分结果与用户成稿 /Eagle 做匿名视觉比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
+1. 以 D-093 最终提交重新核对 Agent /UXP 双 Runtime identity；远端发布状态由 Git 记录，不写进会随推送瞬间失效的产品状态字段。
+2. 从锁定源创建全新 r32 fixture，保留 r31 这个路径明确但 dirty 的外部文档不动，以同一句需求、GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；必须证明提交与首次 mutation 不被外部文档阻塞、首次写入建立新目标、外部 documentId/history 未变化、同 revision PSD/JPG 与零人工收据继续成立。
+3. r32 技术成功后，将候选与三个固定 Eagle 锚点及用户成稿放入匿名评审包；先完成商业质量盲评，再决定是继续设计能力治理还是开始速度优化。
 
 ### 验证与未知
 
@@ -109,11 +119,14 @@
 - 已验证：D-091 提交 `1a3f95d3` 已推送；提交后 Agent /UXP identity 均为同一干净提交，r26 写前环境全部通过。
 - 已验证：r26 只有 submission、没有 terminal /Run /产物；原 Runtime 与 Photoshop 已被外部关闭，当前用户 `SKU.psb` 属于后来启动的另一 Photoshop 进程。该样本处于未闭合开发账本，不代表 Agent 或 D-091 产品终态。
 - 已验证：D-092 专项回归、完整 `maintenance:validate` 58/58、Agent /UXP production build、提交 `3532985b`、GitHub 推送、提交后双 Runtime identity 与真机 path /editState 状态转换均通过；r26 已在一个 dirty 外部文档打开时安全 reconciliation。
-- 待验证：r27 正式 Attempt、重复样本和匿名视觉评审。
+- 已验证：`972baf75`、`a56d62c1`、`8ccda924` 已推送；r31 取得首个 Main 验真的零人工交互收据、15 项技术检查、同版本 PSD/JPG 和 Harness 0 写入正式成功样本。
+- 已验证：D-093 专项行为覆盖外部 dirty + createDocument 通过、外部活动文档普通写阻断、新外部文档阻断、同请求 fixture 目标写入通过及未知归属阻断；完整 `maintenance:validate` 58/58、Agent /UXP production build 与 `git diff --check` 通过。
+- 未知：r31 返回后 history `164:197 → 164:345` 的外部写入来源；现场已保留，不自动保存或关闭，不将未知归因包装成 Agent /Provider 事实。
+- 待验证：D-093 最终提交后 Runtime、r32 外部 dirty 文档共存真机、至少 5 Case 重复样本和匿名视觉评审。
 
 ### 状态
 
-`in_progress / d092_3532985b_pushed_clean_runtime_and_live_document_state_verified / r26_reconciled_with_one_unrelated_dirty_document / r27_pending`
+`in_progress / r31_first_attested_zero_correction_technical_pass / d093_core_58_builds_and_commit_complete / final_runtime_and_r32_live_pending`
 
 ---
 

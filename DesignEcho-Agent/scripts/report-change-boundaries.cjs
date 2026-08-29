@@ -213,7 +213,7 @@ const BOUNDARIES = [
       'npm run smoke:electron:startup-window',
       'DesignEcho-UXP npm run build'
     ],
-    match: (entry) => /acceptance|photoshop-tool-semantics|smoke-acceptance|smoke-photoshop-acceptance|smoke-photoshop-simple-operations-live|smoke-photoshop-layer-write-failures-live|smoke-photoshop-save-export-live|smoke-photoshop-document-save-close-live|smoke-photoshop-tool-semantics|smoke-photoshop-text-tool-benchmarks|smoke-photoshop-text-tools-live|smoke-photoshop-text-font-replace-live|smoke-debug-bridge-redaction|smoke-tool-result-redaction|smoke-chat-ui-execution-chain|smoke-chat-ui-electron-bridge|smoke-electron-startup-window|src\/renderer\/testing|chat-panel-test-bridge|debug-bridge-service|debug-bridge-chat|debug-bridge-project-reference|debug-project-reference|ToolResultBlock|components\/message\/parser|tool-logger/.test(entry.filePath) ||
+    match: (entry) => /acceptance|photoshop-tool-semantics|guarded-photoshop-execution-baseline|smoke-acceptance|smoke-photoshop-acceptance|smoke-photoshop-simple-operations-live|smoke-photoshop-layer-write-failures-live|smoke-photoshop-save-export-live|smoke-photoshop-document-save-close-live|smoke-photoshop-tool-semantics|smoke-photoshop-text-tool-benchmarks|smoke-photoshop-text-tools-live|smoke-photoshop-text-font-replace-live|smoke-debug-bridge-redaction|smoke-tool-result-redaction|smoke-chat-ui-execution-chain|smoke-chat-ui-electron-bridge|smoke-electron-startup-window|src\/renderer\/testing|chat-panel-test-bridge|debug-bridge-service|debug-bridge-chat|debug-bridge-project-reference|debug-project-reference|ToolResultBlock|components\/message\/parser|tool-logger/.test(entry.filePath) ||
       entry.filePath === 'DesignEcho-Agent/benchmarks/'
   },
   {

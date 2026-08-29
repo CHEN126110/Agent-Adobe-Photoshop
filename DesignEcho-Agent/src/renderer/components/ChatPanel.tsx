@@ -88,10 +88,14 @@ import {
 } from '../../shared/agent-runtime-v5/operating-context-snapshot';
 import { resolveMaterialSelectionReasonProjection } from '../../shared/design-workshop/compose-design-rationale-visibility';
 import {
+    assessGuardedPhotoshopDocuments,
     createGuardedPhotoshopExecutionBaseline,
     readGuardedPhotoshopExecutionBaselineReceipt,
+    type GuardedPhotoshopDocumentAssessment,
+    type GuardedPhotoshopDocumentFact,
     type GuardedPhotoshopExecutionBaseline
 } from '../../shared/guarded-photoshop-execution-baseline';
+import { enrichPhotoshopDocumentInventory } from '../../shared/photoshop-document-inventory';
 // 保留 useChatActions Hook 的模型选择功能
 import { useChatActions } from '../hooks/useChatActions';
 import {
@@ -5301,26 +5305,47 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         `当前 Photoshop Runtime 完整身份与受控调试指定版本不一致（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${submittedPhotoshopRuntimeBuildId || 'unknown'}）。`
                     );
                 }
-                let openPhotoshopDocumentCountAtSubmission: number | null = null;
-                if (request.requireNoOpenPhotoshopDocuments === true) {
+                let guardedOpenDocumentsAtSubmission: GuardedPhotoshopDocumentFact[] = [];
+                let guardedDocumentAssessmentAtSubmission: GuardedPhotoshopDocumentAssessment | null = null;
+                if (request.requireNoOpenFixtureDocuments === true) {
                     const documentListResult = await executeToolCall('listDocuments', {
-                        includeDetails: false
+                        includeDetails: true,
+                        includePaths: true
                     });
                     throwIfDebugRequestCancelled();
                     if (documentListResult?.success !== true
                         || !Array.isArray(documentListResult?.documents)) {
                         throw new Error('无法可靠读取 Photoshop 文档列表，本轮受控调试不会提交模型或执行写入。');
                     }
-                    const openDocumentCount = documentListResult.documents.length;
-                    openPhotoshopDocumentCountAtSubmission = openDocumentCount;
-                    if (openDocumentCount > 0) {
-                        throw new Error(`Photoshop 当前仍打开 ${openDocumentCount} 个既有文档；请先安全处理这些文档，再运行隔离测试。`);
+                    const documentInventory = enrichPhotoshopDocumentInventory(
+                        documentListResult,
+                        expectedProjectPath
+                    );
+                    guardedOpenDocumentsAtSubmission = documentInventory.documents.map((document) => ({
+                        id: document.id,
+                        name: document.name,
+                        isActive: document.isActive,
+                        pathState: document.pathState,
+                        editState: document.editState,
+                        projectAffinity: document.projectAffinity
+                    }));
+                    guardedDocumentAssessmentAtSubmission = assessGuardedPhotoshopDocuments({
+                        documents: guardedOpenDocumentsAtSubmission,
+                        phase: 'submission'
+                    });
+                    if (!guardedDocumentAssessmentAtSubmission.ready) {
+                        throw new Error(
+                            '当前 Photoshop 存在属于本测试目录、路径身份不明或无法安全归属的文档；'
+                            + '外部项目中路径明确的文档不会阻塞，但本轮不会猜测、保存或关闭冲突文档。'
+                        );
                     }
                 }
                 const guardedPhotoshopExecutionBaseline = createGuardedPhotoshopExecutionBaseline({
                     requestId: debugRequestId,
                     expectedPhotoshopRuntimeBuildId,
-                    expectedPhotoshopRuntimeBinding
+                    expectedPhotoshopRuntimeBinding,
+                    expectedProjectPath,
+                    initialDocuments: guardedOpenDocumentsAtSubmission
                 });
                 if (request.resetConversation) {
                     resetChatTestConversation();
@@ -5430,13 +5455,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             projectUnchangedThroughCompletion: Boolean(
                                 currentProjectPath && completedProjectPath === currentProjectPath
                             ),
-                            photoshopDocumentPolicy: request.requireNoOpenPhotoshopDocuments === true
-                                ? 'none_open'
+                            photoshopDocumentPolicy: request.requireNoOpenFixtureDocuments === true
+                                ? 'preserve_outside_project_documents'
                                 : 'not_required',
-                            openPhotoshopDocumentCountAtSubmission,
+                            openPhotoshopDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.openDocumentCount ?? null,
+                            openFixtureDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.openFixtureDocumentCount ?? null,
+                            openOutsideFixtureDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.openOutsideFixtureDocumentCount ?? null,
+                            unresolvedDocumentOwnershipCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.unresolvedOwnershipDocumentCount ?? null,
+                            dirtyOutsideFixtureDocumentCountAtSubmission:
+                                guardedDocumentAssessmentAtSubmission?.dirtyOutsideFixtureDocumentCount ?? null,
                             photoshopDocumentGuardPassedAtSubmission: Boolean(
-                                request.requireNoOpenPhotoshopDocuments === true
-                                && openPhotoshopDocumentCountAtSubmission === 0
+                                request.requireNoOpenFixtureDocuments === true
+                                && guardedDocumentAssessmentAtSubmission?.ready === true
                             ),
                             expectedPhotoshopRuntimeBuildId,
                             expectedPhotoshopRuntimeBinding,
