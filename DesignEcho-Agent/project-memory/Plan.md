@@ -1,6 +1,6 @@
 # Current Implementation Plan
 
-## 2026-08-29 唯一当前顺序：`D-094 → r32`
+## 2026-08-29 唯一当前顺序：`D-095 → r33`
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 
@@ -18,9 +18,11 @@
 12. `[已完成 D-092 / 3532985b]`：复用现有 `listDocuments`、Operating Context、TaskRun 创建 /mutation 收据和项目路径真相，不新建状态中心。UXP 区分本地路径 `pathState` 与保存后修改 `editState`；模型看到项目内外和 dirty 状态，但不因此取得保存 /关闭权限。reconciliation 使用 `no_fixture_documents`，专项回归、完整核心闸门 58/58、Agent /UXP production build、提交推送和提交后 clean identity 均通过。
 13. `[已完成 r28-r31 终局纵切]`：r28 完成精确文档对账；`972baf75` 修正终审 Host 预算，`a56d62c1` 清除 Suite locator 对 Case schema 的污染，`8ccda924` 增加 Main 验真的请求级交互收据并均已推送。r31 取得首个 15 项技术检查通过、同版本 PSD/JPG、Harness 0 写入且 `userInterventionCount=0` 的正式样本；19 次模型、26 次 Tool、约 8 分 59 秒，视觉 85 / `needs_review`，当前只覆盖 1/5 Case。
 14. `[已完成 D-093]`：正式 Attempt 和首次 mutation baseline 从全局 `none_open` 收敛为对象级冻结。路径明确的 fixture 外部 dirty 文档可以保留但不能成为写目标；提交时已有 fixture /未知归属文档、新出现的外部文档和对外部活动文档的普通写入继续阻断；`createDocument` 与同请求后打开的 fixture 活动目标可继续。专项行为验证、完整核心闸门 58/58、Agent /UXP production build 与独立 Git 提交均已完成；远端发布状态由 Git 记录。
-15. `[D-094 代码与完整闸门已完成，提交待完成]`：保留 D-093 唯一 baseline owner，把提交前已有且 Host revision 可读的未保存文档定义为受保护 TaskRun 前置对象。首次 mutation 必须是 `createDocument`；首次写前与完成时都核对前置 documentId/history、身份和 dirty 状态。缺 revision、对象变化、新外部文档或后来打开 fixture 输入文档均 fail closed，不保存 /关闭用户工作稿。专项、Agent /UXP production build 与完整核心闸门 58/58 已通过。
-16. `[待完成 r32]`：保留真实未保存 `800` 与路径明确 dirty `DSC08212.jpg`，不保存、不关闭；使用全新 r32 fixture、DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt。除同 revision 交付和零人工收据外，还必须由完成收据证明两个前置对象未被任务改变。
-17. `[条件后置]`：r32 技术成功后，对候选、用户成稿和三个固定 Eagle 锚点做匿名质量比较；专业质量稳定后再单独治理首次写入与总耗时，不通过减少必要观察换速度。
+15. `[已完成 D-094 / eb40a93c]`：保留 D-093 唯一 baseline owner，把提交前已有且 Host revision 可读的未保存文档定义为受保护 TaskRun 前置对象。首次 mutation 必须是 `createDocument`；首次写前与完成时都核对前置 documentId/history、身份和 dirty 状态。缺 revision、对象变化、新外部文档或后来打开 fixture 输入文档均 fail closed，不保存 /关闭用户工作稿。专项、Agent /UXP production build、完整核心闸门 58/58、独立提交和提交后 clean 双 Runtime identity 已完成。
+16. `[r32 已失败并留账]`：DeepSeek V4 Flash Vision 在 11 分 29 秒内执行 24 次模型调用、21 次 Tool Call；首个 `placeImage` 被写前安全拒绝，后续正确 `createDocument` 因 baseline 永久 blocked 仍失败，最终 8 次 mutation 尝试全部未派发、成功 mutation 为 0。运行中又发生外部文档并发变化和 UXP build 漂移，Attempt 已以 `submission_unknown_write_state` 终止，不能进入技术成功或质量分母。
+17. `[D-095 代码与完整闸门已完成]`：只在错误首写工具已被 dispatch 前拒绝且没有 Host 副作用时，把 baseline 恢复到 pending；下一次重新读取 Runtime 与完整文档 revision，只有 `createDocument` 可通过。真实 Runtime /文档漂移仍永久 blocked。专项攻击、相邻审计、Main /Renderer 类型检查、Agent production build 与完整核心闸门 58/58 已通过，独立提交待完成。
+18. `[待完成 r33]`：等待共享 Photoshop /UXP 加载会话稳定后创建全新 fixture，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；不得删除 r32 失败病历伪造 fresh run。
+19. `[条件后置]`：r33 技术成功后，对候选、用户成稿和三个固定 Eagle 锚点做匿名质量比较；专业质量稳定后再根据真实 stage accounting 治理上下文增长和总耗时，不通过减少必要观察换速度。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

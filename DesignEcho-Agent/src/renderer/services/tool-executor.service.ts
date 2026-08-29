@@ -2505,11 +2505,20 @@ async function sendToPluginWithCancellation(
             }
         );
         if (!baselineDecision.ready) {
+            const retryableWithinTaskRun = baselineDecision.retryableWithinTaskRun === true;
             return {
                 success: false,
-                code: 'guarded_first_photoshop_mutation_baseline_failed',
+                code: retryableWithinTaskRun
+                    ? 'guarded_first_photoshop_mutation_requires_create_document'
+                    : 'guarded_first_photoshop_mutation_baseline_failed',
                 policyGate: true,
                 blockedTool: publicToolName,
+                ...(retryableWithinTaskRun && baselineDecision.nextRequiredTool
+                    ? {
+                        retryableWithinTaskRun: true,
+                        nextRequiredTool: baselineDecision.nextRequiredTool
+                    }
+                    : {}),
                 error: baselineDecision.error || '首次 Photoshop 写入隔离基线未通过。',
                 firstPhotoshopMutationBaseline: baselineDecision.receipt,
                 executesPhotoshop: false,

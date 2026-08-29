@@ -2,6 +2,16 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-095 写前已拒绝且无 Host 副作用的错误首选可恢复，事实风险继续永久锁死
+
+- 状态：已采用；独立 D-095 分支已完成纯逻辑攻击测试、相邻审计、Main /Renderer 类型检查、Agent production build 和完整核心闸门 58/58，独立提交和 r33 真机待完成。
+- 触发事实：r32 的首个写尝试 `placeImage` 被 D-094 在 dispatch 前正确拒绝，RunRecord 明确 `mutationObserved=false`。模型下一轮已经改用正确 `createDocument`，但 `blockBaseline()` 把整个 TaskRun 永久置为 blocked，导致 5 次 `createDocument`、2 次 `composeDesign` 继续撞墙，最终 24 次模型调用累计 1,764,991 input tokens 且成功 mutation 为 0。
+- 决定：`first_mutation_must_create_task_document` 只表达当前工具选择错误，不表达 Photoshop 环境已经不安全。该调用仍返回失败且不派发；baseline 清除本次首写候选并回到 pending。下一次受保护写调用必须重新读取完整 Runtime identity 与文档 inventory，只有 `createDocument` 且所有前置对象 identity /revision 仍匹配时才可进入 passed。
+- 永久阻断边界：Runtime 身份缺失 /漂移、文档 inventory 缺失、fixture 文档已打开、前置对象缺失 /身份 /revision 变化、新外部文档出现等仍调用唯一 `blockBaseline()`；一旦 blocked，同一 TaskRun 不因后续状态看似恢复而解锁。被拒绝的原工具本身不可自动重试，也不会取得权限。
+- Owner：仍是现有 `guarded-photoshop-execution-baseline` 与唯一低层 Photoshop dispatch gate。Tool 结果只增加结构化 `retryableWithinTaskRun / nextRequiredTool=createDocument`，不新增恢复 Runtime、第二 Gate、Task Store、事务 owner 或设计决策逻辑。
+- 回滚点：D-095 是建立在 `eb40a93c` 上的独立提交；若真实行为证明恢复会导致非 `createDocument` 派发或放宽 Runtime /revision 风险，可单独回滚 D-095，D-094 的对象保护和永久失败关闭仍保留。
+- 验证边界：纯逻辑已覆盖错误首选拒绝、正确首写重新观察并通过、两次之间 revision 漂移永久阻断以及 blocked 后不得恢复。类型检查通过不等于 r33 真机完成；共享 UXP session 漂移另列风险，不由本决定掩盖。
+
 ## D-094 正式从零创作按 TaskRun 前置对象 revision 隔离，不要求文档先有磁盘路径
 
 - 状态：已采用为 D-093 的收敛切片；专项攻击测试、Main /Renderer 与 UXP 类型检查、工具注册、设计作者权、UXP 行为、唯一事务 owner 审计、Agent /UXP production build 和完整核心闸门 58/58 通过。独立提交、提交后双 Runtime identity 与 r32 真机待完成。

@@ -125,6 +125,12 @@ export interface GuardedPhotoshopExecutionBaselineDecision {
     ready: boolean;
     receipt: GuardedPhotoshopExecutionBaselineReceipt;
     error?: string;
+    /**
+     * 仅表示当前工具在 Photoshop dispatch 前被拒绝，且同一 TaskRun 可以用规定的
+     * 首写工具重新执行完整基线检查。它不表示原工具可重试，也不授予写权限。
+     */
+    retryableWithinTaskRun?: boolean;
+    nextRequiredTool?: 'createDocument';
 }
 
 export interface GuardedPhotoshopExecutionBaselineObservers {
@@ -311,6 +317,37 @@ function blockBaseline(
         ready: false,
         receipt: readGuardedPhotoshopExecutionBaselineReceipt(baseline),
         error
+    };
+}
+
+/**
+ * 首次写工具选错时，唯一可信事实是该调用尚未派发到 Photoshop。它可以被拒绝，
+ * 但不能把整个 TaskRun 永久毒化：下一次调用仍要从 Runtime identity 和完整文档
+ * inventory 重新检查，且只有 createDocument 才可能通过。真实环境漂移继续走
+ * blockBaseline() 永久失败关闭。
+ */
+function rejectNonMutatingFirstToolSelection(
+    baseline: GuardedPhotoshopExecutionBaseline,
+    error: string
+): GuardedPhotoshopExecutionBaselineDecision {
+    baseline.state = 'pending';
+    baseline.firstMutationToolName = undefined;
+    baseline.checkedAt = undefined;
+    baseline.openDocumentCount = undefined;
+    baseline.openFixtureDocumentCount = undefined;
+    baseline.openOutsideFixtureDocumentCount = undefined;
+    baseline.unresolvedOwnershipDocumentCount = undefined;
+    baseline.dirtyOutsideFixtureDocumentCount = undefined;
+    baseline.observedPhotoshopRuntimeBuildId = undefined;
+    baseline.observedPhotoshopRuntimeIdentity = undefined;
+    baseline.error = undefined;
+    baseline.checkPromise = undefined;
+    return {
+        ready: false,
+        receipt: readGuardedPhotoshopExecutionBaselineReceipt(baseline),
+        error,
+        retryableWithinTaskRun: true,
+        nextRequiredTool: 'createDocument'
     };
 }
 
@@ -513,6 +550,12 @@ export async function enforceGuardedPhotoshopExecutionBaseline(
             baseline.dirtyOutsideFixtureDocumentCount = documentAssessment.dirtyOutsideFixtureDocumentCount;
             if (!documentAssessment.ready) {
                 const reason = documentAssessment.blocker || 'document_inventory_unavailable';
+                if (reason === 'first_mutation_must_create_task_document') {
+                    return rejectNonMutatingFirstToolSelection(
+                        baseline,
+                        `首次 Photoshop 写入前的文档目标不安全：${reason}。`
+                    );
+                }
                 return blockBaseline(
                     baseline,
                     `首次 Photoshop 写入前的文档目标不安全：${reason}。`,

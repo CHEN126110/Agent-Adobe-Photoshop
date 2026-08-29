@@ -1024,6 +1024,93 @@ async function main() {
     true
   );
 
+  const recoverableSelectionBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+    requestId: "debug-request-recoverable-first-tool",
+    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+    expectedProjectPath: "C:/fixture-r32",
+    initialDocuments: [dirtyOutsideDocument, dirtyUnsavedDocument]
+  });
+  let recoverableRuntimeObservationCount = 0;
+  let recoverableDocumentObservationCount = 0;
+  const recoverableObservers = {
+    observePhotoshopRuntimeIdentity: async () => {
+      recoverableRuntimeObservationCount += 1;
+      return baselineRuntimeIdentity;
+    },
+    observeOpenDocuments: async () => {
+      recoverableDocumentObservationCount += 1;
+      return [dirtyOutsideDocument, dirtyUnsavedDocument];
+    }
+  };
+  const rejectedFirstTool = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+    recoverableSelectionBaseline,
+    "placeImage",
+    recoverableObservers
+  );
+  assert.strictEqual(rejectedFirstTool.ready, false,
+    "错误首写工具必须在 Photoshop dispatch 前拒绝");
+  assert.strictEqual(rejectedFirstTool.receipt.status, "not_reached",
+    "没有 Host 副作用的工具选择错误不能伪造成已执行或永久 blocked mutation");
+  assert.strictEqual(rejectedFirstTool.retryableWithinTaskRun, true);
+  assert.strictEqual(rejectedFirstTool.nextRequiredTool, "createDocument");
+  assert.strictEqual(recoverableSelectionBaseline.state, "pending");
+  assert.strictEqual(recoverableSelectionBaseline.firstMutationToolName, undefined);
+  const recoveredFirstMutation = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+    recoverableSelectionBaseline,
+    "createDocument",
+    recoverableObservers
+  );
+  assert.strictEqual(recoveredFirstMutation.ready, true,
+    "被写前拒绝且未产生副作用后，正确 createDocument 必须重新检查并取得首写资格");
+  assert.strictEqual(recoveredFirstMutation.receipt.status, "passed");
+  assert.strictEqual(recoveredFirstMutation.receipt.firstMutationToolName, "createDocument");
+  assert.strictEqual(recoverableRuntimeObservationCount, 2,
+    "恢复尝试不能复用错误首选时的 Runtime 观察");
+  assert.strictEqual(recoverableDocumentObservationCount, 2,
+    "恢复尝试不能复用错误首选时的文档 revision 观察");
+
+  const driftAfterRecoverableRejectionBaseline =
+    guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+      requestId: "debug-request-drift-after-recoverable-rejection",
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+      expectedProjectPath: "C:/fixture-r32",
+      initialDocuments: [dirtyOutsideDocument, dirtyUnsavedDocument]
+    });
+  const rejectedBeforeRevisionDrift = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+    driftAfterRecoverableRejectionBaseline,
+    "placeImage",
+    passingObservers
+  );
+  assert.strictEqual(rejectedBeforeRevisionDrift.retryableWithinTaskRun, true);
+  const blockedAfterRevisionDrift = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+    driftAfterRecoverableRejectionBaseline,
+    "createDocument",
+    {
+      observePhotoshopRuntimeIdentity: async () => baselineRuntimeIdentity,
+      observeOpenDocuments: async () => [
+        dirtyOutsideDocument,
+        {
+          ...dirtyUnsavedDocument,
+          historyStateRef: { documentId: 42, historyStateId: 203 }
+        }
+      ]
+    }
+  );
+  assert.strictEqual(blockedAfterRevisionDrift.ready, false);
+  assert.strictEqual(blockedAfterRevisionDrift.receipt.status, "blocked",
+    "可恢复拒绝后的真实 revision 漂移必须永久失败关闭");
+  assert.strictEqual(blockedAfterRevisionDrift.retryableWithinTaskRun, undefined);
+  assert.match(blockedAfterRevisionDrift.error, /preexisting_document_revision_changed/);
+  const stillBlockedAfterSafeFactsReturn = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+    driftAfterRecoverableRejectionBaseline,
+    "createDocument",
+    passingObservers
+  );
+  assert.strictEqual(stillBlockedAfterSafeFactsReturn.receipt.status, "blocked",
+    "真实 revision 漂移不能因后续观察看似恢复而在同一 TaskRun 解锁");
+
   for (const completionFailure of [
     {
       name: "preexisting revision changed",
@@ -1105,12 +1192,6 @@ async function main() {
           historyStateRef: { documentId: 43, historyStateId: 303 }
         }
       ]
-    },
-    {
-      name: "outside document write target",
-      runtimeIdentity: baselineRuntimeIdentity,
-      toolName: "createRectangle",
-      openDocuments: [dirtyOutsideDocument, dirtyUnsavedDocument]
     },
     {
       name: "document state unavailable",
@@ -1569,6 +1650,10 @@ async function main() {
     "首次受控副作用 baseline 必须位于唯一底层 Photoshop MCP dispatch 之前");
   assert(toolExecutorSource.includes("isAgentToolExecutionGuarded(publicToolName, params)"),
     "photoshop_write 与 save_export 必须共用同一个首次副作用 baseline");
+  assert(toolExecutorSource.includes("guarded_first_photoshop_mutation_requires_create_document")
+    && toolExecutorSource.includes("retryableWithinTaskRun: true")
+    && toolExecutorSource.includes("nextRequiredTool: baselineDecision.nextRequiredTool"),
+  "无副作用首写工具拒绝必须给出结构化恢复出口，真实 baseline 失败仍保持原终止 code");
   assert(toolExecutorSource.includes("'quickExport'")
     && toolExecutorSource.includes("'saveDocument',\n                    saveParams")
     && toolExecutorSource.includes("options,\n                    'saveDocument'"),

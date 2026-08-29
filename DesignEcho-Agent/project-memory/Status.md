@@ -2,6 +2,14 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-095 无副作用首写拒绝恢复与 r32 失败病历
+
+- D-094 已形成干净提交 `eb40a93c`，提交后 Agent /UXP production identity 匹配。r32 在真实未保存 `800` 保持打开时通过 read-only preflight，证明 `documentId/historyStateId` 前置对象隔离可以在真机建立。
+- r32 Attempt `main-image-pink-coffee-unseen-v1-attempt-20260829045547-706e60bd6c2e` / Run `run-20260829050717-b6f8c117-8f2a` 使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`，最终失败：23 iterations、24 次模型调用、21 次 Tool Call、1,764,991 input tokens、67,813 output tokens、649,831 ms 模型耗时、689,034 ms 总耗时。
+- 首个写尝试 `placeImage` 在 Photoshop dispatch 前被 `first_mutation_must_create_task_document` 拒绝。模型下一轮已经改用 `createDocument`，但 baseline 的 blocked 状态不可恢复，5 次 `createDocument` 与 2 次 `composeDesign` 继续失败；RunRecord 证明 8 次 mutation 尝试均 `mutationObserved=false`、成功 mutation 为 0，因此用户 `800` 的 revision 变化不是本 Run 写入。
+- 运行期间外部又打开 `E:\WERKE\C-1258\PSD\详情页.psb`，并把 UXP 从 clean D-094 build 切换到旧 `de628ade...-dirty`；Debug Bridge 在完成态按 runtime binding 失败关闭，Attempt 记录 `submission_unknown_write_state`。该失败不能重放，也不能计入设计质量。
+- D-095 已在独立分支实现：只有纯工具选择错误可以返回 pending 并要求下一次重新检查；Runtime /文档事实错误仍永久 blocked。攻击用例已证明 `placeImage → createDocument` 可恢复，以及两次之间 revision 漂移继续永久阻断；Design Reliability 专项、相邻审计、Main /Renderer 类型检查、Agent production build 和完整核心闸门 58/58 已通过，独立提交和 r33 真机待完成。
+
 ## 2026-08-29 D-094 未保存前置文档的 TaskRun 对象隔离
 
 - r32 fixture 已以全新实例 `fixture-20260829040410-92601cced5ad` 准备完成，输入 digest 与锁定 Case 一致且没有旧输出。当前真实模型已按用户要求切换为 DeepSeek 官方 `deepseek-v4-flash-vision-exp`；正常配置中的官方 Key 未丢失，内置 Key 连通性、真实 Agent 图像输入和结构化 Tool Call 探针均通过。

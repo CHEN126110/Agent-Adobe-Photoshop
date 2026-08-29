@@ -1,9 +1,11 @@
 {
-  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：r31 已取得首个 Main 验真的零人工技术成功；当前按 D-093 把正式 Photoshop 写前隔离从全局 none_open 收敛为对象级文档身份与写目标保护，完成核心闸门后在保留外部 dirty 文档的条件下运行 r32。",
-  "currentMilestone": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-  "milestoneStatus": "r31_first_attested_zero_correction_technical_pass_d093_core_58_builds_and_commit_complete_final_runtime_and_r32_pending",
+  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-095：r32 证明 D-094 安全阻断有效，但无副作用首写工具错误永久毒化 TaskRun，造成 24 次模型调用、176 万 input tokens 与零 mutation；当前只让该错误选择可重新检查，真实 Runtime /文档漂移继续永久锁死。",
+  "currentMilestone": "DESIGN-RELIABILITY-095",
+  "milestoneStatus": "r32_failed_zero_mutation_gate_poison_and_uxp_runtime_drift_d095_targeted_adjacent_typechecks_production_build_and_full_core_58_passed_commit_clean_runtime_and_r33_pending",
   "verified": {
     "code": [
+      "Design Reliability recoverable non-mutating first-tool rejection D-095 (2026-08-29): a first write tool rejected before Photoshop dispatch for first_mutation_must_create_task_document no longer permanently poisons the TaskRun. The baseline returns to pending, clears the rejected candidate and re-observes full runtime and document revisions; only createDocument can pass. Runtime identity, inventory, fixture, preexisting-object and revision drift still latch blocked. Targeted attacks and Main/Renderer typechecks passed; full core and live r33 remain pending.",
+      "Design Reliability protected preexisting revision baseline D-094 live negative evidence (2026-08-29): clean commit eb40a93c and matching Agent/UXP builds passed r32 preflight with unsaved 800 open. The failed r32 run used DeepSeek V4 Flash Vision and recorded 8 failed mutation attempts with mutationObserved=false and zero successful mutations; runtime binding rejected a later dirty UXP generation. This proves safety containment, not technical delivery or design quality.",
       "Design Reliability object-scoped document baseline D-093 (2026-08-29): formal Debug submission freezes the open-document inventory and permits resolved outside-fixture documents, including dirty user work, without granting save, close or write authority. First mutation rechecks runtime and document identities; createDocument may establish a new target while external documents remain open, normal writes require an active fixture document, and unresolved, pre-existing fixture or newly opened outside documents fail closed. The Debug receipt is v3 and the guarded baseline/receipt are v1.",
       "Design Reliability ReviewSet identity slice D-090 (2026-08-29): single-surface terminal closure never falls back to a same-revision visual_observation_bundle; multi-surface closure still requires its Bundle. Final Judge selection, E2 reviewed-source binding and trusted cross-generation visual artifacts consume the same selector. The integrated behavior audit injects a valid misleading same-history asset Bundle and requires an automatic no-region full-canvas capture, exact Judge-first image, Bundle exclusion and persisted single_surface artifact.",
       "Design Reliability terminal lifecycle slice (2026-08-29): an admitted model turn receives a one-shot Tool settlement lease while hard Tool limits and all execution guards remain enforced; viewable artifact emergence idempotently activates existing delivery capability schemas without choosing or executing them; performance-budget terminal closure preserves structured completion truth; final quality has one bounded shared terminal deadline; agentic final delivery binds every required save/export receipt after the last content mutation on the same reviewed document/history.",
@@ -283,50 +285,50 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "DESIGN-RELIABILITY-094",
-    "summary": "Protect every Photoshop document that predates a disposable TaskRun by its live document/history revision, require createDocument to produce the first write target, and reconcile all protected objects again at completion without saving or closing user work.",
-    "status": "code_targeted_attacks_main_renderer_uxp_typechecks_tool_registry_design_authorship_uxp_behavior_single_transaction_owner_agent_uxp_production_build_and_full_core_58_passed_commit_clean_runtime_and_r32_pending",
+    "id": "DESIGN-RELIABILITY-095",
+    "summary": "Allow a first write tool rejected before Photoshop dispatch to recover inside the same TaskRun only by rechecking the full runtime and document baseline and then dispatching createDocument; keep every factual runtime or revision hazard permanently blocked.",
+    "status": "r32_negative_evidence_root_cause_and_owner_confirmed_recoverable_first_tool_and_revision_drift_attacks_adjacent_audits_main_renderer_typechecks_production_build_and_full_core_58_passed_commit_clean_runtime_and_r33_pending",
     "scope": [
-      "Treat a pre-submission unsaved document as a protected external TaskRun object only when Photoshop returns a matching documentId/historyStateId.",
-      "Require createDocument as the first Photoshop mutation for the fixed from-scratch reliability case.",
-      "Keep every subsequent mutation under the existing private target/revision guard and unique PhotoshopTransactionRunner.",
-      "Reconcile protected document identity, dirty state and revision again before issuing the completion receipt.",
-      "Persist only bounded revision digests and counts in development evidence; do not persist paths or raw payloads.",
-      "Do not save, close, discard or rewrite the real 800 and DSC08212.jpg documents to clear the benchmark gate.",
-      "Run r32 only after a clean commit has matching Agent and UXP production build identities."
+      "Reject an incorrect first write tool before Photoshop dispatch and keep success=false, executesPhotoshop=false and countsAsTaskProgress=false.",
+      "Return the baseline to pending only for first_mutation_must_create_task_document and re-observe runtime plus every protected document revision.",
+      "Allow only createDocument to become the first dispatched mutation; all later writes retain the private target/revision guard and unique PhotoshopTransactionRunner.",
+      "Latch runtime identity, inventory, fixture, preexisting-object, revision and new-external-document failures as permanently blocked.",
+      "Keep the D-094 completion reconciliation and development evidence chain unchanged.",
+      "Do not mix DeepSeek transport, UXP loader ownership or design prompting into D-095.",
+      "Use a fresh r33 fixture after a clean commit and stable single UXP loading session."
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-RELIABILITY-094",
-    "summary": "Complete r32 with the real unsaved 800 document and dirty DSC08212.jpg still open, while proving the TaskRun creates and writes only its own document and leaves both preexisting objects unchanged.",
-    "status": "deepseek_vision_and_key_verified_r32_fixture_ready_d094_targeted_validation_production_build_and_full_core_58_passed_commit_clean_runtime_and_live_r32_pending",
+    "id": "DESIGN-RELIABILITY-095",
+    "summary": "Remove the r32 no-side-effect baseline poison without weakening document or runtime safety, then prove in a fresh DeepSeek V4 Flash Vision case that the first dispatched mutation creates the task document and no external work is touched.",
+    "status": "deepseek_vision_and_key_verified_d094_clean_commit_and_live_safety_negative_evidence_complete_d095_targeted_adjacent_typechecks_production_build_and_full_core_58_passed_commit_and_r33_pending",
     "mustDo": [
-      "Expose per-document Photoshop historyStateRef from listDocuments without switching or mutating documents.",
-      "Freeze all preexisting document revisions before model submission and compare them immediately before the first mutation.",
-      "Block every first mutation except createDocument and reject fixture documents opened before that mutation.",
-      "Compare every protected document again at TaskRun completion and require exact identity and revision stability.",
+      "Keep a rejected non-createDocument first write outside Photoshop and return a structured same-TaskRun recovery instruction.",
+      "Re-read the full Photoshop runtime identity and document inventory before a later createDocument can pass.",
+      "Permanently block any runtime, inventory, fixture, identity or revision drift even after a recoverable rejection.",
+      "Preserve D-094 completion reconciliation for every protected preexisting document.",
       "Use DeepSeek official deepseek-v4-flash-vision-exp with the existing secure key and real Agent image/tool transport.",
-      "Produce same-revision PSD and JPG, zero user design corrections and a verified completion receipt in r32."
+      "Produce same-revision PSD and JPG, zero user design corrections and a verified completion receipt in a fresh r33 fixture."
     ],
     "mustNotDo": [
-      "Do not treat an unsaved document without a valid Host revision as safe.",
-      "Do not infer TaskRun write ownership from pathState, editState, document name or active status.",
-      "Do not allow an opened fixture input image to replace createDocument as the first write target.",
+      "Do not retry or dispatch the originally rejected write tool.",
+      "Do not recover runtime or document fact failures with defaults, retries or later apparently safe observations.",
+      "Do not delete the r32 RunRecord or Attempt events to reuse a consumed fixture.",
       "Do not create a second transaction, runtime, document store or completion gate.",
       "Do not weaken the existing target/revision preflight or unique PhotoshopTransactionRunner.",
-      "Do not save or close 800, DSC08212.jpg or any other user document for the test."
+      "Do not save or close 800, 详情页.psb or any other user document for the test."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-RELIABILITY-094",
+    "id": "DESIGN-RELIABILITY-095",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：r32 fixture、DeepSeek Vision 模型选择、Key 连通性、真实 Agent 视觉与 Tool Call 探针。",
-      "已完成代码：listDocuments revision、TaskRun 前置对象冻结、createDocument 首写约束和完成对账。",
-      "已完成专项：Design Reliability 攻击测试、Main/Renderer/UXP 类型检查、工具注册、设计作者权、UXP 行为和事务 owner 审计。",
-      "已完成：Agent/UXP production build 和完整 maintenance:validate 58/58。",
-      "待完成：独立提交和提交后双 Runtime identity。",
-      "待完成：在 800 与 DSC08212.jpg 保持打开且未改变的条件下运行 r32。",
+      "已完成：D-094 clean commit、双 Runtime identity、DeepSeek Vision 与 r32 read-only preflight。",
+      "已完成负向证据：r32 的 8 次 mutation 尝试全部未派发，baseline poison 与 UXP runtime drift 已分开归因。",
+      "已完成 D-095 专项：错误首选后 createDocument 可重新观察并通过，revision 漂移仍永久 blocked。",
+      "已完成：相邻审计、Main/Renderer 类型检查、Agent production build 和完整 maintenance:validate 58/58。",
+      "待完成：项目状态轻量复核和独立提交。",
+      "待完成：等待共享 UXP loading session 稳定，创建 fresh r33 并运行真实 Case。",
       "条件后置：技术成功后完成同版本交付复核与匿名视觉比较。"
     ]
   },

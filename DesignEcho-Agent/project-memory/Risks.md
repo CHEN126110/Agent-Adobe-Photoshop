@@ -6,6 +6,12 @@
 
 ## 当前高风险
 
+### R-053 共享 Photoshop 的 UXP plugin session 可被其它开发会话替换
+
+- 事实：r32 提交时 UXP 为 clean D-094 build `designecho-uxp-production-eb40a93c9b17-35053c988e2a`，但运行到 05:04:18 后变成旧工作树 `designecho-uxp-production-de628ade831d-77193162309f-dirty`。同一时段还有其它 Codex 任务在共享 `C:\UXP\2.0` 启动 DesignEcho 调试窗口；当前机器只有一个 Photoshop /UXP Host，插件 ID 也唯一。现有 runtime binding 在完成态正确拒绝漂移，但不能阻止外部 UDT load 替换当前 session。
+- 影响：正式 Attempt 即使 Agent 与 Photoshop 动作正确，也会因运行时代际变化成为 unknown write state；继续在共享加载会话上盲重跑会反复消耗模型与 fixture，且可能把另一个开发任务的文档活动混进基线。
+- 处理：开发 E2E 在提交前必须确认其它共享 Photoshop /UXP 任务已停止加载插件，并用同一 clean manifest 执行 replace + bridge readback；Attempt 期间持续以现有 runtime binding fail closed。短期使用运行纪律和单一 host lease，不把 UDT 外部行为伪装成产品 Runtime 可锁定；若重复漂移，再单独设计开发 Host lease /loader ownership 切片，不与 D-095 恢复语义混改。
+
 ### R-052 终局视觉证据类型偷换导致 Judge 看错图、交付无法闭合
 
 - 事实：r24 的真实 Photoshop 成品包含完整主体、标题和四色陈列，但 Final Judge 的文字诊断描述成了平铺素材；Trace 中不存在 Harness 全画布采集，同时 `finalArtifactObserved=true`、生产交付检查通过和安全 `finalArtifactRefs` 为空并存。代码核对确认单画布 selector 仍使用 `single || bundle`，与同文件“单画布选 full-canvas”的注释和 E2 full-surface 要求矛盾。
