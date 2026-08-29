@@ -1,5 +1,55 @@
 # Current Task
 
+## 2026-08-29 SKU-POSE-INTEGRATION-103：姿态统一三片能力进入当前主链
+
+### 目标
+
+1. 把已经独立治理的姿态统一能力按“纯离线算法 → 版本化单事务 Provider → 面板迁移”三个可独立回滚切片移植到 D-102 当前主链；不恢复曾存在 P0 的 PNG 裁边、隐式活动文档、整文档 duplicate 或拼接写链。
+2. 保持唯一 owner：Agent /用户决定是否矫正及显式强度；纯算法只计算候选和机械质量；Main Provider 冻结 document /history /layer 并调度；UXP 只由 `PhotoshopTransactionRunner` 完成一次写入及读回；面板只暴露真实进入 Provider 的参数。
+3. D-097 继续作为 r32 reconciliation /r33 单变量真机基线；D-103 在独立 worktree 完成工程集成，不停止用户普通 DesignEcho、不替换当前 UXP，也不触碰现有 Photoshop 文档。
+
+### 当前事实
+
+- 原姿态分支已经把共享脏工作树中的 P0 链拆成三个功能提交。纯算法不读取文件、不访问网络 /Photoshop，不注册 Agent Tool，并以 `sku-pose-alignment-report/v1` 对弯曲改善、Jacobian、局部尺度、前景保留、袜口漂移和安全边距做失败关闭；拒绝或无需处理时返回原像素。
+- 原分支 Provider 使用精确 document /history /layer 捕获未裁边 RAW RGBA，在透明安全工作画布运行算法，通过机械验收后只调用一次内部 `applySkuPoseAlignment`；成功必须取得版本化捕获 /Provider /mutation 收据、同目标 history 前进、源层隐藏、输出层可见和几何读回。`captureLayerPixels` 与 `applySkuPoseAlignment` 均不进入普通 Agent Tool 面。
+- 原分支曾在三个全新隔离 Photoshop 文档 `4180 /4187 /4194` 连续完成合成曲袜 Provider E2E：source layer 3 → output layer 4，中心线弯曲降低约 83.9%，袜口漂移约 0.04%，测试文档均未保存关闭并恢复原文档。这证明原提交的几何、事务和恢复闭环，不证明 D-103 exact build 或真实商品商业质量。
+- 原面板切片已删除参考形状、款式、内容保护、平滑度、分区、执行步骤和模拟进度等未进入新版 Provider 的字段，只保留批量图层、显式强度和袜口保护；整批绑定加载时 documentId，逐层读取最新 revision，切换文档、未知 mutation 或网络异常均停止后续写入。原分支真实加载过 UXP 面板壳，但自动化输入无法送达 `msedgewebview2.exe` 子窗口，按钮链没有被伪造为已验证。
+- 真实适用性审计检查了指定商品 C-1256 的 8 张代表图、两批跨商品确定性抽样 36 + 48 张以及 C-1024 六张原图，没有找到“单只完整主体 + 自然中等弯曲 + 袜口 /图案清晰”的固定商业案例。这不证明全库没有样本，但足以拒绝人为弯曲直袜或用不适用图片制造质量结论。
+- D-103 从 D-102 `a262a4f8` 建立独立 worktree，按责任边界形成 `c8793b1d`（离线算法）、`5ff69b19`（Provider）、`2d4924d0`（面板）。旧分支的项目记忆和过时依赖声明未进入；27 个非重叠功能文件逐字节一致，9 个重叠文件只在当前 owner 处合并。
+- 当前 D-103 依赖预检为 Agent 636/636、UXP 148/148；算法 /Provider /面板专项、UXP 全测试、181 Tool 审计、设计作者权、业务 /Executor /语义 dispatch /变更边界、Main 构建、Renderer 类型检查、两端 production build 及唯一一次完整核心闸门 60/60 已通过。
+- 用户普通 DesignEcho PID 48836 仍占用 8765–8769，Host build identity 不可验证；当前 Photoshop 有 5 个文档，活动对象为外部 Eagle 素材，旧 UXP 无法提供可靠 editState。D-103 没有加载到该现场，也没有执行 Photoshop 写操作。
+
+### 实施边界
+
+- 三个提交分别承担算法、事务 Provider 和调用方面板迁移；任何一片都可独立审查 /回滚，不把面板便利逻辑塞入 Provider，不把袜子算法塞入通用 Harness。
+- Harness 只校验身份、revision、参数范围、质量契约、事务收据与读回，不替 Agent 判断商品是否应该被拉直，也不把机械分数冒充设计审美。
+- 不恢复 native PNG 裁透明边距、隐式活动文档、整文档 duplicate、旧 `enhanced-shape-morph` / `pose-align-layers` 拼接链、模型不可见参数或假进度。
+- `not_needed` 和写前拒绝必须零 mutation；一旦 mutation 状态未知，整批停止，不自动重试后续图层。D-103 exact build 未真机前不得声明 `photoshop_e2e_verified`。
+- 不为缺少合适商业样本制造数据，也不因面板自动化工具限制增加隐藏测试旁路。商业适用性与视觉质量保持独立验收。
+- r32 reconciliation 与 r33 仍只使用 D-097；D-103 不抢占默认 Runtime、不保存、关闭、丢弃或修改任何用户 Photoshop 文档。
+
+### 下一步
+
+1. [已完成] 三个功能切片已按原因果顺序移植到 D-102，旧项目记忆与过时依赖声明未合并，提交与回滚边界保持独立。
+2. [已完成] 依赖完整性、算法 /Provider /面板专项、UXP 全测试、Tool /作者权 /业务 /Executor /语义 dispatch /变更边界、Main /Renderer 类型检查及 Agent /UXP production build 通过。
+3. [已完成] 当前四份项目记忆、文档 /JSON /编码快速检查与唯一一次完整 `maintenance:validate` 已完成，核心闸门 60/60 通过。
+4. [已完成] 最终 parity /diff /编码 /边界审查通过：原分支 27 个无需 owner 合并的功能文件逐字节一致，9 个重叠文件已逐项审查；三份功能提交与本独立状态提交完成收口。提交后只重建同一 clean commit 的 Agent /UXP production identity，不重复完整核心闸门。
+5. [后续真机] r32 对账、D-097 r33 与 D-102 fixed canary 按顺序完成后，用 D-103 exact clean build 验证 Provider 与真实面板按钮链；商业质量必须等待符合适用范围的真实代表样本。
+
+### 验证与未知
+
+- 已验证：D-103 当前源码的三片集成、依赖树、专项攻击、Tool 注册 /不可见内部工具、作者权、相邻架构边界、Main /Renderer 类型、Agent /UXP production build 与唯一一次完整核心闸门 60/60。
+- 已验证：原分支三个隔离合成文档的 Provider 真机 E2E；该证据证明原代码的几何、单事务、同目标读回和恢复机制，不自动覆盖 D-103 exact build。
+- 未验证：D-103 exact build 的 Photoshop Provider、UXP 面板按钮 UXP→Main→UXP 链、重复稳定性，以及真实弯曲单袜的纹理 /图案 /木耳边 /商业视觉质量。
+- 未验证：当前素材库中该能力的真实业务频率；没有适用样本时保守 `not_needed` 是正确行为，不能算成功案例，也不能算算法失败。
+- 当前不能宣称姿态能力已进入用户正在运行的 DesignEcho，不能用专项绿色、合成样本或静态面板检查替代真实商业验收。
+
+### 状态
+
+validated / three_slice_code_integrated / dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_and_full_core_60_passed / final_parity_review_passed / independent_three_slice_and_state_commits_complete / exact_d103_provider_and_panel_live_pending / commercial_applicability_unknown / d097_r33_baseline_unchanged / no_photoshop_write
+
+---
+
 ## 2026-08-29 SEMANTIC-MATTING-INTEGRATION-102：语义抠图能力进入当前可靠性与观测主链
 
 ### 目标

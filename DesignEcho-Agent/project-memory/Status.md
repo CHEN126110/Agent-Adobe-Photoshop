@@ -2,6 +2,19 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-103 SKU 姿态统一三片集成
+
+- D-103 从 D-102 `a262a4f8` 建立独立 worktree，保持三份因果与回滚边界：`c8793b1d` 只引入纯离线算法与 `sku-pose-alignment-report/v1`，`5ff69b19` 引入精确 document /history /layer 的版本化单事务 Provider，`2d4924d0` 迁移真实 WebView 与批处理协调器。旧姿态分支的项目记忆和过时依赖声明没有进入当前链。
+- 离线层不读取文件、不访问网络 /Photoshop、不注册 Agent Tool；中等弯曲、确定性、直袜 /零强度 no-op、袜口锁定、复杂 S 形、贴边防裁切和非法像素 /参数均由可复用测试覆盖。机械质量不通过时返回原像素，不能下发写入。
+- Provider 用未裁边 RAW RGBA 与明确 source bounds 构建透明安全工作画布；所有 no-op /质量拒绝发生在写前，通过后只调用一次内部 `applySkuPoseAlignment`，唯一 mutation owner 是 `PhotoshopTransactionRunner`。成功需要捕获、Provider、mutation 与同目标读回收据；两个内部原子工具不在普通 Agent Tool 面。
+- 面板不再展示未进入 Provider 的参考形状、款式、内容保护、平滑度、分区、执行步骤或模拟进度，只保留批量图层、显式强度和袜口保护。整批绑定加载时 documentId，逐层读取最新 revision；切换文档、未知 mutation 或网络异常停止后续层，已证明零写入的拒绝可继续。
+- 当前依赖树 Agent 636/636、UXP 148/148；算法 /Provider /面板专项、UXP 全测试、181 Tool 审计、设计作者权、业务 /Executor /语义 dispatch /变更边界、Main 构建、Renderer 类型检查、Agent /UXP production build 与唯一一次完整 `maintenance:validate` 60/60 均通过。该结论只覆盖代码和工程验证，不覆盖 exact D-103 Photoshop 或商业质量。
+- 最终移植审查确认原姿态范围共 36 个文件，其中 27 个无需 owner 合并的功能文件与原分支逐字节一致；其余 9 个重叠文件只在当前依赖、核心阶段、MCP Host、WebView 和项目记忆 owner 处合并。三份功能提交与独立状态提交保持分离，未发现冲突标记或未分类变更。
+- 原分支在隔离 Photoshop 文档 `4180 /4187 /4194` 连续完成三次合成曲袜 Provider E2E，均为 source layer 3 → output layer 4，中心线弯曲降低约 83.9%，袜口漂移约 0.04%，并取得 history 前进、可见性和恢复读回。该证据属于原提交，只证明几何 /事务闭环，不是 D-103 exact build、面板按钮或商业设计质量证据。
+- 原分支真实 UXP 面板壳曾加载，但自动化无法向 `msedgewebview2.exe` 子窗口送达点击，因此 UXP→Main→UXP 按钮链仍未验证；没有通过隐藏 postMessage、猜坐标或产品旁路伪造成功。
+- C-1256 8 张代表图、跨商品 36 + 48 张确定性抽样与 C-1024 六张原图都没有提供“单只完整主体 + 自然中等弯曲 + 袜口 /图案清晰”的固定商业样本。当前结论是 `real_product_applicability_unproven`，不是算法失败，也不是质量通过。
+- 用户普通 DesignEcho PID 48836 仍占用默认端口，当前 Host identity 不可验证；Photoshop 有 5 个文档且活动对象为外部 Eagle 素材。D-103 没有加载、停止或替换该运行时，也没有保存、关闭、丢弃或修改任何 Photoshop 文档；D-097 继续作为 r32 /r33 单变量基线。
+
 ## 2026-08-29 D-102 语义抠图能力集成到 D-101 当前主链
 
 - 原 `0c404cda` 分支已完成一次 `DSC08187.jpg` 双袜固定 Photoshop E2E，证明语义检测、Agent 正负点实例引导、MobileSAM /BiRefNet、二进制 mask 写入、history `4091→4092` 和 `user-mask-enabled` 读回可以闭合；该证据不自动覆盖新集成提交。

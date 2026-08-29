@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 SEMANTIC-MATTING-INTEGRATION-102：把已在独立 Photoshop 固定案例暴露并修复的语义抠图工作流移植到 D-101 当前主链，保留 D-097 r33 单变量基线；先完成依赖、专项、类型、构建与完整核心验证，再独立复跑 exact build 真机案例。",
-  "currentMilestone": "SEMANTIC-MATTING-INTEGRATION-102",
-  "milestoneStatus": "semantic_matting_workflow_integrated_on_d101_dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_full_core_59_and_final_parity_review_passed_independent_integration_and_state_commits_complete_exact_d102_photoshop_canary_pending_d097_r33_baseline_unchanged_no_photoshop_write",
+  "currentFocus": "2026-08-29 SKU-POSE-INTEGRATION-103：把姿态统一按纯离线算法、版本化单事务 Provider、面板迁移三个可独立回滚切片移植到 D-102 当前主链；工程验证与真实 Photoshop /商业质量分级收口，D-097 r33 基线保持不变。",
+  "currentMilestone": "SKU-POSE-INTEGRATION-103",
+  "milestoneStatus": "pose_three_slice_code_integrated_on_d102_dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_and_full_core_60_passed_final_parity_review_passed_independent_three_slice_and_state_commits_complete_exact_d103_provider_and_panel_live_pending_commercial_applicability_unknown_d097_r33_baseline_unchanged_no_photoshop_write",
   "verified": {
     "code": [
+      "SKU pose integration D-103 (2026-08-29): the isolated capability was ported onto D-102 as three independent rollback commits: a pure deterministic no-side-effect geometry and sku-pose-alignment-report/v1 core, a document/history/layer-bound versioned Provider with one PhotoshopTransactionRunner-owned mutation and readback receipts, and a WebView/panel caller that exposes only Provider-effective parameters. Internal capture/apply tools remain outside the ordinary Agent surface. Dependency integrity, algorithm/Provider/panel tests, all UXP tests, 181-Tool and design-authorship audits, business/executor/semantic-dispatch/change boundaries, Main/Renderer typechecks, Agent/UXP production builds and the one ordered 60-stage core gate passed. Exact D-103 Photoshop runs remain pending; D-097 is unchanged for r33.",
       "Semantic matting integration D-102 (2026-08-29): the five previously isolated semantic workflow commits were ported in order onto D-101 c0b358fb without importing the old project-memory command chain or obsolete dependency declaration. Agent/user target and normalized point authorship remain separate from Harness validation; Main reuses one versioned workflow dispatcher; UXP binds source export and mutation to document/history/layer and returns readback receipts. Dependency integrity, semantic/SAM/dispatch attacks, design-authorship and 181-Tool audits, Main/Renderer typechecks, Agent/UXP production builds, adjacent architecture audits, one full 59-stage core gate and final parity review passed. The exact D-102 Photoshop canary remains pending; D-097 is unchanged for r33.",
       "Provider stream phase accounting D-101 (2026-08-29): successful OpenAI-compatible streams now report only bounded request/timing facts through the existing Main stream response, physical transport attempt, Runtime Accounting digest, RunRecord and debug:runs path. The metrics include serialized JSON request bytes, image data-URL bytes, adapter formatting, measurement overhead, stream-open, first-chunk, first-semantic-delta and Main completion times. Strict normalization rejects unsafe integers, non-monotonic clocks, oversized image contribution, unknown fields and raw payload injection. Focused attacks, Main/Renderer typechecks, simplification/runtime/business/change-boundary audits, compiled fake and minimal live DeepSeek stream probes, Agent/UXP production builds, full core 58/58 and independent commits passed. The live micro-canary returned the expected non-executed Tool call twice with complete metrics; full Agent RunRecord coverage remains pending; no Photoshop state was changed.",
       "DeepSeek cache Runtime Accounting D-099 (2026-08-29): official prompt cache hit/miss tokens now travel through the existing Provider, Main/Renderer transport, Runtime Accounting digest, RunRecord and debug:runs path only when both values are safe non-negative integers and conserve inputTokens. DeepSeek tool streaming requests include usage and consume the choices-empty usage tail before delta early return. Partial, inconsistent and non-DeepSeek lookalike fields remain unknown. Focused attacks, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, final review and an independent commit passed; the simplification ratchet stayed at agent.ts 12826 lines. A minimal live identical-request canary reported cold hit/miss 0/313 then 256/57 on the second request; this proves protocol wiring, not a full-run cache rate or speed improvement.",
@@ -79,6 +80,7 @@
       "Live concurrency/resume validation, real Provider-to-Photoshop V0, live validation of the first Photoshop Craft Recipe, Release Gate, reviewed multi-sample design quality and business live E2E are not complete."
     ],
     "build": [
+      "D-103 dependency preflight reports Agent 636/636 and UXP 148/148. The reusable pose algorithm and Provider suites, UXP full tests, Tool/authorship/business/executor/semantic-dispatch/change-boundary audits, Main build, Renderer typecheck, both production builds and the single ordered 60-stage maintenance core passed on the integrated code. This proves engineering integration only, not an exact D-103 Photoshop runtime, panel-button path or commercial quality.",
       "D-102 Agent and UXP production builds plus the single ordered 59-stage maintenance core passed after the semantic workflow was integrated on D-101. The current lock matches the shared installation at Agent 636/636 and UXP 148/148; the old semantic branch npm ci correctly failed its obsolete Anthropic peer conflict and was not forced. This proves the integrated code and build, not the exact D-102 Photoshop runtime.",
       "D-101 focused Provider/Runtime attacks, compiled fake DeepSeek stream probe, Main/Renderer typechecks, simplification/runtime/business/change-boundary audits, Agent production build, UXP production build and the single ordered 58-stage maintenance core all passed. A separate minimal live DeepSeek double request returned complete cache and timing observations, but this still does not prove a full Agent latency distribution, Photoshop E2E or speed improvement.",
       "D-096 node syntax checks, the official UXP loader self-test and the Design Reliability focused behavior suite passed. A real second process was rejected with runtime_capture_lease_active before UDT connection and the owner released the global lease without residue. Planning, encoding, entry-doc, business-boundary, Main/Renderer typecheck, Agent production build and the complete ordered 58-stage maintenance core including UXP tests/build all passed.",
@@ -104,6 +106,7 @@
       "The full 22-check maintenance:validate passed after the WEB-SEARCH-AGENT-TOOL-001 webSearch capability addition: 164-Tool registration audit (zero display/scope/set-sync/team-allowlist gaps), Agent business boundaries 0 violations, generic executor 0 violations, simplification ratchet unchanged, Main/Renderer typecheck, git diff --check and UXP production build all green. The DeepSeek-native search path itself has not been exercised with a real API key, so live search latency, source quality and degradation behavior remain unverified."
     ],
     "manual": [
+      "The original pose branch completed three isolated synthetic curved-sock Provider-to-Photoshop runs in documents 4180, 4187 and 4194: source layer 3 produced output layer 4, centerline bend fell about 83.9%, cuff drift was about 0.04%, the target history advanced and source/output visibility plus cleanup were read back. This proves that original branch's geometry, single-transaction and recovery chain only; it is not an exact D-103 run or real-product commercial-quality evidence. The original panel shell was visible in Photoshop, but no button input reached its msedgewebview2 child window, so the nested panel path remains unverified.",
       "The original semantic branch 0c404cda fixed case used DSC08187.jpg and two Agent-guided visible sock instances. It completed detection, MobileSAM segmentation, BiRefNet edge fusion, binary mask application and user-mask-enabled readback in 45.3 seconds with Photoshop history 4091 to 4092. This proves that original branch and one mask case only; it is not an exact D-102 runtime result.",
       "D-099/D-101 minimal live DeepSeek canary (2026-08-29): two identical 582-byte deepseek-v4-flash-vision-exp tool-stream requests each reported 313 input and 53 output tokens and returned only the expected telemetryProbe Tool call, which was not executed. The cold request reported cache hit/miss 0/313, first semantic delta 544ms and Main completion 872ms; the second reported 256/57, 469ms and 765ms. The key stayed inside the normal rendererState store reader and was not printed, copied to arguments or modified. This is real Provider protocol evidence, not a full Agent, image, RunRecord, Photoshop or stable performance result.",
       "Design Knowledge D-100 (2026-08-29): read-only visual review covered the r32 output, Eagle items LAKLHIYBNKNWN, LAKLE0ETHZ6AF and MK6GJVHBBCK6F, plus user-authored C-1204 and C-1105 main-image sets. The reusable mechanisms are image-role evidence, explicit photo integration mode, compact role-based title groups and target-variant recognition; source assets, copy, coordinates and brand style remain non-transferable. The research package is candidate-only and has not changed production knowledge or proven quality improvement.",
@@ -123,6 +126,7 @@
     ]
   },
   "unverified": [
+    "D-103 exact-build Photoshop evidence: load clean integrated Agent/UXP artifacts only after r32 reconciliation, D-097 r33 and the ordered D-102 canary; then separately verify the versioned Provider and the real panel-button UXP-to-Main-to-UXP path on isolated documents with target-bound receipts and cleanup. Real commercial quality additionally requires a naturally medium-bent single complete sock with clear cuff/pattern; the audited C-1256, cross-product 36 plus 48 samples and C-1024 set did not provide one, so applicability remains unknown.",
     "D-102 exact-build semantic Photoshop canary: after r32 reconciliation and the D-097 r33 baseline, load clean D-102 Agent/UXP artifacts and repeat the fixed two-sock case with target-count conservation, source bounds, document/history/layer identity, visual output and mutation readback. The prior 0c404cda run cannot substitute for this integration verification.",
     "D-099/D-101 full-run evidence: a production Agent RunRecord with real large history, Tool schemas, image blocks and repeated observations must show cache and Provider phase coverage before any latency optimization or speed claim.",
     "D-100 candidate effectiveness: the C-1105 isolated unseen B0/B1 Photoshop canary, two repeats per arm, same DeepSeek/model budget/tool surface/input digest, zero-intervention same-revision PSD/JPG, blinded paired review, and three-case validation required before any Experience Publisher promotion.",
@@ -321,35 +325,35 @@
     ]
   },
   "activeRequest": {
-    "id": "SEMANTIC-MATTING-INTEGRATION-102",
-    "summary": "Port the already isolated and live-investigated semantic matting workflow onto the current D-101 dependency, reliability and observability chain without changing the D-097 r33 baseline or creating another runtime, transaction owner or completion authority.",
-    "status": "integration_code_complete_dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_full_core_59_and_final_parity_review_passed_independent_integration_and_state_commits_complete_exact_d102_photoshop_canary_pending_no_photoshop_write",
+    "id": "SKU-POSE-INTEGRATION-103",
+    "summary": "Port the isolated pose-alignment capability onto D-102 as three independent rollback slices while preserving one transaction owner, truthful Provider-effective panel controls and separate engineering, Photoshop and commercial-quality evidence levels.",
+    "status": "three_slice_code_integrated_dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_and_full_core_60_passed_final_parity_review_passed_independent_three_slice_and_state_commits_complete_exact_d103_provider_and_panel_live_pending_commercial_applicability_unknown_no_photoshop_write",
     "mustDo": [
-      "Port all five semantic workflow commits in causal order onto D-101 while preserving the current project-memory command chain and the upgraded dependency baseline.",
-      "Keep target choice and positive/negative point guidance owned by Agent or user; Harness validates identity, bounds and count conservation only.",
-      "Route public removeBackground through the existing versioned Main workflow dispatcher and bind UXP source export and mutation to the same document, history and layer.",
-      "Retain fail-closed handling for ambiguous guidance, partial detection or segmentation, target drift, internal-coordinate substitution and missing mutation readback.",
-      "Pass dependency preflight, reusable semantic/SAM/dispatch attacks, authorship/tool audits, Main/Renderer types, UXP tests/build, one full maintenance gate and final boundary review.",
-      "Keep D-097 unchanged for r32 reconciliation and r33; run the exact D-102 Photoshop canary only afterward in an isolated document."
+      "Keep pure deterministic geometry, the versioned document/history/layer-bound Provider and the WebView/panel migration in three independently reviewable and reversible commits.",
+      "Keep alignment choice and explicit strength owned by Agent or user; the algorithm and Harness may reject unsafe geometry but cannot turn a mechanical score into an aesthetic decision.",
+      "Capture uncropped RAW RGBA, perform every no-op or quality rejection before mutation, execute at most one PhotoshopTransactionRunner-owned apply and require versioned same-target readback receipts.",
+      "Expose only parameters that actually enter the Provider, bind the whole batch to the loaded documentId, refresh revision per layer and stop after unknown mutation or document/transport drift.",
+      "Pass dependency preflight, reusable algorithm/Provider/panel attacks, UXP tests, authorship/tool/architecture audits, Main/Renderer types, both builds, one full maintenance gate and final parity review.",
+      "Keep D-097 unchanged for r32 reconciliation and r33; verify exact D-103 Provider and panel paths only afterward, with commercial quality waiting for a representative natural sample."
     ],
     "mustNotDo": [
-      "Do not merge the obsolete semantic project-memory current task or revive its incompatible Anthropic dependency lock.",
-      "Do not use force or legacy-peer-deps to make the old dependency tree look healthy.",
-      "Do not let Harness select semantic targets, drop unselected candidates silently or reconstruct invisible object pixels.",
-      "Do not restore full-layer, active-layer, Base64 or empty-channel fallbacks after a region, identity or readback failure.",
-      "Do not load D-102 into the current user runtime, disturb PID 48836, or save, close or discard any Photoshop document.",
-      "Do not count the old 0c404cda canary as exact D-102 Photoshop verification or general commercial design quality."
+      "Do not restore native-PNG transparent-edge cropping, implicit active-document capture, whole-document duplicate or the old enhanced-shape-morph and pose-align-layers stitched write chain.",
+      "Do not register internal capture/apply atoms as ordinary model-visible Tools or create a second transaction, runtime, completion or evaluation owner.",
+      "Do not retain reference-shape, style, smoothing, segmentation, step or fake-progress controls that do not affect the versioned Provider call.",
+      "Do not continue a batch after an unknown mutation or hide not-needed, rejection, timeout and transport facts behind a success summary.",
+      "Do not fabricate a curved commercial sample, classify a synthetic geometry canary as design quality, or add a hidden product bypass because automation cannot click the embedded WebView.",
+      "Do not load D-103 into the current user runtime, disturb PID 48836, or save, close, discard or modify any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "SEMANTIC-MATTING-INTEGRATION-102",
+    "id": "SKU-POSE-INTEGRATION-103",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：五个语义功能提交按原因果顺序移植到 D-101，旧项目记忆和旧依赖声明未进入。",
-      "已完成：依赖完整性、语义/SAM/dispatch 攻击、作者权、181 Tool、类型、UXP 测试/build 和相邻架构审计通过。",
-      "已完成：唯一一次完整 maintenance:validate 59/59 与 Agent/UXP production build 通过。",
-      "已完成：最终差异、编码、变更边界、18 个非冲突文件逐字节 parity 和独立状态提交审查。",
-      "后续真机：r32 对账和 D-097 r33 完成后，用 exact D-102 clean build 复跑固定语义抠图案例。"
+      "已完成：离线算法、单事务 Provider 与面板迁移按三个独立提交移植到 D-102，旧项目记忆和旧依赖声明未进入。",
+      "已完成：依赖完整性、算法/Provider/面板专项、UXP 全测试、181 Tool、作者权、相邻架构审计、Main/Renderer 类型和两端 production build 通过。",
+      "已完成：四份当前项目记忆、快速治理检查和唯一一次完整 maintenance:validate 60/60。",
+      "已完成：最终 parity/diff/编码/边界审查和独立状态提交；提交后只重建同一 clean commit 的 Agent/UXP identity。",
+      "后续真机：r32 对账、D-097 r33 与 D-102 canary 后，用 exact D-103 clean build 分别验证 Provider、真实面板按钮和代表性商业样本。"
     ]
   },
   "convergenceBaseline": {
