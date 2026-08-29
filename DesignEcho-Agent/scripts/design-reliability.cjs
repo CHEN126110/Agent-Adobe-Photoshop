@@ -5288,7 +5288,7 @@ function printHelp() {
     "      --debug-token token（或 DESIGNECHO_DEBUG_TOKEN）",
     "      通过当前 DesignEcho 窗口提交自然请求；提交前强制当前项目与 fixture 精确匹配；timeout 由 Suite 固定，显式覆盖必须完全一致。",
     "  reconcile-live-attempt --attempt-id id --fixture-root dir",
-    "      超时或断连后，只在 Runtime 已重启、无打开文档/待处理请求且仍绑定原 fixture 时追加对账收据。",
+    "      超时或断连后，只在 Agent / Photoshop Runtime 已重启、无待处理请求、仍绑定原 fixture，且所有打开文档的路径身份均已解析并位于原 fixture 外时追加对账收据。",
     "  record-run --case id --run-record file [--run-record file...] --fixture-root dir",
     "      --cohort id --provider id --model id --repeat N --user-interventions N",
     "      --evidence editable_psd=relative/path --evidence raster_export=relative/path",

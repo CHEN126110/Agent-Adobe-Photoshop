@@ -17,7 +17,7 @@
 - r26 Agent 在中断前完成候选总览视觉观察，自主选择 A01 穿着素材并说明木耳边、袜筒纹理和鞋袜关系更适合缩略图识别，计划使用满版主视觉与左侧短文案；当时 UI 仍在下一轮模型思考，没有创建 Photoshop 文档、Run Record 或交付文件。
 - Codex 执行回合被外部中断后，原 CLI 句柄、干净 Runtime 与原 Photoshop 进程均已退出。Attempt `main-image-pink-coffee-unseen-v1-attempt-20260828225315-864c4e8f021f` 只有 `armed` 和 `submission_started`；r26 项目除允许的 `.designecho/project.json` 外仍只有 68 个输入文件。
 - 随后用户通过桌面启动脚本运行了主工作区旧 /脏 Runtime（commit `de628ade`），并在 08:46 新 Photoshop 进程中打开 `SKU.psb`。该会话不是 r26 现场；本轮没有重载其 UXP、关闭 SKU 文档、停止进程或发送任何 Agent 消息。
-- 当前 Design Reliability 账本为 6 次 Attempt Submission、5 次 terminal、1 次未闭合、1 条写状态未清账。r26 已在 submission 分母中，但没有可归因产品终态；不能把它计为 D-091 失败。现有 `reconcile-live-attempt` 可为无 terminal 的 submission 追加 `submission_unknown_write_state` 与重启后对账，但必须等正确干净 Runtime、同 fixture、Photoshop 0 文档 /0 pending 的安全窗口。
+- r26 中断后账本曾为 6 次 submission、5 次 terminal、1 次未闭合、1 条写状态未清账；不能把它计为 D-091 失败。D-092 已在 clean Agent /UXP 重启、0 pending、原 fixture 文档 0、外部 dirty 文档 1 且路径所有权已解析的条件下完成 reconciliation；当前账本为 6 次 submission、6 次 terminal、0 次未闭合、0 条未清账。
 - r26 fixture 已消耗，只允许 reconciliation，不得复用。下一次正式样本必须从锁定源创建全新 r27 fixture。
 
 ## 2026-08-29 r25 正确终审后的 JPG revision 收据缺口
