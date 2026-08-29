@@ -10,12 +10,16 @@ import type {
     PhotoshopDocumentPathState,
     PhotoshopDocumentProjectAffinity
 } from './photoshop-document-inventory';
+import {
+    samePhotoshopHistoryStateRef,
+    type PhotoshopHistoryStateRef
+} from './photoshop-history-state-ref';
 
 export const GUARDED_PHOTOSHOP_EXECUTION_BASELINE_VERSION =
-    'guarded-photoshop-execution-baseline/v1' as const;
+    'guarded-photoshop-execution-baseline/v2' as const;
 
 export const GUARDED_PHOTOSHOP_EXECUTION_BASELINE_RECEIPT_VERSION =
-    'guarded-photoshop-execution-baseline-receipt/v1' as const;
+    'guarded-photoshop-execution-baseline-receipt/v2' as const;
 
 export interface GuardedPhotoshopDocumentFact {
     id: number;
@@ -24,6 +28,7 @@ export interface GuardedPhotoshopDocumentFact {
     pathState: PhotoshopDocumentPathState;
     editState: PhotoshopDocumentEditState;
     projectAffinity: PhotoshopDocumentProjectAffinity;
+    historyStateRef?: PhotoshopHistoryStateRef;
 }
 
 export interface GuardedPhotoshopDocumentAssessment {
@@ -33,14 +38,20 @@ export interface GuardedPhotoshopDocumentAssessment {
     openOutsideFixtureDocumentCount: number;
     unresolvedOwnershipDocumentCount: number;
     dirtyOutsideFixtureDocumentCount: number;
+    preexistingDocumentRevisionsUnchanged: boolean;
     activeDocumentAffinity: PhotoshopDocumentProjectAffinity | 'absent';
     outsideDocumentIds: number[];
+    protectedDocumentRefs: PhotoshopHistoryStateRef[];
     blocker?:
         | 'document_inventory_unavailable'
         | 'document_ownership_unresolved'
         | 'fixture_document_already_open'
+        | 'fixture_document_opened_before_first_mutation'
         | 'new_outside_document_opened'
-        | 'outside_document_is_active_write_target';
+        | 'preexisting_document_missing'
+        | 'preexisting_document_identity_changed'
+        | 'preexisting_document_revision_changed'
+        | 'first_mutation_must_create_task_document';
 }
 
 export type GuardedPhotoshopExecutionBaselineState =
@@ -52,7 +63,7 @@ export type GuardedPhotoshopExecutionBaselineState =
 export interface GuardedPhotoshopExecutionBaseline {
     version: typeof GUARDED_PHOTOSHOP_EXECUTION_BASELINE_VERSION;
     requestId: string;
-    documentPolicy: 'preserve_outside_project_documents';
+    documentPolicy: 'preserve_preexisting_documents';
     expectedProjectPath: string;
     initialDocuments: GuardedPhotoshopDocumentFact[];
     initialDocumentAssessment: GuardedPhotoshopDocumentAssessment;
@@ -70,17 +81,23 @@ export interface GuardedPhotoshopExecutionBaseline {
     observedPhotoshopRuntimeIdentity?: DebugBridgePhotoshopRuntimeLiveIdentity;
     error?: string;
     checkPromise?: Promise<GuardedPhotoshopExecutionBaselineDecision>;
+    completionState: GuardedPhotoshopExecutionBaselineState;
+    completionCheckedAt?: string;
+    completionDocumentAssessment?: GuardedPhotoshopDocumentAssessment;
+    completionError?: string;
+    completionCheckPromise?: Promise<GuardedPhotoshopExecutionBaselineDecision>;
 }
 
 export interface GuardedPhotoshopExecutionBaselineReceipt {
     version: typeof GUARDED_PHOTOSHOP_EXECUTION_BASELINE_RECEIPT_VERSION;
     status: 'not_reached' | 'checking' | 'passed' | 'blocked';
     requestId: string;
-    documentPolicy: 'preserve_outside_project_documents';
+    documentPolicy: 'preserve_preexisting_documents';
     expectedProjectPath: string;
     initialOpenDocumentCount: number;
     initialOpenOutsideFixtureDocumentCount: number;
     initialDirtyOutsideFixtureDocumentCount: number;
+    initialProtectedDocumentRefs: PhotoshopHistoryStateRef[];
     expectedPhotoshopRuntimeBuildId: string;
     expectedPhotoshopRuntimeBinding: DebugBridgePhotoshopRuntimeBinding;
     firstMutationToolName?: string;
@@ -93,6 +110,15 @@ export interface GuardedPhotoshopExecutionBaselineReceipt {
     observedPhotoshopRuntimeBuildId?: string;
     observedPhotoshopRuntimeIdentity?: DebugBridgePhotoshopRuntimeLiveIdentity;
     error?: string;
+    completionStatus: 'not_reached' | 'checking' | 'passed' | 'blocked';
+    completionCheckedAt?: string;
+    completionOpenDocumentCount?: number;
+    completionOpenFixtureDocumentCount?: number;
+    completionOpenOutsideFixtureDocumentCount?: number;
+    completionUnresolvedOwnershipDocumentCount?: number;
+    completionDirtyOutsideFixtureDocumentCount?: number;
+    completionPreexistingDocumentRevisionsUnchanged?: boolean;
+    completionError?: string;
 }
 
 export interface GuardedPhotoshopExecutionBaselineDecision {
@@ -107,8 +133,29 @@ export interface GuardedPhotoshopExecutionBaselineObservers {
     now?: () => string;
 }
 
+export interface GuardedPhotoshopExecutionCompletionObservers {
+    observeOpenDocuments: () => Promise<GuardedPhotoshopDocumentFact[] | undefined>;
+    now?: () => string;
+}
+
 function cleanString(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeHistoryStateRef(
+    value: PhotoshopHistoryStateRef | undefined,
+    expectedDocumentId: number
+): PhotoshopHistoryStateRef | undefined {
+    const documentId = Number(value?.documentId);
+    const historyStateId = Number(value?.historyStateId);
+    if (!Number.isSafeInteger(documentId)
+        || documentId <= 0
+        || documentId !== expectedDocumentId
+        || !Number.isSafeInteger(historyStateId)
+        || historyStateId <= 0) {
+        return undefined;
+    }
+    return { documentId, historyStateId };
 }
 
 function normalizeDocumentFact(value: GuardedPhotoshopDocumentFact): GuardedPhotoshopDocumentFact | null {
@@ -123,21 +170,34 @@ function normalizeDocumentFact(value: GuardedPhotoshopDocumentFact): GuardedPhot
         || !['current_project', 'outside_current_project', 'unknown'].includes(projectAffinity)) {
         return null;
     }
+    const historyStateRef = normalizeHistoryStateRef(value.historyStateRef, id);
     return {
         id,
         name,
         isActive: value.isActive === true,
         pathState,
         editState,
-        projectAffinity
+        projectAffinity,
+        ...(historyStateRef ? { historyStateRef } : {})
     };
+}
+
+function preexistingDocumentIdentityMatches(
+    initial: GuardedPhotoshopDocumentFact,
+    current: GuardedPhotoshopDocumentFact
+): boolean {
+    return initial.id === current.id
+        && initial.name === current.name
+        && initial.pathState === current.pathState
+        && initial.editState === current.editState
+        && initial.projectAffinity === current.projectAffinity;
 }
 
 export function assessGuardedPhotoshopDocuments(input: {
     documents: readonly GuardedPhotoshopDocumentFact[] | undefined;
-    phase: 'submission' | 'first_mutation';
+    phase: 'submission' | 'first_mutation' | 'completion';
     firstMutationToolName?: string;
-    initialOutsideDocumentIds?: readonly number[];
+    initialDocuments?: readonly GuardedPhotoshopDocumentFact[];
 }): GuardedPhotoshopDocumentAssessment {
     if (!Array.isArray(input.documents)) {
         return {
@@ -147,8 +207,10 @@ export function assessGuardedPhotoshopDocuments(input: {
             openOutsideFixtureDocumentCount: 0,
             unresolvedOwnershipDocumentCount: 0,
             dirtyOutsideFixtureDocumentCount: 0,
+            preexistingDocumentRevisionsUnchanged: false,
             activeDocumentAffinity: 'absent',
             outsideDocumentIds: [],
+            protectedDocumentRefs: [],
             blocker: 'document_inventory_unavailable'
         };
     }
@@ -158,32 +220,63 @@ export function assessGuardedPhotoshopDocuments(input: {
     const fixtureDocuments = normalized.filter((document) => (
         document.projectAffinity === 'current_project'
     ));
+    // TaskRun 所有权先看时间与对象身份，不要求文档先有磁盘路径：提交前已经存在且
+    // 能读取 documentId/historyStateId 的对象属于“受保护前置文档”。保存路径只用于
+    // 识别已存在的 fixture 文档污染，不能把未保存文档误判为可写目标。
     const outsideDocuments = normalized.filter((document) => (
-        document.projectAffinity === 'outside_current_project'
+        document.projectAffinity !== 'current_project' && Boolean(document.historyStateRef)
     ));
     const unresolvedOwnershipDocumentCount = invalidCount + normalized.filter((document) => (
-        document.pathState !== 'saved' || document.projectAffinity === 'unknown'
+        !document.historyStateRef
     )).length;
     const activeDocumentAffinity = normalized.find((document) => document.isActive)?.projectAffinity
         || 'absent';
-    const initialOutsideDocumentIds = new Set(
-        (input.initialOutsideDocumentIds || [])
-            .map(Number)
-            .filter((id) => Number.isSafeInteger(id) && id > 0)
-    );
-    const newOutsideDocumentOpened = input.phase === 'first_mutation'
-        && outsideDocuments.some((document) => !initialOutsideDocumentIds.has(document.id));
+    const initialDocuments = (input.initialDocuments || [])
+        .map(normalizeDocumentFact)
+        .filter((document): document is GuardedPhotoshopDocumentFact => Boolean(document));
+    const initialProtectedDocuments = initialDocuments.filter((document) => (
+        document.projectAffinity !== 'current_project' && Boolean(document.historyStateRef)
+    ));
+    const initialById = new Map(initialProtectedDocuments.map((document) => [document.id, document]));
+    const currentById = new Map(normalized.map((document) => [document.id, document]));
+    const preexistingDocumentMissing = input.phase !== 'submission'
+        && initialProtectedDocuments.some((document) => !currentById.has(document.id));
+    const preexistingDocumentIdentityChanged = input.phase !== 'submission'
+        && initialProtectedDocuments.some((document) => {
+            const current = currentById.get(document.id);
+            return Boolean(current && !preexistingDocumentIdentityMatches(document, current));
+        });
+    const preexistingDocumentRevisionChanged = input.phase !== 'submission'
+        && initialProtectedDocuments.some((document) => {
+            const current = currentById.get(document.id);
+            return Boolean(current && !samePhotoshopHistoryStateRef(
+                document.historyStateRef,
+                current.historyStateRef
+            ));
+        });
+    const newOutsideDocumentOpened = input.phase !== 'submission'
+        && outsideDocuments.some((document) => !initialById.has(document.id));
+    const preexistingDocumentRevisionsUnchanged = !preexistingDocumentMissing
+        && !preexistingDocumentIdentityChanged
+        && !preexistingDocumentRevisionChanged;
     let blocker: GuardedPhotoshopDocumentAssessment['blocker'];
     if (unresolvedOwnershipDocumentCount > 0) {
         blocker = 'document_ownership_unresolved';
     } else if (input.phase === 'submission' && fixtureDocuments.length > 0) {
         blocker = 'fixture_document_already_open';
+    } else if (input.phase === 'first_mutation' && fixtureDocuments.length > 0) {
+        blocker = 'fixture_document_opened_before_first_mutation';
+    } else if (preexistingDocumentMissing) {
+        blocker = 'preexisting_document_missing';
+    } else if (preexistingDocumentIdentityChanged) {
+        blocker = 'preexisting_document_identity_changed';
+    } else if (preexistingDocumentRevisionChanged) {
+        blocker = 'preexisting_document_revision_changed';
     } else if (newOutsideDocumentOpened) {
         blocker = 'new_outside_document_opened';
     } else if (input.phase === 'first_mutation'
-        && cleanString(input.firstMutationToolName) !== 'createDocument'
-        && activeDocumentAffinity !== 'current_project') {
-        blocker = 'outside_document_is_active_write_target';
+        && cleanString(input.firstMutationToolName) !== 'createDocument') {
+        blocker = 'first_mutation_must_create_task_document';
     }
     return {
         ready: !blocker,
@@ -194,8 +287,14 @@ export function assessGuardedPhotoshopDocuments(input: {
         dirtyOutsideFixtureDocumentCount: outsideDocuments.filter((document) => (
             document.editState === 'dirty'
         )).length,
+        preexistingDocumentRevisionsUnchanged,
         activeDocumentAffinity,
         outsideDocumentIds: outsideDocuments.map((document) => document.id).sort((left, right) => left - right),
+        protectedDocumentRefs: outsideDocuments
+            .map((document) => document.historyStateRef)
+            .filter((value): value is PhotoshopHistoryStateRef => Boolean(value))
+            .map((value) => ({ ...value }))
+            .sort((left, right) => left.documentId - right.documentId),
         ...(blocker ? { blocker } : {})
     };
 }
@@ -245,13 +344,19 @@ export function createGuardedPhotoshopExecutionBaseline(input: {
     return {
         version: GUARDED_PHOTOSHOP_EXECUTION_BASELINE_VERSION,
         requestId,
-        documentPolicy: 'preserve_outside_project_documents',
+        documentPolicy: 'preserve_preexisting_documents',
         expectedProjectPath,
-        initialDocuments: input.initialDocuments.map((document) => ({ ...document })),
+        initialDocuments: input.initialDocuments.map((document) => ({
+            ...document,
+            ...(document.historyStateRef
+                ? { historyStateRef: { ...document.historyStateRef } }
+                : {})
+        })),
         initialDocumentAssessment,
         expectedPhotoshopRuntimeBuildId,
         expectedPhotoshopRuntimeBinding,
-        state: 'pending'
+        state: 'pending',
+        completionState: 'pending'
     };
 }
 
@@ -261,6 +366,9 @@ export function readGuardedPhotoshopExecutionBaselineReceipt(
     const status = baseline.state === 'pending'
         ? 'not_reached'
         : baseline.state;
+    const completionStatus = baseline.completionState === 'pending'
+        ? 'not_reached'
+        : baseline.completionState;
     return Object.freeze({
         version: GUARDED_PHOTOSHOP_EXECUTION_BASELINE_RECEIPT_VERSION,
         status,
@@ -272,6 +380,8 @@ export function readGuardedPhotoshopExecutionBaselineReceipt(
             baseline.initialDocumentAssessment.openOutsideFixtureDocumentCount,
         initialDirtyOutsideFixtureDocumentCount:
             baseline.initialDocumentAssessment.dirtyOutsideFixtureDocumentCount,
+        initialProtectedDocumentRefs: baseline.initialDocumentAssessment.protectedDocumentRefs
+            .map((value) => ({ ...value })),
         expectedPhotoshopRuntimeBuildId: baseline.expectedPhotoshopRuntimeBuildId,
         expectedPhotoshopRuntimeBinding: baseline.expectedPhotoshopRuntimeBinding,
         ...(baseline.firstMutationToolName
@@ -299,7 +409,42 @@ export function readGuardedPhotoshopExecutionBaselineReceipt(
         ...(baseline.observedPhotoshopRuntimeIdentity
             ? { observedPhotoshopRuntimeIdentity: baseline.observedPhotoshopRuntimeIdentity }
             : {}),
-        ...(baseline.error ? { error: baseline.error } : {})
+        ...(baseline.error ? { error: baseline.error } : {}),
+        completionStatus,
+        ...(baseline.completionCheckedAt
+            ? { completionCheckedAt: baseline.completionCheckedAt }
+            : {}),
+        ...(Number.isSafeInteger(baseline.completionDocumentAssessment?.openDocumentCount)
+            ? { completionOpenDocumentCount: baseline.completionDocumentAssessment?.openDocumentCount }
+            : {}),
+        ...(Number.isSafeInteger(baseline.completionDocumentAssessment?.openFixtureDocumentCount)
+            ? { completionOpenFixtureDocumentCount: baseline.completionDocumentAssessment?.openFixtureDocumentCount }
+            : {}),
+        ...(Number.isSafeInteger(baseline.completionDocumentAssessment?.openOutsideFixtureDocumentCount)
+            ? {
+                completionOpenOutsideFixtureDocumentCount:
+                    baseline.completionDocumentAssessment?.openOutsideFixtureDocumentCount
+            }
+            : {}),
+        ...(Number.isSafeInteger(baseline.completionDocumentAssessment?.unresolvedOwnershipDocumentCount)
+            ? {
+                completionUnresolvedOwnershipDocumentCount:
+                    baseline.completionDocumentAssessment?.unresolvedOwnershipDocumentCount
+            }
+            : {}),
+        ...(Number.isSafeInteger(baseline.completionDocumentAssessment?.dirtyOutsideFixtureDocumentCount)
+            ? {
+                completionDirtyOutsideFixtureDocumentCount:
+                    baseline.completionDocumentAssessment?.dirtyOutsideFixtureDocumentCount
+            }
+            : {}),
+        ...(typeof baseline.completionDocumentAssessment?.preexistingDocumentRevisionsUnchanged === 'boolean'
+            ? {
+                completionPreexistingDocumentRevisionsUnchanged:
+                    baseline.completionDocumentAssessment.preexistingDocumentRevisionsUnchanged
+            }
+            : {}),
+        ...(baseline.completionError ? { completionError: baseline.completionError } : {})
     });
 }
 
@@ -359,7 +504,7 @@ export async function enforceGuardedPhotoshopExecutionBaseline(
                 documents: await observers.observeOpenDocuments(),
                 phase: 'first_mutation',
                 firstMutationToolName: baseline.firstMutationToolName,
-                initialOutsideDocumentIds: baseline.initialDocumentAssessment.outsideDocumentIds
+                initialDocuments: baseline.initialDocuments
             });
             baseline.openDocumentCount = documentAssessment.openDocumentCount;
             baseline.openFixtureDocumentCount = documentAssessment.openFixtureDocumentCount;
@@ -391,4 +536,78 @@ export async function enforceGuardedPhotoshopExecutionBaseline(
         }
     })();
     return baseline.checkPromise;
+}
+
+function blockCompletionBaseline(
+    baseline: GuardedPhotoshopExecutionBaseline,
+    error: string,
+    now: () => string
+): GuardedPhotoshopExecutionBaselineDecision {
+    baseline.completionState = 'blocked';
+    baseline.completionCheckedAt = baseline.completionCheckedAt || now();
+    baseline.completionError = error;
+    return {
+        ready: false,
+        receipt: readGuardedPhotoshopExecutionBaselineReceipt(baseline),
+        error
+    };
+}
+
+/**
+ * 正式 Debug TaskRun 完成前再次读取所有打开文档。提交前的每个对象必须仍然打开，
+ * 且 documentId/historyStateId、名称、保存状态和 dirty 状态均未变化；本轮新建并保存到
+ * fixture 的交付文档可以存在。该检查只形成同一 baseline 的完成收据，不创建第二账本。
+ */
+export async function completeGuardedPhotoshopExecutionBaseline(
+    baseline: GuardedPhotoshopExecutionBaseline,
+    observers: GuardedPhotoshopExecutionCompletionObservers
+): Promise<GuardedPhotoshopExecutionBaselineDecision> {
+    if (baseline.completionState === 'passed') {
+        return {
+            ready: true,
+            receipt: readGuardedPhotoshopExecutionBaselineReceipt(baseline)
+        };
+    }
+    if (baseline.completionState === 'blocked') {
+        return {
+            ready: false,
+            receipt: readGuardedPhotoshopExecutionBaselineReceipt(baseline),
+            error: baseline.completionError || '受保护的 Photoshop 前置文档在任务完成时未通过对账。'
+        };
+    }
+    if (baseline.completionCheckPromise) return baseline.completionCheckPromise;
+
+    const now = observers.now || (() => new Date().toISOString());
+    baseline.completionState = 'checking';
+    baseline.completionCheckPromise = (async (): Promise<GuardedPhotoshopExecutionBaselineDecision> => {
+        try {
+            const assessment = assessGuardedPhotoshopDocuments({
+                documents: await observers.observeOpenDocuments(),
+                phase: 'completion',
+                initialDocuments: baseline.initialDocuments
+            });
+            baseline.completionDocumentAssessment = assessment;
+            if (!assessment.ready) {
+                return blockCompletionBaseline(
+                    baseline,
+                    `任务完成时受保护的 Photoshop 前置文档发生变化：${assessment.blocker || 'document_inventory_unavailable'}。`,
+                    now
+                );
+            }
+            baseline.completionCheckedAt = now();
+            baseline.completionState = 'passed';
+            return {
+                ready: true,
+                receipt: readGuardedPhotoshopExecutionBaselineReceipt(baseline)
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error || '未知错误');
+            return blockCompletionBaseline(
+                baseline,
+                `任务完成时 Photoshop 前置文档对账失败：${message}`,
+                now
+            );
+        }
+    })();
+    return baseline.completionCheckPromise;
 }

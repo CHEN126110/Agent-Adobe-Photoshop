@@ -283,71 +283,51 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Close the generic terminal lifecycle exposed by r21-r25: preserve completed generations, bind single-surface review to the exact full canvas, and require UXP-owned same-revision receipts for every PSD/JPG without taking design authorship from the Agent.",
-    "status": "d092_3532985b_pushed_clean_runtime_and_live_document_state_verified_r26_reconciled_with_unrelated_dirty_document_r27_pending",
+    "id": "DESIGN-RELIABILITY-094",
+    "summary": "Protect every Photoshop document that predates a disposable TaskRun by its live document/history revision, require createDocument to produce the first write target, and reconcile all protected objects again at completion without saving or closing user work.",
+    "status": "code_targeted_attacks_main_renderer_uxp_typechecks_tool_registry_design_authorship_uxp_behavior_single_transaction_owner_agent_uxp_production_build_and_full_core_58_passed_commit_clean_runtime_and_r32_pending",
     "scope": [
-      "Settle a Tool Call produced by an admitted model turn without bypassing hard limits or execution guards.",
-      "Activate declared delivery capability schemas only after verified viewable content emerges and without executing them.",
-      "Reserve bounded terminal turns and preserve structured completion truth at performance-budget exhaustion.",
-      "Bind all required editable and raster outputs from the same final reviewed document history.",
-      "Require exact remaining model, tool, iteration, vision and active-time capacity before starting an optional completed-artifact improvement generation.",
-      "Use only disposable fixture projects and preserve the dirty shared worktree.",
-      "For single-surface terminal closure, collect one read-only full-canvas observation only when the current ReviewSet is missing or stale; do not replace multi-surface Bundle requirements.",
-      "Bind final review only from an exact per-image Provider receipt and unchanged Host revision; never forge reviewed flags or infer delivery refs by scanning files.",
-      "Treat ReviewSet source kind as terminal evidence identity; same document/history never permits single-surface and Bundle substitution.",
-      "Keep JSX document identity and UXP history identity separate; only UXP pre/post revision closure may issue a raster sourceHistoryStateRef.",
-      "Keep document path state, post-save edit state, project affinity and TaskRun ownership as separate facts; unrelated open documents must not become a global lock.",
-      "Do not claim improved technical reliability or commercial quality before a fresh r27 technical success and blind review."
+      "Treat a pre-submission unsaved document as a protected external TaskRun object only when Photoshop returns a matching documentId/historyStateId.",
+      "Require createDocument as the first Photoshop mutation for the fixed from-scratch reliability case.",
+      "Keep every subsequent mutation under the existing private target/revision guard and unique PhotoshopTransactionRunner.",
+      "Reconcile protected document identity, dirty state and revision again before issuing the completion receipt.",
+      "Persist only bounded revision digests and counts in development evidence; do not persist paths or raw payloads.",
+      "Do not save, close, discard or rewrite the real 800 and DSC08212.jpg documents to clear the benchmark gate.",
+      "Run r32 only after a clean commit has matching Agent and UXP production build identities."
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Make document state and ownership explicit, reconcile the externally interrupted r26 submission without replay or touching unrelated documents, then prove the raster-revision fix in a fresh r27 attempt.",
-    "status": "d092_complete_r26_reconciled_r27_pending",
+    "id": "DESIGN-RELIABILITY-094",
+    "summary": "Complete r32 with the real unsaved 800 document and dirty DSC08212.jpg still open, while proving the TaskRun creates and writes only its own document and leaves both preexisting objects unchanged.",
+    "status": "deepseek_vision_and_key_verified_r32_fixture_ready_d094_targeted_validation_production_build_and_full_core_58_passed_commit_clean_runtime_and_live_r32_pending",
     "mustDo": [
-      "Treat model-turn admission and its returned Tool settlement as one lifecycle unit while retaining hard execution safety.",
-      "Expose existing delivery schemas after a real viewable artifact exists without selecting the delivery action for the Agent.",
-      "Settle completion from same-revision structured evidence rather than the performance stop reason.",
-      "Use the same cumulative performance snapshot for completed-artifact reentry admission and the next generation seed.",
-      "Separate Agent-owned local design inspection from Harness-owned terminal evidence completeness; automatically acquire only the missing read-only full-surface fact.",
-      "Reject a same-history Bundle as single-canvas terminal evidence and use one ReviewSet kind selector for Judge, E2 and trusted artifacts.",
-      "Require exact Provider image-presentation receipt, completed Final Judge and unchanged document history before reviewed delivery can close.",
-      "Freeze raster source revision in UXP, guard the actual JSX source document before file write, and verify the same UXP revision after export.",
-      "Expose pathState, editState and projectAffinity as independent document facts without turning them into save, close or write authority.",
-      "Reconcile r26 only after clean Agent and Photoshop Runtime restarts, original fixture binding, zero pending requests, and proof that every open document is outside the original fixture.",
-      "Run the next formal verification only from a fresh r27 fixture; never resume or replay the interrupted r26 TaskRun."
+      "Expose per-document Photoshop historyStateRef from listDocuments without switching or mutating documents.",
+      "Freeze all preexisting document revisions before model submission and compare them immediately before the first mutation.",
+      "Block every first mutation except createDocument and reject fixture documents opened before that mutation.",
+      "Compare every protected document again at TaskRun completion and require exact identity and revision stability.",
+      "Use DeepSeek official deepseek-v4-flash-vision-exp with the existing secure key and real Agent image/tool transport.",
+      "Produce same-revision PSD and JPG, zero user design corrections and a verified completion receipt in r32."
     ],
     "mustNotDo": [
-      "Do not encode the r21 failure as a main-image Skill prompt, keyword gate or forced save Tool call.",
-      "Do not make capability visibility grant execution authority or bypass target/revision/preflight checks.",
-      "Do not treat a longer timeout, a file path or a stop reason as design success.",
-      "Do not infer remaining generation capacity from final_response or a quality score.",
-      "Do not treat a region snapshot as complete final review, forge a model review flag, scan output directories for refs or weaken multi-surface evidence requirements.",
-      "Do not treat document/history equality as permission to substitute an asset Bundle for a complete single-canvas artifact.",
-      "Do not treat file existence, redirect success or an ExtendScript history id as a UXP sourceHistoryStateRef.",
-      "Do not treat any open document as a global blocker when its saved path proves it is outside the interrupted fixture.",
-      "Do not infer TaskRun ownership or permission to save or close from editState=dirty.",
-      "Do not reuse consumed r20/r21/r22/r23/r24/r25/r26 fixtures or modify the user's original photography project.",
-      "Do not reload, save, close or write any unrelated user document merely to clear the benchmark ledger."
+      "Do not treat an unsaved document without a valid Host revision as safe.",
+      "Do not infer TaskRun write ownership from pathState, editState, document name or active status.",
+      "Do not allow an opened fixture input image to replace createDocument as the first write target.",
+      "Do not create a second transaction, runtime, document store or completion gate.",
+      "Do not weaken the existing target/revision preflight or unique PhotoshopTransactionRunner.",
+      "Do not save or close 800, DSC08212.jpg or any other user document for the test."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
+    "id": "DESIGN-RELIABILITY-094",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：r21 首轮终局修复，以及 f148d512 完成态容量修复的完整核心闸门、提交推送和提交后 Agent/UXP 重建。",
-      "已完成实机：r23 不再出现 0 调用空子代，但只留下 region 局部观察，完整 ReviewSet、R5/E2 与安全 finalArtifactRefs 未闭合；Attempt 已安全 reconciliation。",
-      "已完成 D-089：完整核心闸门、Agent/UXP production build、提交 329a650e、GitHub 推送和提交后 identity 均通过。",
-      "已完成 r24：真实 PSD/JPG 和可评成品形成，但同 history 素材 Bundle 被错误当成终局画面，Judge 结论与成品矛盾，finalArtifactRefs 为空；文件哈希已固化且 Attempt 已安全 reconciliation。",
-      "已完成 D-090：单画布和多画面 ReviewSet 类型互斥；提交 1521c504、GitHub 推送和提交后 Agent/UXP identity 均通过。",
-      "已完成 r25：full-canvas Judge 对象正确且设计 86 分，但 quickExport JPG 缺 UXP sourceHistoryStateRef，finalArtifactRefs 为空；文件哈希已固化且 Attempt 已安全 reconciliation。",
-      "已完成 D-091 / 1a3f95d3：修复、真机探针、完整 maintenance:validate 58/58、Agent/UXP production build、提交推送和提交后双 Runtime identity 均通过。",
-      "r26 已提交但未闭合：Agent 完成候选观察和 A01 选择后，外部关闭了原 CLI/Runtime/Photoshop；Attempt 无 terminal、Run Record 或产物。",
-      "已完成 D-092 / 3532985b：pathState、editState、projectAffinity 与 TaskRun ownership 分离；完整 maintenance:validate 58/58、Agent/UXP production build、提交推送和 clean identity 均通过。",
-      "已完成 r26 reconciliation：dirty 外部文档打开不阻塞，事件证明原 fixture 文档 0、外部文档 1、所有权已解析；账本 0 未闭合、0 未清账。",
-      "待完成：从锁定源创建全新 r27 fixture，执行同条件正式 Attempt。",
-      "条件后置：r27 技术成功后做重复运行与盲化视觉质量比较，再单独治理首写和总耗时。"
+      "已完成：r32 fixture、DeepSeek Vision 模型选择、Key 连通性、真实 Agent 视觉与 Tool Call 探针。",
+      "已完成代码：listDocuments revision、TaskRun 前置对象冻结、createDocument 首写约束和完成对账。",
+      "已完成专项：Design Reliability 攻击测试、Main/Renderer/UXP 类型检查、工具注册、设计作者权、UXP 行为和事务 owner 审计。",
+      "已完成：Agent/UXP production build 和完整 maintenance:validate 58/58。",
+      "待完成：独立提交和提交后双 Runtime identity。",
+      "待完成：在 800 与 DSC08212.jpg 保持打开且未改变的条件下运行 r32。",
+      "条件后置：技术成功后完成同版本交付复核与匿名视觉比较。"
     ]
   },
   "convergenceBaseline": {

@@ -1,5 +1,46 @@
 # Current Task
 
+## 2026-08-29 DESIGN-RELIABILITY-094：TaskRun 前置 Photoshop 对象 revision 隔离
+
+### 目标
+
+在不保存、关闭或修改用户真实未保存文档的前提下完成 r32。把 D-093 的路径归属基线收敛为 TaskRun 对象基线：提交前已经存在且可读取 `documentId/historyStateId` 的文档，无论是否已有磁盘路径，都只能作为受保护前置对象；从零创作 Case 的首个 Photoshop mutation 必须由 `createDocument` 生产新目标，任务完成前再次证明所有前置对象仍打开且 revision、名称、路径状态和 dirty 状态未变。
+
+### 当前事实
+
+- r32 全新 fixture `fixture-20260829040410-92601cced5ad` 已准备，68 个输入文件、fixture digest `sha256:e8ac9e7041e0a9aa800fe7168a79268144474b873fb846ae30426e6b5de75f30`，没有复制 r31 输出。
+- 用户明确指定 `DeepSeek V4 Flash Vision`。正常 DesignEcho 配置中的 DeepSeek 官方 Key 仍存在；此前“密钥丢失”是隔离启动 `--seed-user-state` 按设计不复制凭据。当前运行态已选择 `deepseek-v4-flash-vision-exp`，官方 Key 连通性、64×64 左红右蓝真实视觉输入和同图结构化 Tool Call 均通过。
+- 普通 `chatDeepSeek()` 仍会把多模态消息转成纯文本；错误路径探针因此得到猜测结果。真实 Agent 的 `chatWithTools` 路径保留图像并正确返回“左红右蓝”和 `report_colors({left:red,right:blue})`。这是独立 Provider transport 债务，本切片不混改。
+- Photoshop 当前有两个 TaskRun 前置 dirty 文档：未保存的 `800`（1500×1500、13 层）和路径明确的 `DSC08212.jpg`。两者都属于真实外部工作，不得为了 benchmark 保存、关闭或丢弃。D-093 因 `800` 无路径而阻断，但执行链已有 `createDocument` 新对象收据与后续 target/revision guard。
+- Adobe UXP 文档契约说明，Document ID 在文档保持打开期间有效，HistoryState ID 与 Document ID 的组合可代表该文档生命周期内的具体历史状态。D-094 沿用现有 `guarded-photoshop-execution-baseline` owner，不新增 Runtime、Store、事务 owner 或第二收据链。
+- 当前独立分支 `codex/d094-unsaved-document-baseline-20260829` 从 `2ffc36ce` 建立。代码已让 `listDocuments` 返回每个打开文档的 Host revision；提交、首次 mutation 和完成收据均绑定前置对象；没有 revision、对象缺失、身份 /revision 变化、后来新增外部文档、首次写入不是 `createDocument` 或先打开 fixture 输入文档都会失败关闭。
+- 已验证：Design Reliability 专项、Agent Main /Renderer 类型检查、UXP 类型检查、181 工具注册、设计作者权、UXP 行为测试、PhotoshopTransactionRunner 唯一 owner 审计、Agent /UXP production build 和完整 `maintenance:validate` 58/58 通过。独立提交、提交后双 Runtime identity 与 r32 真机仍待完成。
+
+### 实施边界
+
+- 只扩展 D-093 的唯一 baseline、既有 `listDocuments` Host 事实和 Debug receipt；不新增 Runtime、Task Store、事务 owner、Evaluator 或 Release owner。
+- 未保存前置文档只因稳定 revision 获得“受保护”身份，不获得写入、保存、关闭、素材选择或设计决策权限。
+- 真实写入继续由既有私有 target /revision guard 和唯一 PhotoshopTransactionRunner 强制；本切片不改变普通产品任务的设计作者权。
+- DeepSeek 普通 chat 丢图是独立 Provider transport 债务，不混入 D-094；r32 只走已经验证保留图像的真实 Agent tool transport。
+
+### 下一步
+
+1. 专项攻击测试、Agent /UXP 构建和完整 `maintenance:validate` 全部通过，并形成独立可回滚提交。
+2. 提交后重建并加载同一 clean commit 的 Agent /UXP Runtime；`listDocuments` 真机读回 `800` 与 `DSC08212.jpg` 的稳定 revision。
+3. r32 首个 mutation 必须是 `createDocument`；所有真实 mutation 只能绑定本轮新建目标。
+4. 任务完成收据必须证明两个前置文档仍打开且 revision /身份未变，PSD /JPG 来自同一最终目标 revision，UI 设计纠偏为 0。
+5. D-094 可按独立提交回滚；不得退回全局 `none_open`，也不得通过保存 /关闭 `800` 或移除完成对账来让案例变绿。
+
+### 验证与未知
+
+- 已验证代码、专项攻击、顺序化 Agent 类型检查、UXP 类型检查、工具 /作者权 /事务 owner 审计、Agent /UXP production build和完整核心闸门 58/58。
+- 完整闸门前两次分别在规划卡固定章节和首轮 Tool schema 43k 预算处早停；最终通过方式是补齐规划契约并压缩重复工具说明，没有修改断言、提高预算或跳阶段。
+- 未知项仍是真机非活动文档 history 读回稳定性、提交后 clean build identity、r32 首写目标和完成态前置对象对账；缺少这些证据不得宣称阶段完成。
+
+### 状态
+
+`in_progress`：代码、专项、production build 与完整核心闸门已通过；独立提交、clean Runtime 重建和 r32 真机待完成。
+
 ## 2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：完成态代际与终局交付闭合
 
 ### 目标

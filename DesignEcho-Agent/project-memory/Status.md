@@ -2,6 +2,14 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-094 未保存前置文档的 TaskRun 对象隔离
+
+- r32 fixture 已以全新实例 `fixture-20260829040410-92601cced5ad` 准备完成，输入 digest 与锁定 Case 一致且没有旧输出。当前真实模型已按用户要求切换为 DeepSeek 官方 `deepseek-v4-flash-vision-exp`；正常配置中的官方 Key 未丢失，内置 Key 连通性、真实 Agent 图像输入和结构化 Tool Call 探针均通过。
+- Photoshop 当前保留真实未保存 `800` 与路径明确 dirty `DSC08212.jpg`。`800` 包含“转化图 /点击图”等 13 层真实结构，不能为 benchmark 擅自保存、关闭或丢弃。D-093 的剩余限制是把缺少磁盘路径等同于归属未知，导致 r32 无法提交。
+- D-094 沿用同一个 `guarded-photoshop-execution-baseline`：UXP `listDocuments` 默认返回每个打开文档的 `documentId/historyStateId`；提交前已有且 revision 可读的未保存文档被定义为受保护 TaskRun 前置对象，不获得任何写入、保存或关闭权限。
+- 从零创作正式 Case 的首个 Photoshop mutation 现在必须是 `createDocument`。首次写入前与任务完成时都重新读取完整文档集合；前置对象缺失、名称 /路径状态 /dirty 状态变化、revision 变化、新外部文档出现、缺少 revision 或先打开 fixture 输入文档都会失败关闭。完成结果沿用同一 baseline receipt v2，并进入 Debug submit receipt v4 和脱敏持久化证明摘要。
+- 已通过 Design Reliability 专项、Main /Renderer 类型检查、UXP 类型检查、181 工具注册审计、设计作者权、UXP 行为测试、PhotoshopTransactionRunner 唯一 owner 审计、Agent /UXP production build 和完整 `maintenance:validate` 58/58。独立提交、提交后 Runtime identity 和 r32 真机尚未完成，不能宣称 D-094 或 r32 已完成。
+
 ## 2026-08-29 r31 首个零人工技术成功与 D-093 对象级文档隔离
 
 - `972baf75` 已补齐终局质量 Host 调用预算，`a56d62c1` 已阻止 Suite loader 把内部 locator 注入 Case /Rubric，`8ccda924` 已让 Main 对请求绑定的 UI 交互收据重新验签；三次提交均已推送，提交时完整核心闸门 58/58、Agent /UXP production build 与提交后双 Runtime identity 均通过。

@@ -89,6 +89,7 @@ import {
 import { resolveMaterialSelectionReasonProjection } from '../../shared/design-workshop/compose-design-rationale-visibility';
 import {
     assessGuardedPhotoshopDocuments,
+    completeGuardedPhotoshopExecutionBaseline,
     createGuardedPhotoshopExecutionBaseline,
     readGuardedPhotoshopExecutionBaselineReceipt,
     type GuardedPhotoshopDocumentAssessment,
@@ -365,6 +366,29 @@ function readDebugPhotoshopRuntimeIdentity(
         ? state.runtime
         : undefined;
     return readDebugBridgePhotoshopRuntimeLiveIdentity(runtime);
+}
+
+function readGuardedPhotoshopDocumentFacts(
+    value: unknown,
+    expectedProjectPath: string
+): GuardedPhotoshopDocumentFact[] | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    if ((value as any).success !== true || !Array.isArray((value as any).documents)) return undefined;
+    const inventory = enrichPhotoshopDocumentInventory(
+        value as Record<string, unknown>,
+        expectedProjectPath
+    );
+    return inventory.documents.map((document) => ({
+        id: document.id,
+        name: document.name,
+        isActive: document.isActive,
+        pathState: document.pathState,
+        editState: document.editState,
+        projectAffinity: document.projectAffinity,
+        ...(document.historyStateRef
+            ? { historyStateRef: { ...document.historyStateRef } }
+            : {})
+    }));
 }
 
 type ComposerRuntimeReference =
@@ -5310,33 +5334,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 if (request.requireNoOpenFixtureDocuments === true) {
                     const documentListResult = await executeToolCall('listDocuments', {
                         includeDetails: true,
-                        includePaths: true
+                        includePaths: true,
+                        includeHistoryState: true
                     });
                     throwIfDebugRequestCancelled();
-                    if (documentListResult?.success !== true
-                        || !Array.isArray(documentListResult?.documents)) {
-                        throw new Error('无法可靠读取 Photoshop 文档列表，本轮受控调试不会提交模型或执行写入。');
-                    }
-                    const documentInventory = enrichPhotoshopDocumentInventory(
+                    const guardedDocuments = readGuardedPhotoshopDocumentFacts(
                         documentListResult,
                         expectedProjectPath
                     );
-                    guardedOpenDocumentsAtSubmission = documentInventory.documents.map((document) => ({
-                        id: document.id,
-                        name: document.name,
-                        isActive: document.isActive,
-                        pathState: document.pathState,
-                        editState: document.editState,
-                        projectAffinity: document.projectAffinity
-                    }));
+                    if (!guardedDocuments) {
+                        throw new Error('无法可靠读取 Photoshop 文档列表，本轮受控调试不会提交模型或执行写入。');
+                    }
+                    guardedOpenDocumentsAtSubmission = guardedDocuments;
                     guardedDocumentAssessmentAtSubmission = assessGuardedPhotoshopDocuments({
                         documents: guardedOpenDocumentsAtSubmission,
                         phase: 'submission'
                     });
                     if (!guardedDocumentAssessmentAtSubmission.ready) {
                         throw new Error(
-                            '当前 Photoshop 存在属于本测试目录、路径身份不明或无法安全归属的文档；'
-                            + '外部项目中路径明确的文档不会阻塞，但本轮不会猜测、保存或关闭冲突文档。'
+                            '当前 Photoshop 存在属于本测试目录或无法读取 documentId/historyStateId 的文档；'
+                            + '提交前已存在且版本可读的外部或未保存文档会被保护，但本轮不会猜测、保存或关闭冲突文档。'
                         );
                     }
                 }
@@ -5431,9 +5448,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             `任务完成时 Photoshop Runtime 完整身份已变化或无法读取（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${completedPhotoshopRuntimeBuildId || 'unknown'}）。`
                         );
                     }
-                    const firstPhotoshopMutationBaseline = readGuardedPhotoshopExecutionBaselineReceipt(
-                        guardedPhotoshopExecutionBaseline
+                    const completionBaselineDecision = await completeGuardedPhotoshopExecutionBaseline(
+                        guardedPhotoshopExecutionBaseline,
+                        {
+                            observeOpenDocuments: async (): Promise<GuardedPhotoshopDocumentFact[] | undefined> => {
+                                const completionDocumentList = await executeToolCall('listDocuments', {
+                                    includeDetails: true,
+                                    includePaths: true,
+                                    includeHistoryState: true
+                                });
+                                return readGuardedPhotoshopDocumentFacts(
+                                    completionDocumentList,
+                                    expectedProjectPath
+                                );
+                            }
+                        }
                     );
+                    throwIfDebugRequestCancelled();
+                    if (!completionBaselineDecision.ready) {
+                        throw new Error(
+                            completionBaselineDecision.error
+                            || '任务完成时受保护的 Photoshop 前置文档未通过对象级对账。'
+                        );
+                    }
+                    const firstPhotoshopMutationBaseline = completionBaselineDecision.receipt;
                     const debugInteractionLedger = activeDebugInteractionLedgerRef.current;
                     if (!debugInteractionLedger
                         || debugInteractionLedger.requestId !== debugRequestId) {
@@ -5456,7 +5494,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 currentProjectPath && completedProjectPath === currentProjectPath
                             ),
                             photoshopDocumentPolicy: request.requireNoOpenFixtureDocuments === true
-                                ? 'preserve_outside_project_documents'
+                                ? 'preserve_preexisting_documents'
                                 : 'not_required',
                             openPhotoshopDocumentCountAtSubmission:
                                 guardedDocumentAssessmentAtSubmission?.openDocumentCount ?? null,

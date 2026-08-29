@@ -9,6 +9,10 @@ import {
     observePhotoshopDocumentEditState,
     type PhotoshopDocumentEditState
 } from '../../core/photoshop-document-state';
+import {
+    readActiveHistoryStateRef,
+    type PhotoshopHistoryStateRef
+} from '../../core/photoshop-history-state-ref';
 
 const app = require('photoshop').app;
 const action = require('photoshop').action;
@@ -45,6 +49,10 @@ export class ListDocumentsTool implements Tool {
                 includeLayerCount: {
                     type: 'boolean',
                     description: '是否递归统计图层数；默认仅在 includeDetails=true 时启用'
+                },
+                includeHistoryState: {
+                    type: 'boolean',
+                    description: '是否读取每个打开文档的 documentId/historyStateId；默认 true，用于对象级隔离与变更检测'
                 }
             }
         }
@@ -55,6 +63,7 @@ export class ListDocumentsTool implements Tool {
         includePaths?: boolean;
         includeDimensions?: boolean;
         includeLayerCount?: boolean;
+        includeHistoryState?: boolean;
     }): Promise<{
         success: boolean;
         activeDocumentId?: number;
@@ -67,6 +76,8 @@ export class ListDocumentsTool implements Tool {
             pathStatusReason?: string;
             editState: PhotoshopDocumentEditState;
             editStateReason?: string;
+            historyStateRef?: PhotoshopHistoryStateRef;
+            historyStateReason?: string;
             width?: number;
             height?: number;
             layerCount?: number;
@@ -99,6 +110,8 @@ export class ListDocumentsTool implements Tool {
                 pathStatusReason?: string;
                 editState: PhotoshopDocumentEditState;
                 editStateReason?: string;
+                historyStateRef?: PhotoshopHistoryStateRef;
+                historyStateReason?: string;
                 width?: number;
                 height?: number;
                 layerCount?: number;
@@ -114,6 +127,8 @@ export class ListDocumentsTool implements Tool {
                     pathStatusReason?: string;
                     editState: PhotoshopDocumentEditState;
                     editStateReason?: string;
+                    historyStateRef?: PhotoshopHistoryStateRef;
+                    historyStateReason?: string;
                     width?: number;
                     height?: number;
                     layerCount?: number;
@@ -129,6 +144,15 @@ export class ListDocumentsTool implements Tool {
                 docInfo.editState = editState.editState;
                 if (editState.editStateReason) {
                     docInfo.editStateReason = editState.editStateReason;
+                }
+
+                if (params.includeHistoryState !== false) {
+                    const historyStateRef = readActiveHistoryStateRef(doc);
+                    if (historyStateRef) {
+                        docInfo.historyStateRef = historyStateRef;
+                    } else {
+                        docInfo.historyStateReason = 'Photoshop 未返回该打开文档的当前历史版本，不能形成对象级变更基线。';
+                    }
                 }
 
                 if (params.includeDetails || params.includeDimensions) {

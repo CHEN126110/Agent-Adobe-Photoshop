@@ -2450,7 +2450,10 @@ function readGuardedOpenDocuments(
         isActive: document.isActive,
         pathState: document.pathState,
         editState: document.editState,
-        projectAffinity: document.projectAffinity
+        projectAffinity: document.projectAffinity,
+        ...(document.historyStateRef
+            ? { historyStateRef: { ...document.historyStateRef } }
+            : {})
     }));
 }
 
@@ -2495,7 +2498,7 @@ async function sendToPluginWithCancellation(
                 observeOpenDocuments: async (): Promise<GuardedPhotoshopDocumentFact[] | undefined> => (
                     readGuardedOpenDocuments(await callPhotoshopMcpTool(
                         'listDocuments',
-                        { includeDetails: true, includePaths: true },
+                        { includeDetails: true, includePaths: true, includeHistoryState: true },
                         { signal, timeoutMs: 5_000 }
                     ), guardedBaseline.expectedProjectPath)
                 )

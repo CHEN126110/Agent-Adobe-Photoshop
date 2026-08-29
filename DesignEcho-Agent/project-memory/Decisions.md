@@ -2,6 +2,16 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-094 正式从零创作按 TaskRun 前置对象 revision 隔离，不要求文档先有磁盘路径
+
+- 状态：已采用为 D-093 的收敛切片；专项攻击测试、Main /Renderer 与 UXP 类型检查、工具注册、设计作者权、UXP 行为、唯一事务 owner 审计、Agent /UXP production build 和完整核心闸门 58/58 通过。独立提交、提交后双 Runtime identity 与 r32 真机待完成。
+- 触发事实：真实 Photoshop 中存在未保存的 `800` 用户工作稿。D-093 因它没有路径而阻断 r32，但缺路径只说明无法计算项目目录亲和性，不等于该对象必须成为本轮写目标。执行链已经能从 `createDocument` mutation commit 取得新文档 ID，并为后续写入签发私有 target /revision guard。
+- 决定：正式从零创作请求在提交时冻结所有已打开文档的 `documentId/historyStateId`。提交前已存在且 revision 可读的非 fixture 对象，无论 saved /unsaved /path unavailable，都属于受保护 TaskRun 前置对象；它们不获得写入、保存、关闭或素材选定权。首个 Photoshop mutation 必须是 `createDocument`，首次写前不得已有后来打开的 fixture 文档。任务完成前再次读取同一集合，要求每个前置对象仍打开且名称、pathState、editState、projectAffinity 和 revision 均未变化；新增外部对象、缺 revision 或任何漂移均失败关闭。
+- Owner：仍由 `guarded-photoshop-execution-baseline` 拥有提交、首次 mutation 与完成对账；`listDocuments` 只提供 Host 文档 /历史事实；既有 Agent preflight、私有 target guard 与唯一 PhotoshopTransactionRunner 继续拥有每次真实写入。完成对账进入同一 baseline receipt，不新增 Runtime、Task Store、事务日志或 Release owner。
+- 禁止反例：不得把所有 unsaved 文档一律放行；没有稳定 revision 仍阻断。不得允许先打开 fixture 输入图再把它当首次写目标；不得只检查首次 mutation 而省略完成对账；不得通过保存 /关闭用户文档、移除 dirty 检查或相信模型自报“没有碰外部文档”来让 r32 变绿。
+- 回滚点：本切片升级 `guarded-photoshop-execution-baseline` /receipt 到 v2、Debug submit receipt 到 v4、文档 inventory 到 v1，并给 `listDocuments` 增加 revision 事实。若真实 Photoshop 不能稳定读取非活动文档的 history，可独立回滚 D-094；回滚后保留 D-093 对路径明确外部文档的支持，不退回全局 `none_open`。
+- 验证边界：纯逻辑已覆盖未保存 +revision 放行、无 revision 阻断、前置对象缺失 /身份变化 /revision 变化、完成时新增外部对象和首写目标污染；Adobe UXP 官方契约支持文档 ID 在打开生命周期内有效、HistoryState ID 与文档 ID 共同表示历史状态。真机 `listDocuments` revision 读回、完整闸门和 r32 尚未完成，因此当前只声明代码与专项边界。
+
 ## D-093 Photoshop 隔离按对象身份与写入目标判断，禁止 `none_open` 全局锁
 
 - 状态：已采用并形成独立 Git 提交；Design Reliability 专项行为验证、完整核心闸门 58/58、Agent /UXP production build 均已通过，带外部 dirty 文档的正式真机 Attempt 待完成；远端发布状态由 Git 记录，不进入产品运行状态。

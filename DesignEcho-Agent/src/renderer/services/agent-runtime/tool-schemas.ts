@@ -443,12 +443,13 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'listDocuments',
-        description: 'List all currently opened Photoshop documents in one observation. Each row separates pathState (whether a local path exists) from editState (clean / dirty / unknown since the last save), and includes current-project affinity plus a structure-based documentNature hint. Use these facts before choosing a target; do not guess documents one by one. A dirty or outside-project document is not automatically owned by this TaskRun and must not be saved or closed without explicit authority. Path reading defaults to on and does not recursively count layers; pass includePaths=false only for minimal polling.',
+        description: 'List open Photoshop documents with pathState, editState, project affinity, documentNature and document/history revision facts. Use them to identify the target. Dirty, unsaved or outside-project documents are not TaskRun-owned; never save or close them without authority. Paths and revisions default on; disable only for minimal polling.',
         inputSchema: objectSchema({
             includeDetails: { type: 'boolean' },
             includePaths: { type: 'boolean', description: '默认 true；读取 pathState 和已保存文件路径，不递归图层。极简轮询才传 false。' },
             includeDimensions: { type: 'boolean' },
-            includeLayerCount: { type: 'boolean' }
+            includeLayerCount: { type: 'boolean' },
+            includeHistoryState: { type: 'boolean', description: '默认 true；返回 documentId/historyStateId 供对象级变更检测。' }
         })
     },
     {
