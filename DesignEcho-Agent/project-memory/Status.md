@@ -2,12 +2,20 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-111 reconciliation Photoshop 只读批次
+
+- r32 canonical Attempt 仍有 1 条 `submission_unknown_write_state`。clean D-110 Agent /UXP、原 r32 fixture、0 pending 与 6 个 fixture 外稳定文档都已具备，但第一次 reconciliation 被 `photoshop_runtime_identity_unavailable` 安全拒绝，账本没有新增事件。
+- 真机顺序计时：`diagnoseState` 3075ms、`listDocuments` 4513ms，总计 7588ms。旧 Harness 并发提交两项、每项在排队前即开始 5000ms 计时；Photoshop modal 队列使第二项高概率超时。这是 I/O 调度假阴性，不是 Runtime identity 真缺失。
+- `inspectLiveEnvironment` 现复用一个 `photoshop.tools.batch_call`，以 `allowWrites=false / delayMs=50` 串行取得 identity 与完整文档清单，批次总预算 15000ms；缺结果或单项失败仍返回失败，不改变任何安全 blocker。
+- Design Reliability 专项通过；真实 D-111 dirty preflight 已把 `photoshopRuntimeIdentityAvailable` 从 false 恢复为 true，并读到 D-110 UXP buildId、6 个外部 dirty 文档、0 pending 与正确 fixture 绑定。当前剩余 dirty /manifest blocker 是提交前真实状态。
+- 没有调用模型或 Photoshop 写 Tool；活动 `详情页.psb` ID 5816 在插件对齐前后保持 history 5852。提交前唯一完整核心闸门 65/65 已通过；独立提交、exact D-111 Runtime 和最终 reconciliation 尚待完成。
+
 ## 2026-08-29 D-110 Sharp 0.35 图像运行时安全迁移
 
 - Sharp 0.34.5 已升到 0.35.4；当前 Windows x64 clean install 真实加载 libvips 8.18.6。13 处已删除 `failOnError` 按原语义迁为 `failOn`，7 个服务迁到 0.35 named types /`SharpConstructor`，没有用 `any`、`skipLibCheck` 或全局 override 掩盖 breaking change。
 - 冻结 lock 同时在原 semver 内更新 fast-uri 3.1.6、picomatch 2.3.2 与 `@tootallnate/once` 2.0.1。Agent 生产 audit 6→2，剩余只属于 ONNX/adm-zip；全量 27→23，Agent /UXP 构建链仍独立待治理。
 - Agent /UXP clean install、`npm ls --all` 0 problems 和依赖完整性 595/595、148/148 通过；CJS /ESM、PNG /JPEG /WebP、RAW /resize /flatten /fine sharpen /composite 真实原生契约通过。
-- Main /Renderer 类型、OpenRouter /Smile 图像 Provider、主体框、SKU 姿态、形态算法与 Design Reliability 专项，以及 Agent /UXP production build 均通过。dirty packaged app.asar 真实读取 48×48 PNG、返回 visual metrics /digest，并通过六端口、MCP、Renderer sandbox、DeepSeek exact model 与 0 D-110 Codex 子进程验证；唯一完整核心 65/65 通过，独立提交和 clean identities 尚待收口。
+- Main /Renderer 类型、OpenRouter /Smile 图像 Provider、主体框、SKU 姿态、形态算法与 Design Reliability 专项，以及 Agent /UXP production build 均通过。dirty 与 exact clean packaged app.asar 真实读取 48×48 PNG、返回 visual metrics /digest，并通过六端口、MCP、Renderer sandbox、DeepSeek exact model 与 0 D-110 Codex 子进程验证；唯一完整核心 65/65、独立提交 `ab85414d` 和 clean identities 均完成。
 - 正式模型仍为 `deepseek-v4-flash-vision-exp` 且不跨 Provider fallback；未读取正常 Key、未发付费请求、未执行 Photoshop Tool，普通 PID 36604 未停止。
 
 ## 2026-08-29 D-109 Volcengine /TOS SDK 依赖安全覆盖

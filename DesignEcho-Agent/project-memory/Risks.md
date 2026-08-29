@@ -6,6 +6,13 @@
 
 ## 当前高风险
 
+### R-056 live preflight 并发 Photoshop 读取会制造 Runtime identity 假缺失
+
+- 事实：`inspectLiveEnvironment` 原先用同一个 `Promise.all` 并发提交 `diagnoseState` 与 `listDocuments`，每项默认 5 秒超时。当前 Photoshop 27.9.1 /UXP 9.3 真机顺序计时约 3075ms 与 4513ms，总计 7588ms；两个读取最终进入同一 Photoshop modal 队列，第二项可能尚未执行就耗尽从提交时开始的 5 秒计时。r32 reconciliation 与只读 preflight 都因此返回 `photoshop_runtime_identity_unavailable`，而独立读回同一时刻可取得 clean UXP identity。
+- 影响：Harness 会把“读取排队超时”误判为“Runtime 身份不存在”，阻断合法 reconciliation 与后续正式 Case；反复重试会形成偶发绿，简单抬所有超时又会扩大未知等待并掩盖真正慢点。
+- 处理：D-111 复用现有 `photoshop.tools.batch_call`，把两项绑定为 `allowWrites=false` 的单一串行批次，50ms 间隔、15 秒批次总预算；批次缺项或任何单项失败仍 fail closed。纯契约、真实 dirty-slice preflight 与唯一完整核心 65/65 已证明 identity 恢复且其它安全 blocker 保持；待独立提交、exact clean Runtime 与 canonical r32 reconciliation 收口。
+- 关闭条件：D-111 完整核心与 clean 双 Runtime identity 通过；同一 r32 fixture /6 个外部文档条件下 reconciliation 只追加一次合法 04 事件，安全账本降为 0，所有文档 history 不变；后续至少一次 fresh r33 preflight 不再出现该假 blocker。其它 Photoshop 版本若持续超过 15 秒，应保留失败并单独诊断，不能继续无界抬预算。
+
 ### R-055 非 Codex 主模型也在启动期拉起 Codex model-bridge Runtime
 
 - 事实：普通 PID 36604 的正式模型是 DeepSeek，但应用启动 21 秒后出现受限 `codex.exe app-server`。Main /Renderer 都会无条件恢复 ChatGPT 订阅目录，而状态读取内部执行 `ensureStarted()`；因此未调用 Codex 模型也会创建进程。第二个 image-generation Runtime 是数分钟后的显式能力路径，不属于本次冷启动 owner。

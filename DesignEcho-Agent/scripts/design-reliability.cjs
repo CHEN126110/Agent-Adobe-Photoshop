@@ -70,6 +70,7 @@ const REVIEW_VERIFICATION_BUNDLE_VERSION = "design-reliability-review-verificati
 const DEFAULT_DEBUG_BRIDGE = "http://127.0.0.1:8767";
 const DEFAULT_PHOTOSHOP_MCP_HEALTH = "http://127.0.0.1:8768/health";
 const DEFAULT_PHOTOSHOP_MCP_ENDPOINT = "http://127.0.0.1:8768/mcp";
+const LIVE_ENVIRONMENT_PHOTOSHOP_READ_TIMEOUT_MS = 15000;
 const CONTROLLED_PROJECT_METADATA_REF = ".designecho/project.json";
 const PROJECT_METADATA_VERSION = "1.0";
 const PROJECT_METADATA_KEYS = new Set([
@@ -3690,6 +3691,40 @@ async function safeCallMcpTool(endpoint, name, args = {}, timeoutMs = 5000) {
   }
 }
 
+function buildLiveEnvironmentPhotoshopReadBatch() {
+  return {
+    allowWrites: false,
+    delayMs: 50,
+    calls: [
+      { name: "diagnoseState", arguments: { verbose: false } },
+      { name: "listDocuments", arguments: { includeDetails: true, includeHistoryState: true } }
+    ]
+  };
+}
+
+function extractLiveEnvironmentPhotoshopRead(batchStatus, toolName) {
+  if (!batchStatus?.ok) {
+    return {
+      ok: false,
+      error: `photoshop_read_batch_unavailable: ${cleanString(batchStatus?.error) || "unknown error"}`
+    };
+  }
+  const results = Array.isArray(batchStatus.result?.results)
+    ? batchStatus.result.results
+    : [];
+  const toolResult = results.find((item) => cleanString(item?.name) === toolName);
+  if (!toolResult) {
+    return { ok: false, error: `photoshop_read_batch_missing_result: ${toolName}` };
+  }
+  if (toolResult.success !== true) {
+    return {
+      ok: false,
+      error: `photoshop_read_batch_tool_failed: ${toolName}: ${cleanString(toolResult.error) || "unknown error"}`
+    };
+  }
+  return { ok: true, result: toolResult.result };
+}
+
 function normalizeDocumentPathForSafety(value) {
   const raw = cleanString(value);
   if (!raw) return "";
@@ -3919,19 +3954,25 @@ function evaluateLiveEnvironmentSafety(input) {
 
 async function inspectLiveEnvironment(args, fixtureRoot, options = {}) {
   const endpoint = args.get("--photoshop-mcp", DEFAULT_PHOTOSHOP_MCP_ENDPOINT);
-  const [systemStatus, connectionStatus, photoshopDiagnosisStatus, projectRootStatus, documentListStatus] = await Promise.all([
+  const [systemStatus, connectionStatus, projectRootStatus, photoshopReadBatchStatus] = await Promise.all([
     safeCallMcpTool(endpoint, "system.status"),
     safeCallMcpTool(endpoint, "photoshop.connection_status"),
-    safeCallMcpTool(endpoint, "photoshop.tools.call", {
-      name: "diagnoseState",
-      arguments: { verbose: false }
-    }),
     safeCallMcpTool(endpoint, "resource.get_project_root"),
-    safeCallMcpTool(endpoint, "photoshop.tools.call", {
-      name: "listDocuments",
-      arguments: { includeDetails: true, includeHistoryState: true }
-    })
+    safeCallMcpTool(
+      endpoint,
+      "photoshop.tools.batch_call",
+      buildLiveEnvironmentPhotoshopReadBatch(),
+      LIVE_ENVIRONMENT_PHOTOSHOP_READ_TIMEOUT_MS
+    )
   ]);
+  const photoshopDiagnosisStatus = extractLiveEnvironmentPhotoshopRead(
+    photoshopReadBatchStatus,
+    "diagnoseState"
+  );
+  const documentListStatus = extractLiveEnvironmentPhotoshopRead(
+    photoshopReadBatchStatus,
+    "listDocuments"
+  );
   const livePhotoshopRuntime = photoshopDiagnosisStatus?.ok
     ? photoshopDiagnosisStatus.result?.state?.runtime
     : undefined;
@@ -5591,6 +5632,8 @@ module.exports = {
   controlledProjectMetadataSchemaSnapshot,
   deriveLiveAttemptFingerprint,
   deriveLiveCohortFingerprint,
+  buildLiveEnvironmentPhotoshopReadBatch,
+  extractLiveEnvironmentPhotoshopRead,
   evaluateLiveEnvironmentSafety,
   evaluateAttributableAttemptEvents,
   evaluateOfficialAttemptEligibility,

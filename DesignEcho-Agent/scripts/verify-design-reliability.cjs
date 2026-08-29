@@ -57,6 +57,7 @@ const {
   buildCanonicalAttemptSafetyLedger,
   buildAttemptCohortReportContext,
   buildFirstMutationBaselineProof,
+  buildLiveEnvironmentPhotoshopReadBatch,
   classifyUntrustedDebugBridgeFailure,
   buildPreflight,
   buildSkuLiveDeliveryEvidence,
@@ -73,6 +74,7 @@ const {
   evaluateOfficialAttemptEligibility,
   evaluateDebugRendererPreflight,
   evaluateLiveEnvironmentSafety,
+  extractLiveEnvironmentPhotoshopRead,
   inspectFixture,
   inspectEditablePsd,
   isOfficialAttemptCohortReady,
@@ -2347,6 +2349,48 @@ async function main() {
     },
     issues: []
   };
+  const photoshopReadBatch = buildLiveEnvironmentPhotoshopReadBatch();
+  assert.deepStrictEqual(photoshopReadBatch, {
+    allowWrites: false,
+    delayMs: 50,
+    calls: [
+      { name: "diagnoseState", arguments: { verbose: false } },
+      { name: "listDocuments", arguments: { includeDetails: true, includeHistoryState: true } }
+    ]
+  }, "live preflight 必须由一个只读串行 batch 获取 Runtime identity 与完整文档清单");
+  const photoshopReadBatchStatus = {
+    ok: true,
+    result: {
+      success: true,
+      results: [
+        { name: "diagnoseState", success: true, result: { state: { runtime: safePhotoshopRuntime } } },
+        { name: "listDocuments", success: true, result: { success: true, documents: [], count: 0 } }
+      ]
+    }
+  };
+  assert.deepStrictEqual(
+    extractLiveEnvironmentPhotoshopRead(photoshopReadBatchStatus, "diagnoseState"),
+    { ok: true, result: { state: { runtime: safePhotoshopRuntime } } },
+    "batch 中的 Runtime identity 读回必须保留原结果"
+  );
+  assert.deepStrictEqual(
+    extractLiveEnvironmentPhotoshopRead(photoshopReadBatchStatus, "listDocuments"),
+    { ok: true, result: { success: true, documents: [], count: 0 } },
+    "batch 中的文档清单读回必须保留原结果"
+  );
+  assert.strictEqual(
+    extractLiveEnvironmentPhotoshopRead({ ok: true, result: { success: false, results: [] } }, "diagnoseState").ok,
+    false,
+    "批次缺少 Runtime identity 结果时必须失败关闭"
+  );
+  assert.strictEqual(
+    extractLiveEnvironmentPhotoshopRead({
+      ok: true,
+      result: { results: [{ name: "listDocuments", success: false, error: "timeout" }] }
+    }, "listDocuments").ok,
+    false,
+    "批次内单个 Photoshop 读取失败时不能被批次 success 掩盖"
+  );
   const safeLiveEnvironmentInput = {
     currentGitEnvironment: { gitCommit: expectedCommit, dirty: false },
     expectedProjectPath: "C:/fixture/project",

@@ -1,6 +1,6 @@
 # Current Implementation Plan
 
-## 2026-08-29 唯一当前顺序：`D-095～D-109（已完成）→ D-110 Sharp 0.35 图像运行时（专项通过，构建 /核心 /提交收口中）→ [默认端口释放则 r32；否则 D-111 ONNX /adm-zip、D-112 Agent /UXP 构建链] → r33 → D-102 /D-103 真机复验`
+## 2026-08-29 唯一当前顺序：`D-095～D-110（已完成）→ D-111 reconciliation 只读预检串行化（专项 /live 诊断通过，核心 /提交 /对账收口中）→ r32 reconciliation → fresh r33 → D-102 /D-103 真机复验 → D-112 ONNX /adm-zip → D-113 Agent /UXP 构建链`
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 

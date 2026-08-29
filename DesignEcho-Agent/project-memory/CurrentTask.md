@@ -1,5 +1,49 @@
 # Current Task
 
+## 2026-08-29 RECONCILIATION-READ-BATCH-111：Photoshop 只读预检串行化
+
+### 目标
+
+1. 修复 Design Reliability live preflight /reconciliation 对两个真实 Photoshop 读取并发计时导致的假 `photoshop_runtime_identity_unavailable`；不放宽 Runtime、文档所有权、pending request 或 Git clean 条件。
+2. 复用现有 `photoshop.tools.batch_call` 作为唯一只读批次 owner，让 `diagnoseState → listDocuments` 在 Photoshop 端明确串行，并以一个有界总预算覆盖排队与执行。
+3. 用纯契约、真实 r32 live preflight、完整核心和 post-commit clean Runtime 证明修复；最终只追加合法 reconciliation 收据，不执行 Photoshop 文档写入。
+
+### 当前事实
+
+- clean D-110 Agent /UXP 已加载到默认 Host，r32 Debug Runtime 精确绑定原 fixture，pending request 为 0；6 个打开文档均有稳定 document/history 身份且全部位于 r32 fixture 外，活动文档 5816 在 UXP 切换前后保持 history 5852。
+- 旧 `inspectLiveEnvironment` 用 `Promise.all` 同时提交 `diagnoseState` 与 `listDocuments`，两个请求各自在提交时开始 5 秒超时。真实顺序计时分别约 3075ms 与 4513ms，Photoshop modal 队列总计约 7588ms；第二个请求会在排队期间越过自己的 5 秒预算。
+- 第一次 r32 reconciliation 被安全契约拒绝，canonical 账本没有新增事件；随后旧 preflight 精确报告 `photoshop_runtime_identity_unavailable / photoshop_runtime_build_identity_mismatch`，而手工顺序读回能稳定取得 clean D-110 UXP identity。这是 I/O 调度假阴性，不是身份事实缺失。
+- D-111 现在构造一个 `allowWrites=false / delayMs=50` 的批次，固定顺序读取 Runtime identity 和完整文档清单；整个批次使用 15000ms 总预算。批次缺结果或单项失败仍显式 `ok=false`，不能由批次 success 掩盖。
+- 纯 Design Reliability 契约通过；在仍为 dirty D-111、尚未生成 D-111 UXP manifest 的真实 preflight 中，`photoshopRuntimeIdentityAvailable` 已从 false 变为 true，并准确读到 D-110 UXP buildId、6 个外部 dirty 文档、0 pending 和正确 fixture 绑定。剩余 dirty /manifest blocker 属于提交前真实状态。
+
+### 实施边界
+
+- 不修改 `evaluateLiveEnvironmentSafety` 的任何安全条件、blocker 或 reconciliation 时间 /对象判定；只修复取得两项 Photoshop 事实的调度和总预算 owner。
+- 不把所有 Photoshop Tool 改成串行；只治理同一 live preflight 中已知会进入同一 modal 队列的 `diagnoseState /listDocuments`。
+- 不用重试、吞错或默认 identity 兜底；batch 不可用、结果缺失、单项失败仍返回原子失败。
+- 正式模型继续为 `deepseek-v4-flash-vision-exp`；不读取或复制正常 Key，不调用模型，不保存、关闭、切换或修改任何 Photoshop 文档。
+
+### 下一步
+
+1. [已完成] 只读 batch 构造、结果提取与失败关闭契约已实现，Design Reliability 专项通过。
+2. [已完成] 使用当前 live r32 环境证实 Runtime identity 可稳定取得；首次失败没有改账本或 Photoshop。
+3. [已完成] 更新项目记忆、类型 /构建、快速治理和提交前唯一完整 `maintenance:validate` 65/65 均通过。
+4. [进行中] 独立提交、clean Agent /UXP identity、加载 exact D-111，并重新启动绑定 r32 的 clean Debug Runtime。
+5. [待完成] 运行一次 canonical reconciliation，随后读回 Attempt 04 事件、全局未知写状态 0 和所有现有 document/history 未变化。
+6. [后续] reconciliation 闭合后创建 fresh r33；不会复用已经使用的 r32 fixture。
+
+### 验证与未知
+
+- 已验证：两个只读 Tool 的真实耗时、旧 5 秒并发超时结构、batch 纯契约、真实 live identity 恢复、fixture /文档 /pending 事实。
+- 未验证：D-111 post-commit exact Runtime、最终 reconciliation 追加、异常时 batch 内第二项失败诊断、其它 Photoshop 版本 /机器的耗时分布。
+- 15 秒是本批次排队加执行的总上限，不是放宽写超时或允许长时间未知状态；若真实读取超过它仍按不可用失败关闭。
+
+### 状态
+
+in_progress / root_cause_confirmed_two_modal_reads_3075_and_4513_ms / readonly_serial_batch_implemented / per_tool_failure_preserved / design_reliability_contract_passed / live_runtime_identity_recovered / full_core_validation_65_passed / commit_exact_runtime_and_reconciliation_pending / deepseek_selection_unchanged / no_model_call / no_photoshop_write
+
+---
+
 ## 2026-08-29 SHARP-RUNTIME-SECURITY-110：图像运行时安全升级与真实编解码兼容
 
 ### 目标
@@ -28,7 +72,7 @@
 1. [已完成] package /lock、13 处参数迁移、7 个服务类型迁移和可复用 Sharp Runtime 契约已实现。
 2. [已完成] 两仓 clean install、零问题依赖树、依赖完整性、Sharp 真实 codec /operation、Main /Renderer 类型及相邻图像链专项通过。
 3. [已完成] 项目记忆、Agent /UXP production build、dirty packaged app.asar 启动与提交前唯一完整 `maintenance:validate` 65/65 通过。
-4. [进行中] 形成独立提交后重建 clean Agent /UXP identity，并用 exact clean app.asar 再验证 Sharp 原生加载、DeepSeek 配置、Renderer sandbox 与 0 Codex 子进程；不重复完整核心。
+4. [已完成] 独立提交 `ab85414d`、clean Agent /UXP identity 与 exact clean app.asar 已复验；不重复完整核心。
 5. [后续独立] 默认端口若仍占用，先治理 ONNX/adm-zip 生产 owner，再治理 Agent /UXP 构建链；默认端口自然释放则优先回到 r32 reconciliation。
 
 ### 验证与未知
@@ -39,7 +83,7 @@
 
 ### 状态
 
-in_progress / implementation_and_focused_validation_passed / sharp_0_35_4_libvips_8_18_6_loaded / removed_api_and_named_type_migration_complete / agent_uxp_dependency_trees_zero_problems / integrity_595_and_148_passed / production_audit_6_to_2_only_onnx_remaining / full_audit_27_to_23 / agent_uxp_production_builds_passed / dirty_packaged_sharp_probe_and_startup_passed / full_core_validation_65_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / no_paid_request / no_photoshop_write
+validated / sharp_0_35_4_libvips_8_18_6_loaded / removed_api_and_named_type_migration_complete / agent_uxp_dependency_trees_zero_problems / integrity_595_and_148_passed / production_audit_6_to_2_only_onnx_remaining / full_audit_27_to_23 / agent_uxp_production_builds_passed / dirty_and_exact_clean_packaged_sharp_probe_and_startup_passed / full_core_validation_65_passed / independent_commit_ab85414d_and_clean_identity_complete / deepseek_selection_unchanged / no_paid_request / no_photoshop_write
 
 ---
 

@@ -1,10 +1,10 @@
 {
-  "currentFocus": "2026-08-29 SHARP-RUNTIME-SECURITY-110：在 Electron 44 /Node 24 基线上升级 Sharp /libvips，逐项迁移 breaking API，并用真实原生编解码与相邻图像链验证保持运行语义。",
-  "currentMilestone": "SHARP-RUNTIME-SECURITY-110",
-  "milestoneStatus": "implementation_and_focused_validation_passed_sharp_0_35_4_libvips_8_18_6_loaded_removed_api_and_named_type_migration_complete_agent_uxp_dependency_trees_zero_problems_integrity_595_and_148_passed_production_audit_6_to_2_only_onnx_remaining_full_audit_27_to_23_agent_uxp_production_builds_passed_dirty_packaged_sharp_probe_and_startup_passed_full_core_validation_65_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
+  "currentFocus": "2026-08-29 RECONCILIATION-READ-BATCH-111：把 live preflight 中进入同一 Photoshop modal 队列的 Runtime identity 与文档清单读取收敛为一个只读串行批次，消除 5 秒并发计时假阴性。",
+  "currentMilestone": "RECONCILIATION-READ-BATCH-111",
+  "milestoneStatus": "root_cause_confirmed_two_modal_reads_3075_and_4513_ms_readonly_serial_batch_implemented_per_tool_failure_preserved_design_reliability_contract_passed_live_runtime_identity_recovered_full_core_validation_65_passed_commit_exact_runtime_and_reconciliation_pending_deepseek_selection_unchanged_no_model_call_no_photoshop_write",
   "verified": {
     "code": [
-      "Sharp runtime security compatibility D-110 (2026-08-29): Sharp moved from 0.34.5 to 0.35.4 with the Windows x64 native binary and libvips 8.18.6. Thirteen removed failOnError properties preserve their exact tolerant/strict semantics through failOn, and seven services use the 0.35 named-type or SharpConstructor contract rather than any or skipLibCheck. Clean Agent/UXP installs, zero-problem dependency trees, 595/595 and 148/148 integrity, CJS/ESM loading, real PNG/JPEG/WebP and raw/resize/flatten/sharpen/composite operations, adjacent image paths, types, both production builds, a dirty packaged read-only image probe/startup and the single 65-stage core gate passed. Production audit fell from 6 to 2 and now contains only the independent ONNX/adm-zip owner; commit and clean identity remain pending. No credential, paid request or Photoshop write was used.",
+      "Sharp runtime security compatibility D-110 (2026-08-29): Sharp moved from 0.34.5 to 0.35.4 with the Windows x64 native binary and libvips 8.18.6. Thirteen removed failOnError properties preserve their exact tolerant/strict semantics through failOn, and seven services use the 0.35 named-type or SharpConstructor contract rather than any or skipLibCheck. Clean Agent/UXP installs, zero-problem dependency trees, 595/595 and 148/148 integrity, CJS/ESM loading, real PNG/JPEG/WebP and raw/resize/flatten/sharpen/composite operations, adjacent image paths, types, both production builds, dirty and exact clean packaged read-only image probes/startup, the single 65-stage core gate, commit ab85414d and clean identities passed. Production audit fell from 6 to 2 and now contains only the independent ONNX/adm-zip owner. No credential, paid request or Photoshop write was used.",
       "Volcengine SDK security compatibility D-109 (2026-08-29): live npm metadata showed the latest official OpenAPI and TOS SDKs still declare vulnerable Axios, protobuf, UUID, form-data, lodash and proxy ranges. The root Axios moved to 1.20.0 and explicit SDK-scoped overrides now bind patched descendants without a global major override. A first invalid form-data tree was rejected by npm ls and replaced by a layered parent/Axios override. Agent/UXP clean installs, zero-problem dependency trees, 595/595 and 148/148 integrity, real local OpenAPI JSON/multipart and TOS signed requests, protobuf/UUID behavior, adjacent provider regressions, types, production build, exact clean packaged startup and the single 64-stage core gate passed. Production audit fell from 17 to 6 with zero finding owned by this slice; commit 45e15560 and clean identities passed. No real credential, paid request or Photoshop write was used.",
       "Codex Runtime lazy startup D-108 (2026-08-29): the normal DeepSeek runtime exposed a preexisting unconditional startup cost because Main and Renderer both hydrated the ChatGPT subscription catalog, whose status read starts the bundled app-server. One shared subscription model-id identity now guards both startup consumers while settings, login, catalog, chat and image IPC remain on-demand. Clean installs, model routing, types, authorship/business/runtime/simplification/preload checks, production build, the single 63-stage core gate, commit 16db25ec and exact clean packaged identities passed. Credential-free same-build canaries showed exact DeepSeek primary/visual with zero D-108 codex.exe children, while an explicit codex-subscription model started exactly one restricted model-bridge process; neither canary sent a model request or touched Photoshop. Normal user restart remains pending.",
       "Smile Provider closure D-105 (2026-08-29): the existing conversation Provider acd53530 and image Provider 0fa91c6f remain independent ancestors of the current chain. Current model-usage and single-model routing tests prove Smile image models stay out of conversation candidates, conversation models do not receive implicit vision or Tool Calling, missing keys fail explicitly and no cross-model fallback is created. The image-provider suite proves independent Smile/OpenRouter credentials, exact supported models, pre-request rejection, Gemini and GPT Image 2 protocol shapes, cancellation, HTTPS/result budgets, batch error provenance and actual output dimensions; the adjacent OpenRouter suite also passed. The three Smile image core/test files are byte-identical to 0fa91c6f. No Provider or production code changed and no paid request ran.",
@@ -336,35 +336,35 @@
     ]
   },
   "activeRequest": {
-    "id": "SHARP-RUNTIME-SECURITY-110",
-    "summary": "Move the production image runtime to Sharp 0.35.4 and its patched libvips line, migrate every removed constructor and ESM type API at the real owners, and prove native codec and adjacent image-path compatibility without mixing ONNX or build-chain majors into the same rollback slice.",
-    "status": "implementation_and_focused_validation_passed_sharp_0_35_4_libvips_8_18_6_loaded_removed_api_and_named_type_migration_complete_agent_uxp_dependency_trees_zero_problems_integrity_595_and_148_passed_production_audit_6_to_2_only_onnx_remaining_full_audit_27_to_23_agent_uxp_production_builds_passed_dirty_packaged_sharp_probe_and_startup_passed_full_core_validation_65_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_paid_request_no_photoshop_write",
+    "id": "RECONCILIATION-READ-BATCH-111",
+    "summary": "Eliminate false missing-Photoshop-runtime verdicts by routing diagnoseState and listDocuments through one existing guarded read-only serial batch with a bounded aggregate timeout, while preserving every live safety and reconciliation condition.",
+    "status": "root_cause_confirmed_two_modal_reads_3075_and_4513_ms_readonly_serial_batch_implemented_per_tool_failure_preserved_design_reliability_contract_passed_live_runtime_identity_recovered_full_core_validation_65_passed_commit_exact_runtime_and_reconciliation_pending_deepseek_selection_unchanged_no_model_call_no_photoshop_write",
     "mustDo": [
-      "Upgrade the direct Sharp dependency to 0.35.4 and require the matching Windows x64 native package and libvips 8.18 line.",
-      "Map every removed failOnError value to the equivalent failOn level and migrate Sharp namespace types to the 0.35 named-type contract.",
-      "Exercise CommonJS and ESM loading plus real PNG, JPEG, WebP, raw, resize, flatten, sharpen and composite operations using the installed native runtime.",
-      "Require clean installs, npm ls zero problems, workspace dependency integrity and adjacent image-provider, subject-box, pose, morphing and reliability regressions.",
-      "Run production build, isolated packaged startup, one full core gate, an independent commit and exact clean identity verification."
+      "Measure the real diagnoseState and listDocuments durations on the blocked r32 environment and bind the root cause to the existing Promise.all and 5 second timers.",
+      "Use the existing photoshop.tools.batch_call owner with allowWrites false and an explicit serial order for the two modal reads.",
+      "Give the combined read batch one bounded timeout that covers queueing plus execution rather than independently timing requests before they can run.",
+      "Preserve missing-result and per-tool failure as explicit unavailable evidence; never synthesize a Runtime identity or document inventory.",
+      "Pass focused, build and full validation, then use exact clean Agent/UXP runtimes to append the single legal r32 reconciliation receipt."
     ],
     "mustNotDo": [
-      "Do not mix ONNX/adm-zip or electron-builder, Vite, PostCSS and UXP build-chain majors into this Sharp rollback slice.",
-      "Do not change image algorithms, quality parameters, output selection or failure semantics merely to satisfy the new types.",
-      "Do not use any, skipLibCheck, catch-and-ignore or a global override to hide Sharp 0.35 incompatibility.",
-      "Do not read, copy or mutate normal credentials, issue a paid Provider request or change the formal DeepSeek model.",
-      "Do not stop PID 36604, occupy default ports or modify any Photoshop document."
+      "Do not remove or weaken Runtime identity, manifest, Git cleanliness, pending request, fixture binding, restart-time or document-ownership checks.",
+      "Do not add retries, swallow timeouts or default failed reads to an empty document set.",
+      "Do not serialize unrelated application reads or change Photoshop write/execution timeout policy globally.",
+      "Do not copy normal credentials, call a model or change the formal DeepSeek selection.",
+      "Do not save, close, switch or modify any open Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "SHARP-RUNTIME-SECURITY-110",
+    "id": "RECONCILIATION-READ-BATCH-111",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：Sharp 0.35.4 /libvips 8.18.6 与合法传递 lock 更新。",
-      "已完成：13 处 removed constructor API 与 7 个服务 named-type 迁移。",
-      "已完成：Agent/UXP clean install、npm ls、595/595 与 148/148 依赖完整性。",
-      "已完成：真实 native codec/operation、类型和相邻图像链专项。",
-      "已完成：production build、dirty packaged Sharp probe /startup、项目记忆与唯一完整核心 65/65。",
-      "进行中：独立提交、clean Agent/UXP identities 与 exact clean app.asar；不重复完整核心。",
-      "后续：默认端口释放优先 r32，否则依次治理 ONNX/adm-zip 和 Agent/UXP 构建链。"
+      "已完成：真实 3075ms + 4513ms 读取计时与旧并发超时根因定位。",
+      "已完成：一个 allowWrites=false 的 diagnoseState→listDocuments 串行批次与失败关闭提取器。",
+      "已完成：Design Reliability 专项和当前 live r32 identity 恢复诊断。",
+      "已完成：项目记忆、类型/构建、快速治理与唯一完整核心 65/65。",
+      "进行中：独立提交、clean Agent/UXP identities 与 exact D-111 Runtime 加载。",
+      "待完成：canonical r32 reconciliation、账本 0 未知写与文档 history 不变读回。",
+      "后续：创建 fresh r33，不复用 r32 fixture。"
     ]
   },
   "convergenceBaseline": {
