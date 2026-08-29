@@ -103,6 +103,10 @@ require("ts-node").register({
   project: path.join(ROOT, "tsconfig.main.json")
 });
 const {
+  buildDebugBridgeInteractionReceipt,
+  createDebugBridgeInteractionLedger,
+  readDebugBridgeInteractionReceipt,
+  recordDebugBridgeInteraction,
   MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS
 } = require(path.join(ROOT, "src", "shared", "debug-bridge-chat.ts"));
 const {
@@ -589,6 +593,28 @@ function buildPassingObservation() {
 }
 
 async function main() {
+  const interactionLedger = createDebugBridgeInteractionLedger(
+    "debug-interaction-fixture",
+    "2026-08-29T00:00:00.000Z"
+  );
+  recordDebugBridgeInteraction(interactionLedger, "protocol_interaction");
+  recordDebugBridgeInteraction(interactionLedger, "user_design_correction");
+  const interactionReceipt = buildDebugBridgeInteractionReceipt(
+    interactionLedger,
+    "2026-08-29T00:01:00.000Z"
+  );
+  assert.deepStrictEqual(readDebugBridgeInteractionReceipt(interactionReceipt), interactionReceipt);
+  assert.strictEqual(interactionReceipt.protocolInteractionCount, 1);
+  assert.strictEqual(interactionReceipt.userDesignCorrectionCount, 1);
+  assert.strictEqual(readDebugBridgeInteractionReceipt({
+    ...interactionReceipt,
+    userDesignCorrectionCount: -1
+  }), undefined, "交互计数不能是负数");
+  assert.strictEqual(readDebugBridgeInteractionReceipt({
+    ...interactionReceipt,
+    requestId: ""
+  }), undefined, "交互收据必须绑定请求身份");
+
   const loadedSuite = loadSuite();
   for (const caseSpec of loadedSuite.cases) {
     assert.strictEqual(
@@ -1681,9 +1707,20 @@ async function main() {
     "用户可见设计尺寸必须进入 cohort fingerprint，不能把 800 与 1440 的结果混为同一环境"
   );
   assert(!designReliabilityCliSource.includes("userInterventionCount: 0,")
-    && designReliabilityCliSource.includes("userInterventionCount: undefined,")
-    && designReliabilityCliSource.includes("interactionMetricsKnown: false"),
-  "没有 Provider / operation 交互收据时必须保持介入指标 unknown，不能因 Debug 只发一条自然请求就伪造为 0");
+    && designReliabilityCliSource.includes(
+      "userInterventionCount: protocolInteractionCount + userDesignCorrectionCount"
+    )
+    && designReliabilityCliSource.includes("interactionMetricsKnown: true")
+    && designReliabilityCliSource.includes("interactionReceiptVerifiedByMain"),
+  "正式介入指标必须来自 Main 验证的 request-bound UI 事件收据，不能因只发送一条自然请求就硬编码为 0");
+  assert(chatPanelSource.includes("createDebugBridgeInteractionLedger(")
+    && chatPanelSource.includes("classifyDebugUserInteractionAction(normalizedActionId)")
+    && chatPanelSource.includes("recordActiveDebugUserInteraction('user_design_correction')")
+    && chatPanelSource.includes("recordActiveDebugUserInteraction('protocol_interaction')")
+    && chatPanelSource.includes("buildDebugBridgeInteractionReceipt(")
+    && mainProcessSource.includes("readDebugBridgeInteractionReceipt(")
+    && mainProcessSource.includes("interactionReceiptVerifiedByMain: true"),
+  "用户消息、任务交互卡和停止动作必须进入同一 Debug UI 事件账本，并由 Main 重新验证后才能计数");
 
   const malformedPsdDir = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-psd-evidence-"));
   try {
@@ -2120,7 +2157,7 @@ async function main() {
   "不得再用错误文案猜测写入安全性");
 
   const validDebugReceipt = {
-    version: "debug-bridge-chat-submit-receipt/v1",
+    version: "debug-bridge-chat-submit-receipt/v2",
     requestId: "debug-request-1",
     conversationId: "conversation-1",
     submittedProjectPath: "C:/fixture/project",
@@ -2160,6 +2197,16 @@ async function main() {
       expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
       expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding
     },
+    interactionReceipt: {
+      version: "debug-bridge-interaction-receipt/v1",
+      requestId: "debug-request-1",
+      startedAt: "2026-08-26T00:00:00.000Z",
+      completedAt: "2026-08-26T00:10:00.000Z",
+      protocolInteractionCount: 0,
+      userDesignCorrectionCount: 0,
+      source: "renderer_ui_event_ledger"
+    },
+    interactionReceiptVerifiedByMain: true,
     finalArtifactRefs: ["主图/候选.psd", "主图/候选.jpg"]
   };
   const validDebugReceiptInput = {
@@ -2176,6 +2223,23 @@ async function main() {
     { result: { receipt: validDebugReceipt } },
     validDebugReceiptInput
   ).ok, true, "提交前、首次写与完成后协议字段完整时 receipt 必须可信");
+  const missingInteractionReceipt = JSON.parse(JSON.stringify(validDebugReceipt));
+  delete missingInteractionReceipt.interactionReceipt;
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: missingInteractionReceipt } },
+    validDebugReceiptInput
+  ).ok, false, "缺少交互事件收据时不能伪造零人工介入");
+  const mismatchedInteractionRequest = {
+    ...validDebugReceipt,
+    interactionReceipt: {
+      ...validDebugReceipt.interactionReceipt,
+      requestId: "other-debug-request"
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: mismatchedInteractionRequest } },
+    validDebugReceiptInput
+  ).ok, false, "另一请求的交互计数不能复用到当前 Attempt");
   const workspaceSemanticDriftReceipt = {
     ...validDebugReceipt,
     consumedWorkspaceSemanticDigest: sha256Text("workspace-semantic-drift")

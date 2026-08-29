@@ -78,10 +78,12 @@ import {
     debugBridgePhotoshopRuntimeLiveIdentitiesMatch,
     readDebugBridgeChatExecutionFailure,
     readDebugBridgeChatPreflightSnapshot,
+    readDebugBridgeInteractionReceipt,
     readDebugBridgePhotoshopRuntimeBinding,
     readDebugBridgePhotoshopRuntimeLiveIdentity,
     MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS,
     type DebugBridgeChatExecutionStage,
+    type DebugBridgeInteractionReceipt,
     type DebugBridgeChatPreflightSnapshot,
     type DebugBridgePhotoshopRuntimeBinding
 } from '../shared/debug-bridge-chat';
@@ -371,6 +373,7 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
     }
 
     const requestId = `debug_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const submissionStartedAt = new Date().toISOString();
     const debugProjectReferenceLeaseToken = crypto.randomBytes(32).toString('hex');
     try {
         armDebugProjectReferenceProviderReceipt({
@@ -476,6 +479,28 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                 const receipt = resultReceipt && typeof resultReceipt === 'object' && !Array.isArray(resultReceipt)
                     ? resultReceipt as Record<string, unknown>
                     : {};
+                const interactionReceipt = readDebugBridgeInteractionReceipt(
+                    receipt['interactionReceipt']
+                );
+                const interactionStartedAt = Date.parse(interactionReceipt?.startedAt || '');
+                const interactionCompletedAt = Date.parse(interactionReceipt?.completedAt || '');
+                const mainSubmissionStartedAt = Date.parse(submissionStartedAt);
+                if (!interactionReceipt
+                    || interactionReceipt.requestId !== requestId
+                    || !Number.isFinite(interactionStartedAt)
+                    || !Number.isFinite(interactionCompletedAt)
+                    || interactionStartedAt < mainSubmissionStartedAt
+                    || interactionCompletedAt < interactionStartedAt) {
+                    cleanup();
+                    reject(buildDebugChatError({
+                        stage: 'completion',
+                        writePossible: true,
+                        message: '运行窗口没有返回与本次请求绑定的完整用户交互审计收据。',
+                        code: 'debug_interaction_receipt_invalid',
+                        requestId
+                    }));
+                    return;
+                }
                 const receiptExpectedPhotoshopBinding = readDebugBridgePhotoshopRuntimeBinding(
                     receipt['expectedPhotoshopRuntimeBinding']
                 );
@@ -561,6 +586,7 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                 }
                 const {
                     projectAssetProviderBindingReceipt: _rendererProjectAssetProviderBindingReceipt,
+                    interactionReceiptVerifiedByMain: _rendererInteractionReceiptVerifiedByMain,
                     ...rendererReceipt
                 } = receipt;
                 cleanup();
@@ -571,6 +597,8 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                         ...(mainProviderReceipt ? {
                             projectAssetProviderBindingReceipt: mainProviderReceipt
                         } : {}),
+                        interactionReceipt: interactionReceipt as DebugBridgeInteractionReceipt,
+                        interactionReceiptVerifiedByMain: true,
                         runtimeBuildIdentity: submissionRuntimeBuildIdentity,
                         completedRuntimeBuildIdentity,
                         runtimeArtifactsUnchangedThroughCompletion,

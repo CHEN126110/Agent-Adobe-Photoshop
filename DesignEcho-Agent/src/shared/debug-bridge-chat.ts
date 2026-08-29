@@ -8,6 +8,8 @@ export const MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS = 40 * 60 * 1000;
 export const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = 'debug-bridge-chat-preflight/v2' as const;
 export const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = 'debug-bridge-chat-execution-failure/v1' as const;
 export const DEBUG_BRIDGE_CHAT_FAILURE_ENVELOPE_VERSION = 'debug-bridge-chat-failure-envelope/v1' as const;
+export const DEBUG_BRIDGE_CHAT_SUBMIT_RECEIPT_VERSION = 'debug-bridge-chat-submit-receipt/v2' as const;
+export const DEBUG_BRIDGE_INTERACTION_RECEIPT_VERSION = 'debug-bridge-interaction-receipt/v1' as const;
 export const DEBUG_BRIDGE_PHOTOSHOP_RUNTIME_BINDING_VERSION =
     'debug-bridge-photoshop-runtime-binding/v1' as const;
 export const DEBUG_BRIDGE_PROJECT_ASSET_REFERENCE_VERSION =
@@ -139,6 +141,26 @@ export interface DebugBridgeChatExecutionError extends Error {
     debugBridgeFailure: DebugBridgeChatExecutionFailure;
 }
 
+export type DebugBridgeInteractionKind = 'protocol_interaction' | 'user_design_correction';
+
+/** 只存在于单次受控 Debug 请求期间，不进入 Agent Context、Prompt 或业务状态。 */
+export interface DebugBridgeInteractionLedger {
+    requestId: string;
+    startedAt: string;
+    protocolInteractionCount: number;
+    userDesignCorrectionCount: number;
+}
+
+export interface DebugBridgeInteractionReceipt {
+    version: typeof DEBUG_BRIDGE_INTERACTION_RECEIPT_VERSION;
+    requestId: string;
+    startedAt: string;
+    completedAt: string;
+    protocolInteractionCount: number;
+    userDesignCorrectionCount: number;
+    source: 'renderer_ui_event_ledger';
+}
+
 function cleanDebugBridgeText(value: unknown, maxLength: number): string {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     return text.slice(0, maxLength);
@@ -155,6 +177,91 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
     if (typeof value !== 'string' || !value) return false;
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+export function createDebugBridgeInteractionLedger(
+    requestId: string,
+    startedAt: string = new Date().toISOString()
+): DebugBridgeInteractionLedger {
+    const normalizedRequestId = String(requestId || '').trim();
+    if (!normalizedRequestId || !isCanonicalIsoTimestamp(startedAt)) {
+        throw new Error('Debug interaction ledger requires a request id and canonical start time.');
+    }
+    return {
+        requestId: normalizedRequestId,
+        startedAt,
+        protocolInteractionCount: 0,
+        userDesignCorrectionCount: 0
+    };
+}
+
+export function recordDebugBridgeInteraction(
+    ledger: DebugBridgeInteractionLedger,
+    kind: DebugBridgeInteractionKind
+): void {
+    const field = kind === 'protocol_interaction'
+        ? 'protocolInteractionCount'
+        : 'userDesignCorrectionCount';
+    const next = ledger[field] + 1;
+    if (!Number.isSafeInteger(next) || next > 1000) {
+        throw new Error('Debug interaction ledger exceeded its bounded event capacity.');
+    }
+    ledger[field] = next;
+}
+
+export function buildDebugBridgeInteractionReceipt(
+    ledger: DebugBridgeInteractionLedger,
+    completedAt: string = new Date().toISOString()
+): DebugBridgeInteractionReceipt {
+    const receipt = readDebugBridgeInteractionReceipt({
+        version: DEBUG_BRIDGE_INTERACTION_RECEIPT_VERSION,
+        requestId: ledger.requestId,
+        startedAt: ledger.startedAt,
+        completedAt,
+        protocolInteractionCount: ledger.protocolInteractionCount,
+        userDesignCorrectionCount: ledger.userDesignCorrectionCount,
+        source: 'renderer_ui_event_ledger'
+    });
+    if (!receipt) throw new Error('Debug interaction receipt could not be finalized.');
+    return receipt;
+}
+
+export function readDebugBridgeInteractionReceipt(
+    value: unknown
+): DebugBridgeInteractionReceipt | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (!hasExactKeys(record, [
+        'version',
+        'requestId',
+        'startedAt',
+        'completedAt',
+        'protocolInteractionCount',
+        'userDesignCorrectionCount',
+        'source'
+    ])
+        || record['version'] !== DEBUG_BRIDGE_INTERACTION_RECEIPT_VERSION
+        || typeof record['requestId'] !== 'string'
+        || !record['requestId'].trim()
+        || !isCanonicalIsoTimestamp(record['startedAt'])
+        || !isCanonicalIsoTimestamp(record['completedAt'])
+        || Date.parse(record['completedAt']) < Date.parse(record['startedAt'])
+        || !Number.isSafeInteger(record['protocolInteractionCount'])
+        || Number(record['protocolInteractionCount']) < 0
+        || Number(record['protocolInteractionCount']) > 1000
+        || !Number.isSafeInteger(record['userDesignCorrectionCount'])
+        || Number(record['userDesignCorrectionCount']) < 0
+        || Number(record['userDesignCorrectionCount']) > 1000
+        || record['source'] !== 'renderer_ui_event_ledger') return undefined;
+    return {
+        version: DEBUG_BRIDGE_INTERACTION_RECEIPT_VERSION,
+        requestId: record['requestId'].trim(),
+        startedAt: record['startedAt'],
+        completedAt: record['completedAt'],
+        protocolInteractionCount: Number(record['protocolInteractionCount']),
+        userDesignCorrectionCount: Number(record['userDesignCorrectionCount']),
+        source: 'renderer_ui_event_ledger'
+    };
 }
 
 function isSha256Digest(value: unknown): value is string {

@@ -100,7 +100,7 @@ const LIVE_RUN_ACTOR_CAPABILITIES = new Map([
   ["autonomous_zero_correction", Object.freeze({
     capabilityId: "guarded-natural-chat-submit/v1",
     protocolKind: "autonomous_zero_correction",
-    receiptVersion: "debug-bridge-chat-submit-receipt/v1",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v2",
     dispatchProtocol: dispatchAutonomousZeroCorrectionProtocol
   })]
 ]);
@@ -4021,8 +4021,40 @@ function summarizeDebugResponse(response) {
 function validateDebugBridgeReceipt(response, input) {
   const receipt = response?.result?.receipt;
   const errors = [];
-  if (!isRecord(receipt) || receipt.version !== "debug-bridge-chat-submit-receipt/v1") {
-    return { ok: false, errors: ["运行窗口没有返回 debug-bridge-chat-submit-receipt/v1。"] };
+  if (!isRecord(receipt) || receipt.version !== "debug-bridge-chat-submit-receipt/v2") {
+    return { ok: false, errors: ["运行窗口没有返回 debug-bridge-chat-submit-receipt/v2。"] };
+  }
+  const interactionReceipt = receipt.interactionReceipt;
+  const expectedInteractionReceiptKeys = [
+    "completedAt",
+    "protocolInteractionCount",
+    "requestId",
+    "source",
+    "startedAt",
+    "userDesignCorrectionCount",
+    "version"
+  ];
+  const interactionStartedAt = Date.parse(cleanString(interactionReceipt?.startedAt));
+  const interactionCompletedAt = Date.parse(cleanString(interactionReceipt?.completedAt));
+  if (receipt.interactionReceiptVerifiedByMain !== true
+    || !isRecord(interactionReceipt)
+    || stableStringify(Object.keys(interactionReceipt).sort())
+      !== stableStringify(expectedInteractionReceiptKeys)
+    || interactionReceipt.version !== "debug-bridge-interaction-receipt/v1"
+    || cleanString(interactionReceipt.requestId) !== cleanString(receipt.requestId)
+    || interactionReceipt.source !== "renderer_ui_event_ledger"
+    || !Number.isSafeInteger(interactionReceipt.protocolInteractionCount)
+    || interactionReceipt.protocolInteractionCount < 0
+    || interactionReceipt.protocolInteractionCount > 1000
+    || !Number.isSafeInteger(interactionReceipt.userDesignCorrectionCount)
+    || interactionReceipt.userDesignCorrectionCount < 0
+    || interactionReceipt.userDesignCorrectionCount > 1000
+    || !Number.isFinite(interactionStartedAt)
+    || !Number.isFinite(interactionCompletedAt)
+    || new Date(interactionStartedAt).toISOString() !== cleanString(interactionReceipt.startedAt)
+    || new Date(interactionCompletedAt).toISOString() !== cleanString(interactionReceipt.completedAt)
+    || interactionCompletedAt < interactionStartedAt) {
+    errors.push("运行窗口没有返回由 Main 验证、与本次请求绑定的用户交互审计收据。 ");
   }
   const expectedProjectPath = normalizePathIdentity(input.fixtureRoot);
   const submittedProjectPath = normalizePathIdentity(receipt.submittedProjectPath);
@@ -4273,7 +4305,7 @@ async function dispatchAutonomousZeroCorrectionProtocol(input) {
     version: "design-reliability-live-actor-dispatch/v1",
     protocolKind: "autonomous_zero_correction",
     capabilityId: "guarded-natural-chat-submit/v1",
-    receiptVersion: "debug-bridge-chat-submit-receipt/v1",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v2",
     response,
     receiptValidation
   };
@@ -4648,6 +4680,12 @@ async function runLiveCase(suite, args) {
     }
     const response = actorDispatch.response;
     const receiptValidation = actorDispatch.receiptValidation;
+    const protocolInteractionCount = Number(
+      receiptValidation.receipt.interactionReceipt.protocolInteractionCount
+    );
+    const userDesignCorrectionCount = Number(
+      receiptValidation.receipt.interactionReceipt.userDesignCorrectionCount
+    );
     trustedCompletionReceipt = true;
     const completionPhotoshopRuntime = await inspectPhotoshopRuntimeBinding(args);
     if (!completionPhotoshopRuntime.ready
@@ -4723,9 +4761,7 @@ async function runLiveCase(suite, args) {
       expectedProjectPath: fixtureRoot,
       cohortId,
       repeatIndex,
-      // 当前 Debug 协议还没有 Provider / operation 级交互收据。只发送一条自然请求
-      // 不能证明用户没有从 UI 介入；保持 unknown，禁止用伪造的 0 通过发布门禁。
-      userInterventionCount: undefined,
+      userInterventionCount: protocolInteractionCount + userDesignCorrectionCount,
       fixtureDigest: fixtureBefore.fixtureDigest,
       environment: {
         ...environmentAtSubmission,
@@ -4801,7 +4837,9 @@ async function runLiveCase(suite, args) {
       runObservationId: observation.runObservationId,
       sourceRunIds: observation.sourceRunRefs.map((item) => item.agentRunId),
       technicalDeliveryPassed: observation.observed.technicalDeliveryPassed === true,
-      interactionMetricsKnown: false,
+      interactionMetricsKnown: true,
+      protocolInteractionCount,
+      userDesignCorrectionCount,
       firstMutationBaselineProof: buildFirstMutationBaselineProof(receiptValidation.receipt)
     });
     return {

@@ -108,13 +108,19 @@ import {
     readDebugSkuDeliverySource
 } from '../services/debug-final-artifact-sidecar';
 import {
+    buildDebugBridgeInteractionReceipt,
     buildDebugBridgeChatExecutionFailure,
     buildDebugBridgeChatFailureEnvelope,
+    createDebugBridgeInteractionLedger,
     debugBridgePhotoshopRuntimeLiveIdentitiesMatch,
     DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION,
+    DEBUG_BRIDGE_CHAT_SUBMIT_RECEIPT_VERSION,
+    recordDebugBridgeInteraction,
     readDebugBridgePhotoshopRuntimeBinding,
     readDebugBridgePhotoshopRuntimeLiveIdentity,
     type DebugBridgeChatExecutionStage,
+    type DebugBridgeInteractionKind,
+    type DebugBridgeInteractionLedger,
     type DebugBridgePhotoshopRuntimeLiveIdentity
 } from '../../shared/debug-bridge-chat';
 import { getEagleLibraryPreview } from '../services/eagle-library.service';
@@ -1713,6 +1719,31 @@ function buildOperatingWorkspaceRevision(input: {
     ].join('|');
 }
 
+const DEBUG_PROTOCOL_INTERACTION_ACTIONS = new Set([
+    'openProjectFile',
+    'switchDocument',
+    'submitUserChoice',
+    'submitInteractiveCard',
+    'submitDestructiveActionCard',
+    'confirmPublicPlan',
+    'submitDesignProjectRuleReviewCard',
+    'submitDesignProjectFactReviewCard'
+]);
+
+const DEBUG_DESIGN_CORRECTION_ACTIONS = new Set([
+    'runTool',
+    'submitVisualObservationCard',
+    'submitSkillInteractiveReview'
+]);
+
+function classifyDebugUserInteractionAction(
+    actionId: string
+): DebugBridgeInteractionKind | undefined {
+    if (DEBUG_PROTOCOL_INTERACTION_ACTIONS.has(actionId)) return 'protocol_interaction';
+    if (DEBUG_DESIGN_CORRECTION_ACTIONS.has(actionId)) return 'user_design_correction';
+    return undefined;
+}
+
 export const ChatPanel: React.FC<ChatPanelProps> = ({
     externalDraft,
     externalDraftRevision,
@@ -1801,6 +1832,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     // 用户停止后新发起的那一轮（与 activeAgentRunIdRef 的 runId 守卫同一套思路）。
     const chatSubmissionInFlightRef = useRef<string | null>(null);
     const activeDebugBridgeRequestIdRef = useRef<string | null>(null);
+    const activeDebugInteractionLedgerRef = useRef<DebugBridgeInteractionLedger | null>(null);
     const cancelledDebugBridgeRequestIdsRef = useRef<Set<string>>(new Set());
     const publicPlanPrivateOperationRequestsRef = useRef<Record<string, AgentTaskPublicPlanControlledOperationRequest[]>>({});
     const activeAgentRunIdRef = useRef<string | null>(null);
@@ -2359,6 +2391,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         content
     }, deterministicBlockerReplyOrigin(source)), [addLocalAssistantMessage]);
 
+    const recordActiveDebugUserInteraction = useCallback((
+        kind: DebugBridgeInteractionKind
+    ): void => {
+        const ledger = activeDebugInteractionLedgerRef.current;
+        if (!ledger) return;
+        recordDebugBridgeInteraction(ledger, kind);
+    }, []);
+
     const isEditableConfirmationCard = (value: unknown): value is EditableConfirmationCard => {
         const card = value && typeof value === 'object' ? value as Partial<EditableConfirmationCard> : {};
         return card.version === 'interactive-card/v0'
@@ -2407,6 +2447,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             };
             return aliases[actionId] || normalizeSkillInteractiveCardAction(actionId) || actionId;
         })();
+        const debugInteractionKind = classifyDebugUserInteractionAction(normalizedActionId);
+        if (debugInteractionKind) recordActiveDebugUserInteraction(debugInteractionKind);
 
         const emitActionResult = (
             status: 'success' | 'failed' | 'skipped' | 'partial' | 'fallback',
@@ -4625,6 +4667,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         const internalResumeRequest = hasOverride
             ? override?.internalResumeRequest
             : undefined;
+        const guardedDebugRequestId = String(
+            override?.guardedPhotoshopExecutionBaseline?.requestId || ''
+        ).trim();
         const overrideImage = hasOverride && !inlineMessageEdit && override?.image
             ? createDesignImageInput({
                 data: override.image.data,
@@ -4719,6 +4764,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             if (inlineMessageEdit) throw new Error('消息不能为空。');
             return;
         }
+        if (!guardedDebugRequestId && !interactiveContinuationRequest && !internalResumeRequest) {
+            recordActiveDebugUserInteraction('user_design_correction');
+        }
         const stateAtSend = useAppStore.getState();
         if (chatSubmissionInFlightRef.current || stateAtSend.isLoading) {
             if (hasOverride) {
@@ -4794,9 +4842,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             }
         }
 
-        const guardedDebugRequestId = String(
-            override?.guardedPhotoshopExecutionBaseline?.requestId || ''
-        ).trim();
         if (guardedDebugRequestId
             && cancelledDebugBridgeRequestIdsRef.current.has(guardedDebugRequestId)) {
             throw new Error('受控调试请求已取消，本轮不会继续提交模型或 Photoshop 写入。');
@@ -5168,6 +5213,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     throw new Error('已有受控调试请求尚未闭合，本轮不会启动。');
                 }
                 activeDebugBridgeRequestIdRef.current = debugRequestId;
+                activeDebugInteractionLedgerRef.current = createDebugBridgeInteractionLedger(
+                    debugRequestId
+                );
                 cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
                 executionStage = 'before_handle_send';
                 const throwIfDebugRequestCancelled = (): void => {
@@ -5361,10 +5409,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     const firstPhotoshopMutationBaseline = readGuardedPhotoshopExecutionBaselineReceipt(
                         guardedPhotoshopExecutionBaseline
                     );
+                    const debugInteractionLedger = activeDebugInteractionLedgerRef.current;
+                    if (!debugInteractionLedger
+                        || debugInteractionLedger.requestId !== debugRequestId) {
+                        throw new Error('受控调试交互审计范围已丢失，本轮不能形成可信完成收据。');
+                    }
+                    const interactionReceipt = buildDebugBridgeInteractionReceipt(
+                        debugInteractionLedger
+                    );
                     return {
                         snapshot,
                         receipt: {
-                            version: 'debug-bridge-chat-submit-receipt/v1',
+                            version: DEBUG_BRIDGE_CHAT_SUBMIT_RECEIPT_VERSION,
                             requestId: debugRequestId,
                             submittedProjectPath: currentProjectPath,
                             completedProjectPath,
@@ -5428,6 +5484,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                     || expectedProvider === String(submittedModel?.provider || '').trim())
                             ),
                             conversationId: String(completedState.currentConversationId || '').trim(),
+                            interactionReceipt,
                             finalArtifactRefs,
                             ...(skuDeliveryEvidence ? { skuDeliveryEvidence } : {}),
                             completedAt: new Date().toISOString()
@@ -5452,6 +5509,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             } finally {
                 if (activeDebugBridgeRequestIdRef.current === debugRequestId) {
                     activeDebugBridgeRequestIdRef.current = null;
+                }
+                if (activeDebugInteractionLedgerRef.current?.requestId === debugRequestId) {
+                    activeDebugInteractionLedgerRef.current = null;
                 }
                 cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
                 clearDebugFinalArtifactCapture(debugRequestId);
@@ -8030,6 +8090,7 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                             className="send-button stop-button"
                             onClick={() => {
                                 console.log('[ChatPanel] 用户点击停止按钮');
+                                recordActiveDebugUserInteraction('protocol_interaction');
                                 stopGeneration();
                                 // 停止即释放提交占用：stopGeneration 只复位 store 的 isLoading，
                                 // 而发送守卫看的是这个 ref。不一起释放，界面会同时呈现「你已停止
