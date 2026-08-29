@@ -23,6 +23,7 @@ const COMMANDS = [
     executable: process.execPath,
     args: [path.join(agentRoot, "scripts", "verify-workspace-dependency-integrity.cjs")]
   },
+  { label: "Main 运行时依赖声明", cwd: agentRoot, args: ["run", "audit:main-runtime-dependencies"] },
   { label: "规划一致性", cwd: agentRoot, args: ["run", "maintenance:planning-check"] },
   { label: "仓库卫生", cwd: agentRoot, args: ["run", "maintenance:repo-hygiene:check"] },
   { label: "变更边界分类", cwd: agentRoot, args: ["run", "maintenance:change-boundaries:check"] },
@@ -78,6 +79,7 @@ const COMMANDS = [
   { label: "SKU 模板 handoff", cwd: agentRoot, args: ["run", "test:sku-template-handoff"] },
   { label: "Agent 核心测试", cwd: agentRoot, args: ["test"] },
   { label: "Agent 类型检查", cwd: agentRoot, args: ["run", "build:typecheck:renderer"] },
+  { label: "Electron 运行时兼容性", cwd: agentRoot, args: ["run", "test:electron-runtime-compatibility"] },
   { label: "Electron preload sandbox 边界", cwd: agentRoot, args: ["run", "test:preload-sandbox-boundary"] },
   { label: "UXP 核心测试", cwd: uxpRoot, args: ["test"] },
   { label: "UXP 构建", cwd: uxpRoot, args: ["run", "build"] }

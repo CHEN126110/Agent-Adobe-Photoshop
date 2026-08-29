@@ -1,5 +1,52 @@
 # Current Task
 
+## 2026-08-29 ELECTRON-RUNTIME-MIGRATION-106：受支持 Runtime 与打包启动闭环
+
+### 目标
+
+1. 把已结束支持的 Electron 28.3.3 / Node 18.18.2 单独迁移到 Electron 44.0.0 / Node 24.18.1；本切片不同时升级 OpenAI、electron-builder、Volcengine、sharp、ws、Vite 或 UXP 构建链。
+2. 只修复源码真实命中的 Electron 32～44 兼容点，并建立可复用运行时验证；不凭 breaking-change 清单给未使用 API 添加兼容层。
+3. 用无 junction 的 clean install、真实 Electron 进程、preload 沙箱、source 运行、`electron-builder --dir` 和打包后 `app.asar` 运行证明迁移闭环；默认 DesignEcho /Photoshop 现场保持不变。
+
+### 当前事实
+
+- 官方 Electron 版本线显示 28 已于 2024-06-11 EOL；44.0.0 是 2026-08-25 发布的当前 stable，内置 Chromium 152、Node 24.18.1，计划支持到 2027-03-02。当前 Windows 主机为 x64，Node 22.20.0 满足 Electron npm 包的 `>=22.12.0` 安装要求。
+- 源码兼容审计未发现已删除的 DOM `File.path`、BrowserView、旧 WebContents 导航、renderer Electron clipboard 或旧 protocol API。唯一确定断点是 Main 的 `clipboard.readImage()`；Electron 44 已删除窄接口，现改为 `clipboard.read()` → allowlist `image/png / image/jpeg` → `ClipboardItem.getType()`，全局优先 PNG 保留 Alpha。
+- Electron 43 起 `NativeImage.toBitmap()` 默认归一到 sRGB。当前白底合成继续按预乘 BGRA 运算；真实 Electron Runtime 测试证明 PNG 优先、像素解码和半透明红色合成到 `[127,127,255,255]`，没有恢复旧色域字节行为。
+- Electron 42+ npm 包不再通过自身 postinstall 自动下载二进制。第一次 D-106 clean `npm ci` 真实得到 npm 包但没有 `electron.exe`；项目现由根 postinstall 显式调用官方 `electron/install.js`，继续使用官方 checksum，再运行既有 ONNX CRT 修复。第二次 clean install 已取得 Electron 44.0.0 可执行文件，Agent /UXP `npm ls --all` 均为 0 problems，依赖完整性为 Agent 605/605、UXP 148/148。
+- 第一次打包能生成 `win-unpacked`，但启动在 DesignEcho Main 日志前停住。`NODE_DEBUG=module` 把首个偏差定位到 `network-proxy.ts`：`http-proxy-agent / https-proxy-agent` 与 `template-knowledge.service.ts` 的 `iconv-lite` 都是直接运行时 import，却只偶然来自 electron-builder dev 子树，打包时被正确剔除。三包现以原有行为版本声明为生产依赖，并新增 Main runtime import→manifest 审计；当前 17 个外部运行时包全部有明确 owner。
+- 修复后，同一 electron-builder 24.13.3 已完成 Electron 44 x64 `--dir` 打包；打包版从 `app.asar` 加载真实 Renderer，31765～31769 与 CDP 49223 六个隔离端口齐全，`require / process` 未泄漏到 Renderer，preload bridge 与 offset MCP endpoint 正确。`system.status` 返回 `artifactsVerified=true`、fake Photoshop、0 真实插件连接；测试后隔离进程与端口已清理。
+- Agent production build、Renderer 类型检查、preload sandbox、debug launcher self-test、Electron Runtime 契约和打包 source /app.asar 启动均已通过；提交前唯一一次完整 `maintenance:validate` 62/62 通过。当前 build identity 因未提交源码正确显示 D-105 commit + dirty，不能当 D-106 clean identity。
+- 动态 `npm audit` 从 D-104 的 40 项降到 38 项（2 low /5 moderate /28 high /3 critical）；生产依赖视图为 18 项（1 low /4 moderate /12 high /1 critical）。这只说明 Electron 旧传递链减少 2 项 high，R-054 的 OpenAI override、Provider、图像与构建链债务仍未关闭。
+
+### 实施边界
+
+- `primaryModel / visualModel` 继续固定为 `deepseek-v4-flash-vision-exp`；不读写正常用户 Key，不调用 Codex /Smile，不新增跨模型 fallback。
+- 不升级 OpenAI 或删除 Zod override；Electron 新 Node floor 只解除下一切片的前置阻塞，不把下一切片结果提前写成完成。
+- 不升级 electron-builder；当前 builder 能打包是已验证事实，builder 自身 tar /shell-quote 安全债务继续留在独立构建链切片。
+- 不停止 PID 16228，不占用 8765～8769，不保存、关闭、丢弃或修改 Photoshop 文档。所有 source /packaged 启动都使用临时 userData、独立端口、fake model 与 fake Photoshop。
+- Electron 44 只发布 Windows x64 /arm64 与 Linux x64 /arm64，并要求 macOS 13+；当前只验证 Windows x64。不得把本轮写成 macOS /Linux 或 32-bit 兼容已验证。
+
+### 下一步
+
+1. [已完成] Electron 44 package /lock、显式官方二进制安装、ClipboardItem 迁移、sRGB 像素契约和 Main runtime 依赖声明审计已实现。
+2. [已完成] clean install、`npm ls`、依赖完整性、Main /Renderer /preload、真实 Electron Runtime、debug launcher、production build、`--dir` 打包以及 source /app.asar 隔离启动已通过。
+3. [已完成] CurrentTask /Plan /Status /Risks /project-state、规划 /JSON /编码 /入口 /变更边界快速检查与提交前唯一一次完整 `maintenance:validate` 62/62 已通过；当前只剩独立提交与提交后 clean build /pack identity 复核。
+4. [后续独立] 在 Electron 44 /Node 24 基线上升级 OpenAI SDK、删除 Zod override并复验 DeepSeek /Xiaomi /Smile OpenAI-compatible 链；随后再分别治理 Volcengine、sharp /ws 与构建链。
+5. [外部现场] 默认端口自然释放后仍先完成 r32 reconciliation，再以 D-097 运行 r33；D-106 不抢占真机顺序。
+
+### 验证与未知
+
+- 已验证：Windows x64 上的 Electron /Node 身份、官方二进制安装、ClipboardItem API、sRGB 白底像素、preload 沙箱、Main runtime manifest、source 与 app.asar Renderer /MCP 启动、旧 builder 打包。
+- 未验证：真实系统剪贴板中 PNG /JPEG 的用户操作体验、正常用户 Key 加载、真实 DeepSeek、真实 Photoshop UXP、macOS /Linux、安装器 NSIS 和自动更新；本轮只完成 Runtime 工程迁移，不声明 Agent 或设计质量提升。
+- `punycode` 与 `fs.Stats` 弃用警告来自仍待迁移的依赖链；当前不阻断启动，但不能被描述为安全债务已归零。
+
+### 状态
+
+validated / code_complete / clean_installs_and_dependency_graph_passed / electron_44_node_24_runtime_contract_passed / main_runtime_manifest_root_cause_fixed / source_and_packaged_app_isolated_startup_passed / production_build_and_pack_passed / full_core_62_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / normal_runtime_and_photoshop_untouched
+
+---
+
 ## 2026-08-29 SMILE-PROVIDER-CLOSURE-105：可选对话 /图像 Provider 证据收口
 
 ### 目标

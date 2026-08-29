@@ -333,35 +333,35 @@
     ]
   },
   "activeRequest": {
-    "id": "SMILE-PROVIDER-CLOSURE-105",
-    "summary": "Close the engineering evidence for the existing optional Smile conversation and image Providers without changing production code, the formal DeepSeek model selection, security dependencies or Photoshop state, and without consuming paid Provider credits.",
-    "status": "conversation_usage_and_single_model_routing_passed_image_provider_contract_passed_openrouter_regression_passed_image_core_files_byte_identical_deepseek_primary_unchanged_keys_presence_verified_without_disclosure_d104_builds_and_full_core_60_reused_docs_only_governance_passed_independent_state_commit_complete_paid_live_provider_pending_no_photoshop_write",
+    "id": "ELECTRON-RUNTIME-MIGRATION-106",
+    "summary": "Migrate only the supported Electron desktop runtime from 28/Node 18 to 44/Node 24, adapt proven breaking APIs, make clean installation and packaged runtime dependencies explicit, and verify source plus app.asar startup without touching the normal DesignEcho or Photoshop session.",
+    "status": "code_complete_clean_installs_and_dependency_graph_passed_electron_44_node_24_runtime_contract_passed_main_runtime_manifest_root_cause_fixed_source_and_packaged_app_isolated_startup_passed_production_build_and_pack_passed_full_core_62_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_normal_runtime_and_photoshop_untouched",
     "mustDo": [
-      "Verify Smile dynamic model purpose, explicit conversation routing, single-model Agent behavior and missing-key failures without granting implicit vision, Tool Calling or fallback.",
-      "Verify independent Smile/OpenRouter credential synchronization, exact image model identities, protocol payloads, cancellation, timeout/error provenance, safe result downloads and actual output dimensions.",
-      "Prove the current Smile image Service, credential owner and reusable test remain byte-identical to their isolated committed slice, while later shared-host changes retain one Provider owner.",
-      "Read only persisted model and credential presence, confirming deepseek-v4-flash-vision-exp remains the primary and visual mirror without exposing key content.",
-      "Reuse the exact same-source D-104 independent-install builds and 60-stage core evidence; run only docs-proportional governance checks for this no-code state slice.",
-      "Keep paid live Provider, Photoshop placement and commercial quality as explicit later evidence layers, and leave D-097 plus the user's current runtime untouched."
+      "Upgrade Electron alone to the current supported 44.x line and preserve a separate rollback boundary from OpenAI, Providers, image dependencies and build-chain migrations.",
+      "Audit Electron 32-44 breaking changes against actual source usage and adapt only proven runtime call sites, including ClipboardItem image reads and sRGB bitmap behavior.",
+      "Make Electron binary installation explicit after the upstream postinstall change, then prove a clean Agent and UXP dependency graph without junctions or force flags.",
+      "Audit Main runtime imports against production dependencies so source-mode dev transitive packages cannot disappear from app.asar packaging.",
+      "Verify Electron Runtime, preload sandbox, production build, existing electron-builder packaging, source startup and packaged app.asar startup on isolated ports and userData.",
+      "Run one pre-commit full core gate, create an independent D-106 commit and rebuild a clean runtime identity before starting the OpenAI/Zod slice."
     ],
     "mustNotDo": [
-      "Do not change primaryModel or visualModel away from deepseek-v4-flash-vision-exp, and do not add Codex, Smile or cross-provider fallback.",
-      "Do not call Smile with the user's real key, consume paid image credits or print/copy any credential.",
-      "Do not let dynamic catalog metadata, quota type or an omitted model parameter grant a conversation/image role or choose a production model.",
-      "Do not treat mocked HTTP success, key presence or historical probe comments as a D-105 live Provider result or design-quality proof.",
-      "Do not mix R-054 dependency upgrades, Prompt, Skill, Harness, transaction or Photoshop changes into this Provider evidence slice.",
-      "Do not stop PID 16228 or save, close, discard or modify any Photoshop document."
+      "Do not change primaryModel or visualModel away from deepseek-v4-flash-vision-exp, read normal credentials, or add Codex, Smile or cross-provider fallback.",
+      "Do not upgrade OpenAI, remove the Zod override, upgrade electron-builder, or mix Volcengine, sharp, ws, Vite or UXP dependency changes into D-106.",
+      "Do not add compatibility branches for Electron APIs absent from the current source or preserve old color bytes without a product requirement.",
+      "Do not treat source startup, packaging success or fake Photoshop as real DeepSeek, Photoshop E2E, design quality or cross-platform compatibility.",
+      "Do not occupy default ports, reuse normal userData, stop PID 16228, or save, close, discard or modify any Photoshop document.",
+      "Do not claim R-054 is closed while OpenAI/Provider/image/build-chain high or critical findings and deprecation warnings remain."
     ]
   },
   "activePlan": {
-    "id": "SMILE-PROVIDER-CLOSURE-105",
+    "id": "ELECTRON-RUNTIME-MIGRATION-106",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：Smile 模型用途、单一模型路由、缺 Key 失败与动态目录边界专项。",
-      "已完成：Smile 图像协议、独立凭据、取消/错误/下载/尺寸收据和 OpenRouter 相邻回归专项。",
-      "已完成：核心文件 parity 与正常用户 DeepSeek 选择/Key 存在性只读检查；没有泄露凭据或付费请求。",
-      "已完成：更新四份当前项目记忆、运行 docs-only 快速治理检查并形成独立状态提交；不重复同源码完整核心闸门。",
-      "后续：默认端口释放立即回到 r32；否则进入 R-054 Electron/OpenAI 等依赖安全分片。"
+      "已完成：Electron 44 package/lock、官方二进制显式安装、ClipboardItem 与 sRGB Runtime 契约。",
+      "已完成：Main runtime import 到生产 manifest 对账，修复 3 个历史漏声明并加入快速审计。",
+      "已完成：clean install、类型/构建/preload、Electron Runtime、debug launcher、旧 builder pack 和 source/app.asar 隔离启动。",
+      "已完成：项目记忆、快速治理检查与提交前唯一完整核心 62/62；进行中：独立提交和 clean build/pack identity。",
+      "后续：默认端口释放优先完成 r32；否则在独立切片升级 OpenAI 并退役 Zod override。"
     ]
   },
   "convergenceBaseline": {

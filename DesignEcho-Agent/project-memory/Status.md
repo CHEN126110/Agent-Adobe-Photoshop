@@ -2,6 +2,17 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-106 Electron 44 Runtime 与打包启动
+
+- 已结束支持的 Electron 28.3.3 /Node 18.18.2 已在独立 worktree 单变量迁移为 Electron 44.0.0 /Node 24.18.1；OpenAI、Zod override、electron-builder、Volcengine、sharp /ws、Vite 与 UXP 依赖均未升级。
+- 源码审计只命中一个确定 breaking API：Main `clipboard.readImage()`。当前改用 ClipboardItem MIME 读取，PNG 全局优先、JPEG 后备；真实 Electron 测试同时证明 sRGB `toBitmap()`、PNG 解码与预乘 BGRA 白底像素契约。
+- Electron 42+ npm 包不再自动下载二进制。项目 postinstall 已显式运行官方 checksum 安装器再执行现有 ONNX CRT 修复；无 junction clean install 后 Agent /UXP `npm ls --all` 0 problems，依赖完整性为 605/605 与 148/148。
+- 第一次 app.asar 启动在 Main 日志前停住；模块追踪定位到 3 个直接 Main runtime import 只由 electron-builder dev 子树偶然提供。`http-proxy-agent / https-proxy-agent / iconv-lite` 已按原行为版本声明为生产依赖，并新增 17 包 Main runtime import→manifest 审计，避免 source 成功 /package 缺包回归。
+- 同一 electron-builder 24.13.3 已完成 Electron 44 Windows x64 `--dir` 打包。source 与 packaged app 都用独立 userData、端口和 fake Photoshop 启动；打包版从 app.asar 加载 Renderer，六个监听端口、preload sandbox、offset MCP 与 `system.status.artifactsVerified=true` 均通过，测试进程已清理。
+- Main /Renderer /preload、production build、Electron Runtime、debug launcher、clean install 与 pack 均已通过；提交前唯一完整核心闸门 62/62 通过。当前未提交 build identity 正确显示 D-105 commit + dirty，不能冒充 D-106 clean identity，提交后仍需重建并复核。
+- Agent 动态 audit 为 38 项（2 low /5 moderate /28 high /3 critical），生产视图为 18 项（1 low /4 moderate /12 high /1 critical）；R-054 只是 Electron 片部分缓解，OpenAI /Provider /图像 /构建链债务未关闭。
+- 正式模型仍为 `deepseek-v4-flash-vision-exp`。没有读取或修改正常用户 Key，没有占用 8765～8769，没有连接真实 UXP 或执行 Photoshop Tool；macOS /Linux、真实剪贴板用户路径、正常状态启动、NSIS 和自动更新仍未验证。
+
 ## 2026-08-29 D-105 Smile 可选 Provider 证据收口
 
 - Smile 对话 Provider `acd53530`、依赖迁移 `5c1bc06d` 与图像 Provider `0fa91c6f` 已作为三个独立祖先提交进入当前主链；D-105 没有复制 Service、修改模型目录或把它们压成一个混合实现。
