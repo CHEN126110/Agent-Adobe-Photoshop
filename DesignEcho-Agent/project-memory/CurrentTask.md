@@ -27,7 +27,10 @@
 - r25 最终画布为 `4428:4472`，Agent 自主选择 `模特/DSC08134.jpg`、`原图/DSC05337.JPG` 与 `原图/DSC05303.JPG`，形成右侧大幅穿着主视觉、左上纹理、左中文案和左下四色陈列；不是 r24 的重复版式。PSD 为 66,126,102 字节、SHA-256 `4264951178ee1d05f3eb8114edd2b3a4ad96745bea470dffd4d815af4e98bbe3`；JPG 为 1,046,636 字节、SHA-256 `9efe6d895b836e36455529a828ae8e0a131749577152046f2b37c969800591a1`。结构化完成 7/7，Final Judge 86 分 / `needs_review`；这证明设计已可评且明显改善，不等于达到 Eagle /用户成稿的专业质量。
 - r25 仍未取得技术成功：`production-delivery` 能数到真实 PSD /JPG，但 `executionSummary.runtimeDeliveryResultRefs` 为空，Attempt 仍为 `submission_unknown_write_state`。现场固定画面与文件哈希后关闭文档，并在同 `1521c504` Runtime、同 fixture、0 文档 /0 pending 下完成 `reconciled_after_runtime_restart`。
 - 受控真机探针已定位 D-091 根因：PSD `saveDocument` 返回同版本收据，而走 `quickExport` → `saveDocument` 重定向的 JPG 虽真实写出，却丢失 `sourceHistoryStateRef`。E2 正确拒绝无法证明来自终审 revision 的 JPG；较宽松的完成统计只按文件格式计数，因而形成双重口径。进一步探针证明 ExtendScript history id 与 UXP history id 不是同一身份空间；不能把前者包装成后者。
-- D-091 当前代码让 JSX 只在文件写入前核对实际源文档 ID；Photoshop revision 由 UXP 在导出前冻结、导出后读回并要求一致，最终 `sourceHistoryStateRef` 只来自 UXP。修复后同形探针已返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。三个成功探针文件已移出 r25 项目到本机 Temp 恢复目录，项目只保留正式 PSD/JPG；定向 UXP 测试 /类型检查、Runtime Declaration 行为审计、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 均已通过，最终提交和 r26 尚待完成。
+- D-091 当前代码让 JSX 只在文件写入前核对实际源文档 ID；Photoshop revision 由 UXP 在导出前冻结、导出后读回并要求一致，最终 `sourceHistoryStateRef` 只来自 UXP。修复后同形探针已返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。三个成功探针文件已移出 r25 项目到本机 Temp 恢复目录，项目只保留正式 PSD/JPG；定向回归、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 均已通过。修复提交 `1a3f95d3` 已推送，提交后 Agent build `designecho-1a3f95d3d1a7-63de096427d3` 与 UXP build `designecho-uxp-production-1a3f95d3d1a7-be4ae879ddb5` 均为同一干净提交。
+- r26 已使用全新 fixture `fixture-20260828225140-2e9196a9fbc7`、同一句自然需求、GPT-5.6 Sol 与干净 `1a3f95d3` 双 Runtime 通过写前预检并提交。Agent 在中断前完成候选总览观察，自主选择 A01 穿着素材，理由是木耳边、袜筒纹理和鞋袜关系在缩略图中更易识别，并计划满版主视觉加左侧短文案；当时尚未创建 Photoshop 文档或产物。
+- 当前 Codex 执行回合被外部中断后，原 CLI 句柄、干净 Runtime 和原 Photoshop 进程均已退出；Attempt `main-image-pink-coffee-unseen-v1-attempt-20260828225315-864c4e8f021f` 只留下 `armed` 与 `submission_started`，没有 terminal、Run Record、PSD/JPG 或其它 fixture 新文件。随后用户从主工作区启动了另一份旧 /脏 Runtime，并在 08:46 新 Photoshop 进程中打开 `SKU.psb`；它不是 r26 现场，未被重载、关闭或停止。
+- Design Reliability 当前报告 6 次 Attempt Submission、5 次 terminal、1 次未闭合和 1 条写状态未清账；r26 已进入提交分母但没有产品终态，不能归因为 D-091 失败。现有 `reconcile-live-attempt` 支持 `submitted_without_terminal`，但必须等安全窗口以正确干净 Runtime、同 fixture、Photoshop 0 文档 /0 pending 对账；r26 fixture 只用于 reconciliation，不得复用为下一次样本。
 
 ### 实施边界
 
@@ -80,9 +83,9 @@
 
 ### 下一步
 
-1. 完成 D-091 的最终差异审查、独立提交与 GitHub 推送；提交后重建并重新验证干净双 Runtime identity。
-2. 从锁定源创建全新 r26 fixture，以同一句需求、同一 GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-3. r26 技术成功后，对 r24 /r25 /r26 可评分结果与用户成稿 /Eagle 做匿名视觉比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
+1. 用户当前 `SKU.psb` 安全关闭后，以正确干净 `1a3f95d3` Runtime、原 r26 fixture、Photoshop 0 文档 /0 pending 执行 `reconcile-live-attempt`；只追加 `submitted_without_terminal` 对账，不恢复或重放原任务。
+2. 从锁定源创建全新 r27 fixture，以同一句需求、同一 GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
+3. r27 技术成功后，对 r24 /r25 /r27 可评分结果与用户成稿 /Eagle 做匿名视觉比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
 
 ### 验证与未知
 
@@ -96,11 +99,13 @@
 - 已验证：D-090 提交 `1521c504` 已推送，r25 自动全画布与 Final Judge 对象正确；r25 真实 PSD /JPG、最终 history、结构化完成和质量结果均已固化，Attempt 已安全 reconciliation。
 - 已验证：D-091 前后对照探针复现“JPG 已写出但缺 UXP revision”，并证明修复后 renderer 收据、导出前 /导出后 UXP revision 均为 `4492:4497`；失败的跨协议 history 比较实验发生在写前，未生成文件。
 - 已验证：D-091 的顺序化 Main /Renderer 类型检查、完整 `maintenance:validate` 58/58、Agent /UXP production build 与 `git diff --check` 均通过。
-- 待验证：D-091 提交推送、提交后 Agent /UXP identity 与 r26 正式 Attempt；之后仍需重复样本和匿名视觉评审。
+- 已验证：D-091 提交 `1a3f95d3` 已推送；提交后 Agent /UXP identity 均为同一干净提交，r26 写前环境全部通过。
+- 已验证：r26 只有 submission、没有 terminal /Run /产物；原 Runtime 与 Photoshop 已被外部关闭，当前用户 `SKU.psb` 属于后来启动的另一 Photoshop 进程。该样本处于未闭合开发账本，不代表 Agent 或 D-091 产品终态。
+- 待验证：r26 安全 reconciliation、r27 正式 Attempt、重复样本和匿名视觉评审。
 
 ### 状态
 
-`in_progress / d090_1521c504_pushed / r25_full_canvas_judge_correct_and_design_86 / r25_missing_raster_source_revision_reconciled / d091_uxp_revision_receipt_live_probe_core_58_and_builds_passed / commit_push_and_r26_pending`
+`in_progress / d091_1a3f95d3_pushed_clean_runtime_verified / r26_submitted_without_terminal_after_external_runtime_shutdown / reconciliation_waiting_for_user_sku_document_safe_window / r27_pending`
 
 ---
 

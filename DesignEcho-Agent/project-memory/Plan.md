@@ -13,10 +13,11 @@
 7. `[已完成 D-090 / 1521c504]`：把 ReviewSet source 纳入终局身份：单画布只接受 `single_surface`，多画面只接受完整 Bundle；Judge、E2 与可信运行 Artifact 使用同一选择函数。完整 `maintenance:validate` 58/58、Agent /UXP production build、独立提交、GitHub 推送和提交后双 Runtime identity 均已完成。
 8. `[已完成 r25 / 已对账]`：同一句自然需求在全新 fixture 中完成 12 次模型调用、13 次 Tool Call、4 次成功内容 /文件 mutation。自动无 region 全画布与 Judge 对象正确，Agent 自主形成不同于 r24 的三素材分栏成稿；PSD 66,126,102 字节、JPG 1,046,636 字节，质量 86 / `needs_review`。`finalArtifactRefs` 仍为空，Attempt 已在同构建、同 fixture、0 文档 /0 pending 下 reconciliation。
 9. `[已定位 r25 首个偏差]`：真实 renderer 探针证明 `quickExport` 重定向写出的 JPG 缺少 `sourceHistoryStateRef`；E2 正确拒绝无法绑定终审 revision 的文件，而 `production-delivery` 只按文件格式计数。进一步证伪确认 ExtendScript 与 UXP history id 不在同一身份空间，不能互相包装。
-10. `[D-091 代码、真机探针与提交前验证已完成]`：JSX 只在写前核对实际源文档 ID；UXP 是 revision 唯一 owner，在导出前冻结并在导出后读回同一 history，再返回收据。修复后同形探针的 renderer 收据、导出前 /后 revision 均为 `4492:4497`；缺 revision 的 live-shaped E2 回归继续 fail closed，补齐真实收据后才通过。定向回归、顺序化 Main /Renderer 类型检查、完整 `maintenance:validate` 58/58 与 Agent /UXP production build 均已通过。
-11. `[进行中]`：完成最终差异审查、独立提交和 GitHub 推送；提交后重建并验证干净双 Runtime identity。
-12. `[待完成 r26]`：从锁定源创建全新 fixture，以同一句需求、GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布执行；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-13. `[条件后置]`：r26 技术成功后再对 r24 /r25 /r26 与用户成稿 /Eagle 做匿名质量比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
+10. `[已完成 D-091 / 1a3f95d3]`：JSX 只在写前核对实际源文档 ID；UXP 是 revision 唯一 owner，在导出前冻结并在导出后读回同一 history，再返回收据。修复后同形探针的 renderer 收据、导出前 /后 revision 均为 `4492:4497`；完整 `maintenance:validate` 58/58、Agent /UXP production build、独立提交、GitHub 推送和提交后双 Runtime identity 均已完成。
+11. `[r26 已提交但未闭合]`：全新 fixture 与干净 `1a3f95d3` 写前预检通过；Agent 自主观察并选择 A01 后，外部 Codex 执行回合关闭了原 CLI、Runtime 与 Photoshop。Attempt 只有 `armed / submission_started`，无 terminal、Run Record 或产物；当前正式账本为 6 次 submission、5 次 terminal、1 次未闭合。
+12. `[等待安全 reconciliation]`：用户当前在后来启动的 Photoshop 中打开 `SKU.psb`，不得重载 UXP、关闭文档或停止主工作区 Runtime。文档安全关闭后，以正确干净 Runtime、原 r26 fixture、0 文档 /0 pending 调用现有 `reconcile-live-attempt`；不恢复、不重放、不复用 r26 fixture。
+13. `[待完成 r27]`：从锁定源创建全新 fixture，以同一句需求、GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布执行；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
+14. `[条件后置]`：r27 技术成功后再对 r24 /r25 /r27 与用户成稿 /Eagle 做匿名质量比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

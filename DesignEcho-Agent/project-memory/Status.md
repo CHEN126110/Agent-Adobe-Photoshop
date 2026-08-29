@@ -2,13 +2,22 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 r26 外部执行环境中断：已提交但无终态
+
+- D-091 已以 `1a3f95d3` 提交并推送；提交后 Agent build `designecho-1a3f95d3d1a7-63de096427d3` 与 UXP build `designecho-uxp-production-1a3f95d3d1a7-be4ae879ddb5` 均为同一干净提交。r26 全新 fixture、GPT-5.6 Sol、真实 Photoshop、1440×1440、0 文档 /0 pending 写前预检全部通过。
+- r26 Agent 在中断前完成候选总览视觉观察，自主选择 A01 穿着素材并说明木耳边、袜筒纹理和鞋袜关系更适合缩略图识别，计划使用满版主视觉与左侧短文案；当时 UI 仍在下一轮模型思考，没有创建 Photoshop 文档、Run Record 或交付文件。
+- Codex 执行回合被外部中断后，原 CLI 句柄、干净 Runtime 与原 Photoshop 进程均已退出。Attempt `main-image-pink-coffee-unseen-v1-attempt-20260828225315-864c4e8f021f` 只有 `armed` 和 `submission_started`；r26 项目除允许的 `.designecho/project.json` 外仍只有 68 个输入文件。
+- 随后用户通过桌面启动脚本运行了主工作区旧 /脏 Runtime（commit `de628ade`），并在 08:46 新 Photoshop 进程中打开 `SKU.psb`。该会话不是 r26 现场；本轮没有重载其 UXP、关闭 SKU 文档、停止进程或发送任何 Agent 消息。
+- 当前 Design Reliability 账本为 6 次 Attempt Submission、5 次 terminal、1 次未闭合、1 条写状态未清账。r26 已在 submission 分母中，但没有可归因产品终态；不能把它计为 D-091 失败。现有 `reconcile-live-attempt` 可为无 terminal 的 submission 追加 `submission_unknown_write_state` 与重启后对账，但必须等正确干净 Runtime、同 fixture、Photoshop 0 文档 /0 pending 的安全窗口。
+- r26 fixture 已消耗，只允许 reconciliation，不得复用。下一次正式样本必须从锁定源创建全新 r27 fixture。
+
 ## 2026-08-29 r25 正确终审后的 JPG revision 收据缺口
 
 - D-090 已以 `1521c504` 提交并推送；提交后 Agent build `designecho-1521c5046227-63de096427d3`、UXP build `designecho-uxp-production-1521c5046227-cdcad214d92e` 与运行时身份均为同一干净提交。r25 使用真实 GPT-5.6 Sol /Photoshop、全新 fixture、同一句自然需求和 1440×1440 画布完成 12 次模型调用、13 次 Tool Call、4 次成功内容 /文件 mutation。
 - r25 自动追加的终审 `getCanvasSnapshot` 不带 `region`，Final Judge 实际看到了 `4428:4472` 完整画布；对副文案偏淡偏小、四色辅助图偏小的 finding 与成品一致。Agent 自主选择三张不同职责素材，形成右侧穿着主视觉、左上纹理、左中文案和左下四色陈列；质量为 86 / `needs_review`，说明结果可评且有明显进步，不等于已达到用户成稿 /Eagle 专业质量。
 - 正式 PSD 为 66,126,102 字节、SHA-256 `4264951178ee1d05f3eb8114edd2b3a4ad96745bea470dffd4d815af4e98bbe3`；JPG 为 1,046,636 字节、SHA-256 `9efe6d895b836e36455529a828ae8e0a131749577152046f2b37c969800591a1`。结构化完成 7/7，但 Debug Bridge 仍因 `runtimeDeliveryResultRefs` 为空把 Attempt 结算为 `submission_unknown_write_state`；现场已在同构建、同 fixture、0 文档 /0 pending 下完成 reconciliation。
 - 受控 renderer 探针已证明根因：PSD 保存结果带 UXP 源 revision，`quickExport` 重定向写出的 JPG 却只有路径，没有 `sourceHistoryStateRef`。E2 拒绝该文件是正确行为；不能用文件存在或格式计数替代同版本来源。第二个证伪探针进一步确认 ExtendScript history id 与 UXP history id 不同域，不能交叉包装。
-- D-091 当前实现让 JSX 只核对写前源文档 ID，UXP 在导出前 /后闭合同一 revision，并把 UXP ref 作为唯一 raster 交付来源。修复后同形探针返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。定向回归、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 已通过；提交推送、提交后 identity 与 r26 正式 Attempt 仍待完成。
+- D-091 当前实现让 JSX 只核对写前源文档 ID，UXP 在导出前 /后闭合同一 revision，并把 UXP ref 作为唯一 raster 交付来源。修复后同形探针返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。定向回归、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58、Agent /UXP production build、提交 `1a3f95d3`、GitHub 推送和提交后双 Runtime identity 均已完成；r26 因外部执行环境中断未形成产品终态。
 - 三个成功探针文件已从 r25 项目移到 `C:\Users\12611\AppData\Local\Temp\designecho-e2-probe-cleanup-1521c504`，可恢复；r25 `主图` 目录只保留正式 PSD/JPG。探针 Photoshop 文档和授权调试 Runtime 均已关闭。
 
 ## 2026-08-29 r24 终局看错对象：ReviewSet 类型身份修复
