@@ -322,47 +322,48 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "PAIRED-DELIVERY-FALLBACK-112",
-    "summary": "Require a same-final-revision editable source and raster preview when the current TaskRun creates an unbound creative document, while reusing the existing Completion, remediation and E2 owners.",
-    "status": "implementation_live_agent_loop_targeted_audits_agent_build_and_full_core_65_passed_commit_clean_identities_and_r34_pending",
+    "id": "CREATED-DOCUMENT-LIFECYCLE-113",
+    "summary": "Settle every Photoshop document created by the current TaskRun before another document is created or the task completes, without automatic close or model-argument rewriting.",
+    "status": "lifecycle_preflight_completion_cross_reflexion_and_live_agent_loop_implemented_targeted_audits_types_agent_build_and_unique_full_core_65_passed_commit_clean_identities_and_r35_pending",
     "scope": [
-      "Derive the obligation only from a trusted current-TaskRun document_creation commit and the final content document/history revision.",
-      "Require both editable and raster receipts from that revision and retain all matching result refs in E2.",
-      "Do not expand explicit raster-only, editable-only, export-only, read-only or existing-document edit requests.",
-      "Do not execute saves, choose paths or infer a business Task Profile from category text.",
-      "Complete the single full core gate, independent commit, clean identities and a fresh r34 exact-DeepSeek Photoshop E2E before closing the slice."
+      "Track each trusted current-TaskRun document_creation through its latest Photoshop revision and partial delivery or explicit close settlement.",
+      "Block only a subsequent createDocument or composeDesign(new) while an earlier created document remains unsettled; allow active-document revision and sequential multi-document delivery.",
+      "Require every created document to satisfy the current raster/editable delivery scope or carry a successful exact-document close result before Completion passes.",
+      "Do not automatically close a document, rewrite new to active, choose a design candidate or bypass destructive-action confirmation.",
+      "Pass reusable attacks, types, production build, one full core gate, an independent commit, clean identities and a fresh r35 exact-DeepSeek Photoshop E2E."
     ]
   },
   "activeRequest": {
-    "id": "PAIRED-DELIVERY-FALLBACK-112",
-    "summary": "Close the r33 technical-delivery gap by projecting a category-neutral paired editable-and-raster obligation for final revisions of creative documents created by the current TaskRun, using the existing Completion and final-delivery owners.",
-    "status": "paired_completion_and_e2_implemented_live_agent_remediation_agent_build_and_full_core_65_passed_commit_clean_identities_and_r34_pending_manual_recovery_not_counted_deepseek_exact_model_preserved",
+    "id": "CREATED-DOCUMENT-LIFECYCLE-113",
+    "summary": "Close the r34 zero-intervention gap by adding a category-neutral per-document settlement lifecycle to the existing TaskRun creation evidence, execution preflight and Completion owners.",
+    "status": "d112_commit_and_r34_reconciliation_complete_d113_implementation_targeted_audits_types_agent_build_and_unique_full_core_65_passed_commit_clean_identities_and_r35_pending_deepseek_exact_model_preserved",
     "mustDo": [
-      "Project the paired obligation only from a creative document created by the current TaskRun and bind it to the final content document/history revision.",
-      "Require real PSD/PSB and raster save/export receipts from that same revision and retain every result ref in final delivery evidence.",
-      "Preserve explicit raster-only, editable-only, export-only, read-only and existing-document edit scopes without expansion.",
-      "Reuse TaskCompletion remediation and agentic final-delivery evidence; do not create another Delivery owner or execute a save from Harness.",
-      "Pass reusable attacks, types, production build, one full core gate, an independent commit and a fresh r34 real DeepSeek/Photoshop E2E."
+      "Project lifecycle state only from trusted document_creation commits, exact source-revision save/export receipts and successful exact-document close results.",
+      "Reject a second new-document write while a current-TaskRun document remains unsettled, and give the same Agent facts needed to replan toward active revision or settlement.",
+      "Verify the full created-document set in existing creative and Profile Completion while preserving explicit raster-only and editable-only delivery scopes.",
+      "Carry latest revision and partial settlement across Reflexion without granting Tool, close, quality or completion authority.",
+      "Pass reusable attacks, types, production build, one full core gate, an independent commit and a fresh r35 real DeepSeek/Photoshop E2E."
     ],
     "mustNotDo": [
-      "Do not infer main-image, detail-page or SKU identity from task keywords, filenames or Tool names.",
-      "Do not automatically invoke saveDocument, select output paths or synthesize receipts from files on disk.",
-      "Do not accept stale-revision, cross-document, Tool-name-only, input-format-only or success-text evidence.",
-      "Do not mix Task Profile declaration reliability, context compression, semantic matting, design-quality tuning or dependency upgrades into this rollback slice.",
-      "Do not count the r33 manual PSD recovery as a successful autonomous run."
+      "Do not infer lifecycle from filenames, category terms, assistant prose, directory scans or model self-reports.",
+      "Do not automatically invoke closeDocument or saveDocument, silently rewrite composeDesign parameters or select which candidate to keep.",
+      "Do not accept stale-revision, cross-document, failed, policy-gated or name-only close evidence.",
+      "Do not prohibit legitimate multi-document work after the preceding document has been settled.",
+      "Do not mix Task Profile reliability, context compression, semantic matting, design-quality tuning or dependency upgrades into this rollback slice."
     ]
   },
   "activePlan": {
-    "id": "PAIRED-DELIVERY-FALLBACK-112",
+    "id": "CREATED-DOCUMENT-LIFECYCLE-113",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：D-111 提交、clean identities、r32 reconciliation 与 r33 fresh preflight。",
-      "已完成：r33 真实 DeepSeek Attempt、JPG/PSD/层结构/运行会计与 Completion 缺失链归因。",
-      "已完成：created-document final-revision paired-delivery requirement 与无 Manifest E2 双 refs。",
-      "已完成：raster-only /same-revision pair /stale PSD /explicit single-format 攻击与真实 Agent 推回补交循环。",
-      "已完成：Main /Renderer 类型、Agent production build、治理与唯一完整核心 65/65。",
-      "进行中：最终差异审查、独立提交与 clean identities。",
-      "待完成：fresh r34 真实无 Skill DeepSeek/Photoshop E2E。",
+      "已完成：D-112 独立提交、clean identities、65/65 与 fresh r34 exact DeepSeek/Photoshop 运行。",
+      "已完成：r34 v1/v2 创建集合、v2 同 revision PSD/JPG、外层 orphan 拒绝、人工恢复与 canonical reconciliation 归因。",
+      "已完成：TaskRun 创建文档生命周期投影、跨 Reflexion 可信延续与项目真相源更新。",
+      "已完成：未结算候选后的再次新建 preflight，以及 active 修订 /顺序多文档相邻路径。",
+      "已完成：creative /Profile Completion 全创建集合终态核对和 D-112 显式单格式 /paired 交付范围回归。",
+      "已完成：专项攻击、相邻审计、Main /Renderer 类型、简化棘轮、仓库卫生与 Agent production build。",
+      "已完成：最终差异审查与提交前唯一完整核心 65/65。",
+      "待完成：独立提交、clean identities 与 fresh r35 真机。",
       "后续：Task Profile 绑定、上下文效率、D-102 /D-103 与商业质量独立治理。"
     ]
   },

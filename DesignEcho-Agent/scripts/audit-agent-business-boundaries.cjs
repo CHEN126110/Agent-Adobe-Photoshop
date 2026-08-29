@@ -11187,6 +11187,238 @@ async function run() {
     '设计一张新的海报，只保存 PSD，不需要 JPG 或 PNG。',
     [unboundEditableDelivery]
   );
+  const secondCreatedDocumentId = 542;
+  const secondCreatedHistory = { documentId: secondCreatedDocumentId, historyStateId: 301 };
+  const secondFinalHistory = { documentId: secondCreatedDocumentId, historyStateId: 302 };
+  const secondCreatedDocumentOperation = {
+    name: 'composeDesign',
+    arguments: {
+      document: { mode: 'new', name: '第二候选' },
+      canvas: { width: 1440, height: 1440 }
+    },
+    result: {
+      success: true,
+      activeDocumentId: secondCreatedDocumentId,
+      documentId: secondCreatedDocumentId,
+      data: { createdDocument: true },
+      historyStateRef: secondCreatedHistory,
+      photoshopMutationCommit: {
+        version: 'photoshop-mutation-commit/v1',
+        basis: 'same_execute_as_modal',
+        bindingStrength: 'unguarded',
+        changeKind: 'document_creation',
+        beforeOpenDocumentIds: [41, unboundCreatedDocumentId],
+        createdDocumentId: secondCreatedDocumentId,
+        after: { ...secondCreatedHistory, activeLayerId: 1 },
+        toolActionCompleted: true,
+        mutationObserved: true,
+        documentChanged: true
+      }
+    }
+  };
+  const secondFinalDesignMutation = successfulOperationInDocument(
+    'createRectangle',
+    { documentId: secondCreatedDocumentId, x: 0, y: 0, width: 1440, height: 1440 },
+    secondCreatedDocumentId,
+    secondCreatedHistory.historyStateId,
+    secondFinalHistory.historyStateId
+  );
+  const secondFinalReadback = successfulOperationInDocument(
+    'getLayerHierarchy',
+    { documentId: secondCreatedDocumentId },
+    secondCreatedDocumentId,
+    secondFinalHistory.historyStateId,
+    secondFinalHistory.historyStateId
+  );
+  const secondRasterDelivery = {
+    name: 'saveDocument',
+    arguments: { documentId: secondCreatedDocumentId, format: 'jpg' },
+    result: {
+      success: true,
+      documentId: secondCreatedDocumentId,
+      sourceHistoryStateRef: secondFinalHistory,
+      format: 'jpg',
+      savedPath: 'C:/fixture/主图/第二候选.jpg'
+    }
+  };
+  const secondEditableDelivery = {
+    name: 'saveDocument',
+    arguments: { documentId: secondCreatedDocumentId, format: 'psd' },
+    result: {
+      success: true,
+      documentId: secondCreatedDocumentId,
+      sourceHistoryStateRef: secondFinalHistory,
+      format: 'psd',
+      savedPath: 'C:/fixture/主图/第二候选.psd',
+      editableDocumentArtifact: {
+        version: 'runtime-editable-document-artifact/v1',
+        basis: 'uxp_post_save_file_metadata',
+        path: 'C:/fixture/主图/第二候选.psd',
+        format: 'psd',
+        byteLength: 8192,
+        modifiedAt: 2,
+        documentId: secondCreatedDocumentId,
+        canvas: { width: 1440, height: 1440 }
+      }
+    }
+  };
+  const exactFirstClose = {
+    name: 'closeDocument',
+    arguments: { documentId: unboundCreatedDocumentId, save: false },
+    result: { success: true, closedDocument: '未绑定 Profile 的开放设计' }
+  };
+  const failedFirstClose = {
+    ...exactFirstClose,
+    result: { success: false, error: 'close failed' }
+  };
+  const fuzzyFirstClose = {
+    name: 'closeDocument',
+    arguments: { documentName: '开放设计', save: false },
+    result: { success: true, closedDocument: '未绑定 Profile 的开放设计' }
+  };
+  const r34OrphanProfileContract = buildTaskCompletionContract({
+    task: '生成一个单画布视觉。',
+    context: { agenticArtifactContract: agenticMainImageArtifactContract },
+    toolCallLog: [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      secondCreatedDocumentOperation,
+      secondFinalDesignMutation,
+      secondFinalReadback,
+      secondRasterDelivery,
+      secondEditableDelivery
+    ],
+    evaluationProfile,
+    evaluationProfileResult
+  });
+  const closedFirstThenDeliveredSecondContract = buildTaskCompletionContract({
+    task: '生成一个单画布视觉。',
+    context: { agenticArtifactContract: agenticMainImageArtifactContract },
+    toolCallLog: [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      exactFirstClose,
+      secondCreatedDocumentOperation,
+      secondFinalDesignMutation,
+      secondFinalReadback,
+      secondRasterDelivery,
+      secondEditableDelivery
+    ],
+    evaluationProfile,
+    evaluationProfileResult
+  });
+  const sequentialPairedDocumentsContract = buildTaskCompletionContract({
+    task: '生成两个独立单画布视觉并分别交付。',
+    context: { agenticArtifactContract: agenticMainImageArtifactContract },
+    toolCallLog: [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      unboundRasterDelivery,
+      unboundEditableDelivery,
+      secondCreatedDocumentOperation,
+      secondFinalDesignMutation,
+      secondFinalReadback,
+      secondRasterDelivery,
+      secondEditableDelivery
+    ],
+    evaluationProfile,
+    evaluationProfileResult
+  });
+  const lifecycleContext = {
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+  };
+  const secondNewComposeCall = {
+    name: 'composeDesign',
+    arguments: {
+      document: { mode: 'new', name: '第二候选' },
+      canvas: { width: 1440, height: 1440 }
+    }
+  };
+  const activeComposeCall = {
+    ...secondNewComposeCall,
+    arguments: {
+      ...secondNewComposeCall.arguments,
+      document: { mode: 'active', name: '当前候选修订' }
+    }
+  };
+  const buildCreatedDocumentPreflight = (toolCall, completedToolCalls, lifecycle = lifecycleContext) => (
+    buildAgentToolExecutionPreflight({
+      userRequest: '继续完成当前设计。',
+      assistantContent: '我会根据当前画面继续调整，并在修改后读取画面复核。',
+      toolCalls: [toolCall],
+      verificationToolCalls: [toolCall],
+      completedToolCalls,
+      taskRunCreatedDocumentLifecycle: lifecycle
+    })
+  );
+  const orphanSecondNewPreflight = buildCreatedDocumentPreflight(
+    secondNewComposeCall,
+    [unboundCreatedDocumentOperation, unboundFinalDesignMutation, unboundFinalReadback]
+  );
+  const activeRevisionPreflight = buildCreatedDocumentPreflight(
+    activeComposeCall,
+    [unboundCreatedDocumentOperation, unboundFinalDesignMutation, unboundFinalReadback]
+  );
+  const settledSecondNewPreflight = buildCreatedDocumentPreflight(
+    secondNewComposeCall,
+    [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      unboundRasterDelivery,
+      unboundEditableDelivery
+    ]
+  );
+  const closedSecondNewPreflight = buildCreatedDocumentPreflight(
+    secondNewComposeCall,
+    [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      exactFirstClose
+    ]
+  );
+  const failedCloseSecondNewPreflight = buildCreatedDocumentPreflight(
+    secondNewComposeCall,
+    [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      failedFirstClose
+    ]
+  );
+  const fuzzyCloseSecondNewPreflight = buildCreatedDocumentPreflight(
+    secondNewComposeCall,
+    [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      fuzzyFirstClose
+    ]
+  );
+  const explicitRasterSecondNewPreflight = buildCreatedDocumentPreflight(
+    secondNewComposeCall,
+    [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      unboundRasterDelivery
+    ],
+    { deliveryRequirement: { rasterRequired: true, editableRequired: false } }
+  );
+  const stalePairSecondNewPreflight = buildCreatedDocumentPreflight(
+    secondNewComposeCall,
+    [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      unboundRasterDelivery,
+      unboundStaleEditableDelivery
+    ]
+  );
   const unboundRasterOnlyRemediation = buildDesignTaskContractRemediationDirective({
     task: '设计一张新的海报。',
     toolCallLog: [
@@ -11681,6 +11913,44 @@ async function run() {
     )
       ? []
       : ['agentic-delivery:structured-contract-still-depends-on-category-task-text']),
+    ...(requirementById(r34OrphanProfileContract, 'production-document')?.status === 'passed'
+      && requirementById(r34OrphanProfileContract, 'production-delivery')?.status === 'passed'
+      && requirementById(r34OrphanProfileContract, 'production-document-lifecycle')?.status === 'failed'
+      && requirementById(r34OrphanProfileContract, 'production-document-lifecycle')?.actual?.createdDocumentCount === 2
+      && requirementById(r34OrphanProfileContract, 'production-document-lifecycle')?.actual?.unsettledDocumentIds?.includes(unboundCreatedDocumentId)
+      ? []
+      : ['created-document-lifecycle:r34-orphan-was-not-separated-from-final-delivery']),
+    ...(requirementById(closedFirstThenDeliveredSecondContract, 'production-document-lifecycle')?.status === 'passed'
+      && requirementById(closedFirstThenDeliveredSecondContract, 'production-document-lifecycle')?.actual?.closedDocumentCount === 1
+      && requirementById(closedFirstThenDeliveredSecondContract, 'production-document-lifecycle')?.actual?.deliveredDocumentCount === 1
+      ? []
+      : ['created-document-lifecycle:exact-close-did-not-settle-abandoned-candidate']),
+    ...(requirementById(sequentialPairedDocumentsContract, 'production-document-lifecycle')?.status === 'passed'
+      && requirementById(sequentialPairedDocumentsContract, 'production-document-lifecycle')?.actual?.deliveredDocumentCount === 2
+      ? []
+      : ['created-document-lifecycle:sequential-multi-document-delivery-was-prohibited']),
+    ...(orphanSecondNewPreflight.status === 'blocked'
+      && orphanSecondNewPreflight.issue === 'task_run_created_document_unsettled'
+      && orphanSecondNewPreflight.blockers.some((blocker) => blocker.includes(String(unboundCreatedDocumentId)))
+      ? []
+      : ['created-document-lifecycle:second-new-write-was-not-blocked-before-dispatch']),
+    ...(activeRevisionPreflight.status === 'ready'
+      ? []
+      : ['created-document-lifecycle:active-document-revision-was-blocked']),
+    ...(settledSecondNewPreflight.status === 'ready'
+      && closedSecondNewPreflight.status === 'ready'
+      ? []
+      : ['created-document-lifecycle:settled-document-did-not-release-next-create']),
+    ...(failedCloseSecondNewPreflight.status === 'blocked'
+      && fuzzyCloseSecondNewPreflight.status === 'blocked'
+      ? []
+      : ['created-document-lifecycle:failed-or-name-only-close-forged-settlement']),
+    ...(explicitRasterSecondNewPreflight.status === 'ready'
+      ? []
+      : ['created-document-lifecycle:explicit-raster-only-scope-was-expanded-before-next-create']),
+    ...(stalePairSecondNewPreflight.status === 'blocked'
+      ? []
+      : ['created-document-lifecycle:stale-editable-revision-settled-current-document']),
     ...(unboundRasterOnlyContract?.kind === 'creative_design'
       && unboundRasterOnlyContract.status === 'failed'
       && requirementById(unboundRasterOnlyContract, 'creative-delivery')?.status === 'failed'
@@ -11693,22 +11963,28 @@ async function run() {
     ...(requirementById(unboundPairedDeliveryContract, 'creative-delivery')?.status === 'passed'
       && requirementById(unboundPairedDeliveryContract, 'creative-delivery')?.actual?.rasterDeliveryCount === 1
       && requirementById(unboundPairedDeliveryContract, 'creative-delivery')?.actual?.editableDeliveryCount === 1
+      && requirementById(unboundPairedDeliveryContract, 'creative-document-lifecycle')?.status === 'passed'
       ? []
       : ['unbound-created-delivery:same-revision-editable-raster-pair-did-not-pass']),
     ...(requirementById(unboundStalePairContract, 'creative-delivery')?.status === 'failed'
       && requirementById(unboundStalePairContract, 'creative-delivery')?.actual?.editableDeliveryCount === 0
+      && requirementById(unboundStalePairContract, 'creative-document-lifecycle')?.status === 'failed'
       ? []
       : ['unbound-created-delivery:stale-editable-revision-was-accepted']),
     ...(requirementById(explicitRasterOnlyContract, 'creative-delivery')?.status === 'passed'
       && requirementById(explicitRasterOnlyContract, 'creative-delivery')?.expected?.rasterRequired === true
       && requirementById(explicitRasterOnlyContract, 'creative-delivery')?.expected?.editableRequired === false
       && !requirementById(explicitRasterOnlyContract, 'creative-delivery')?.actual?.deliveryBasis
+      && requirementById(explicitRasterOnlyContract, 'creative-document-lifecycle')?.status === 'passed'
+      && requirementById(explicitRasterOnlyContract, 'creative-document-lifecycle')?.expected?.editableRequired === false
       ? []
       : ['unbound-created-delivery:explicit-raster-only-scope-was-expanded']),
     ...(requirementById(explicitEditableOnlyContract, 'creative-delivery')?.status === 'passed'
       && requirementById(explicitEditableOnlyContract, 'creative-delivery')?.expected?.rasterRequired === false
       && requirementById(explicitEditableOnlyContract, 'creative-delivery')?.expected?.editableRequired === true
       && !requirementById(explicitEditableOnlyContract, 'creative-delivery')?.actual?.deliveryBasis
+      && requirementById(explicitEditableOnlyContract, 'creative-document-lifecycle')?.status === 'passed'
+      && requirementById(explicitEditableOnlyContract, 'creative-document-lifecycle')?.expected?.rasterRequired === false
       ? []
       : ['unbound-created-delivery:explicit-editable-only-scope-was-expanded']),
     ...(unboundRasterOnlyRemediation
@@ -15643,7 +15919,7 @@ async function run() {
     },
     {
       id: 'creative-completion-projects-factual-obligations-without-aesthetic-recipe',
-      description: '通用 creative Completion 只硬校验真实写入、正确目标、同目标读回与显式交付义务；无字、纯排版和编辑现有文档不得被固定配方反向加内容。',
+      description: '通用 creative Completion 只硬校验真实写入、正确目标、同目标读回、显式交付与本 TaskRun 新建文档终态；无字、纯排版和编辑现有文档不得被固定配方反向加内容。',
       violations: creativeCompletionViolations
     },
     {

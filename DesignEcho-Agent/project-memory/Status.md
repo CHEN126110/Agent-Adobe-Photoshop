@@ -2,16 +2,16 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
-## 2026-08-29 D-112 /r33 同版本 paired delivery 缺口
+## 2026-08-29 D-113 /r34 本 TaskRun 新建文档生命周期缺口
 
-- D-111 已提交 `8a888924`，完整核心 65/65、clean Agent /UXP identities、r32 canonical reconciliation 与 r33 fresh preflight 均通过；r32 /r33 对账后安全账本未清账为 0，6 个既有 Photoshop 文档 history 全程未变。
-- r33 正式 `deepseek-v4-flash-vision-exp` Attempt 用时约 11.4 分钟，32 次模型 /41 次 Tool，2,703,565 input /51,449 output tokens，模型 /Tool 实测约 528.5 /158.6 秒。它真实创建 1440×1440 文档、形成 9 层设计、两轮看图修订并导出 706,371 字节 JPG，但没有保存 PSD；完成 baseline 以 `new_outside_document_opened` 正确拒绝，正式技术交付和商业质量均不通过。
-- 根因位于未绑定 creative Completion：AgentTaskPlan 为 unknown /generic，未形成 Task Profile /`agenticArtifactContract`；现有通用 `creative_design` 没有 paired delivery requirement。D-087 的同 revision PSD/预览完整集合只在已声明输出契约上生效，UXP PSD Provider 经人工恢复已证明可用。
-- 人工恢复只为保全失败样本：文档 5862 显式保存为 29,519,705 字节 PSD、9 层 /history 5935 /clean，随后只关闭该 fixture 文档并完成 Attempt reconciliation；恢复不计入 Run、技术成功率或人工介入为 0。
-- D-112 已在现有 `creative-delivery` owner 内派生 `created_document_final_revision_pair`：只信本 TaskRun 的受信任 `document_creation` commit 和最后内容 mutation 的 document/history；同 revision 的 PSD/PSB 与 JPG/PNG/WebP 缺一不可。已有文档编辑、只读、export-only 及用户明确 raster-only /editable-only 不扩张。
-- 既有 E2 投影现在可从通用 Completion requirement 读取双交付义务并保留全部同版本 result refs；Harness 不执行保存、不选择路径 /文件名，也不从品类词绑定 Runtime。真实 Agent 模拟循环已证明 JPG-only 收尾会被推回，同一 `deepseek-v4-flash-vision-exp` Agent 补 PSD 后才进入 final response。
-- 业务边界、Runtime declaration、Capability Resolver、设计作者权、Main /Renderer 类型、Agent production build、项目治理与唯一完整核心 65/65 已通过。独立提交、clean identities 与 fresh r34 仍待完成，当前不能宣称 D-112 或产品技术交付已真机闭合。
-- 当前视觉是干净但模板化的基础电商排版，仍有信息重复、主体融合与商业冲击力不足；D-112 只收口技术交付。Task Profile 绑定、270 万 token 上下文膨胀、D-102 抠图与商业设计质量均独立待治理。
+- D-112 已以 `8604c6f6` 独立提交并完成 clean Agent /UXP identities、Agent production build 与唯一完整核心 65/65。fresh r34 使用 exact D-112、正式 `deepseek-v4-flash-vision-exp`、正常持久 Key 和真实 Photoshop，证明 Agent 能自主形成同 revision PSD 20,385,121 字节与 JPG 1,282,877 字节。
+- r34 Run `run-20260829142918-b6f8c117-3d0e` 用时约 8 分 16 秒，22 次模型 /17 次 Tool、1,385,086 input /40,891 output tokens。模型成功绑定主图 `create_new` Profile；v1 文档 5939 完成后因白字对比度弱，又用 `composeDesign(new)` 创建 v2 文档 5968，而不是修改活动文档。
+- `skill_evaluation_profile` 的 93 分与 production delivery 对 v2 通过，但 v1 仍 `unsaved + dirty`；外层 completion baseline 以 `new_outside_document_opened` 正确拒绝 Attempt。当前生产 Completion 只验证“至少创建一个文档”和最终目标交付，没有核对本 TaskRun 创建集合全部终态。
+- 人工关闭 v2 /弃稿 v1 只用于恢复共享 Photoshop，不计入零人工成功；exact Runtime 重启后 r34 已 canonical reconciliation。Submission /Terminal 为 13/13、全局 unknown-write 为 0，6 个既有用户文档 history 继续保持 `352:4125 /2480:4964 /3729:4013 /4126:5815 /4898:5797 /5816:5852`。
+- r34 画面比 r33 更接近真实电商成稿，但标题过重、底部信息块遮挡且重复、产品主张缺来源；自动 93 分明显偏高。当前只确认技术交付对象和视觉观察事实，商业质量仍为 `needs_review`。
+- D-113 已实现逐文档结算：受信 `document_creation` commit 建立对象，任何已观察新 revision 都使旧收据失效；同 revision 源稿 /预览部分收据可跨 Reflexion 合并，精确 `closeDocument(documentId)` 成功结果可结算弃稿。没有文件要求不会真空通过，模糊 /失败 close、旧 revision 与生产者成功文案均不能结算。
+- 写前 preflight 只阻止未结算对象后的再次 `createDocument /composeDesign(new)`；当前文档修订、交付和前一对象结算后的多文档顺序继续可达。真实 Agent 模拟链证明第二个 `new` 未触达 executor，同一 Agent 改用 `active`；Harness 没有自动 close 或改参数。
+- 运行事实、业务边界、Runtime declaration、设计作者权、181 Tool、通用 Executor、Capability、简化棘轮、Main /Renderer 类型、仓库卫生、Agent production build 与提交前唯一完整核心 65/65 均通过；核心闸门同时覆盖 UXP 测试 /类型 /production build。独立提交、clean identities 与 fresh r35 仍待完成；当前不能宣称真机闭合。
 
 ## 2026-08-29 D-111 reconciliation Photoshop 只读批次
 

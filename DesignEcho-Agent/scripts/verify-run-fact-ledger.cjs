@@ -23,12 +23,14 @@ const {
     recordRuntimeToolCall
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-accounting.ts'));
 const {
+    advanceRuntimeSessionIdentity,
     buildRuntimeSessionDigest,
     createRuntimeSession,
     createRuntimeSessionIdentity
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-session.ts'));
 const {
-    extendTaskRunDocumentCreationEvidence
+    extendTaskRunDocumentCreationEvidence,
+    projectTaskRunCreatedDocumentLifecycle
 } = require(path.join(root, 'src/shared/task-run-document-creation-evidence.ts'));
 const {
     MAIN_IMAGE_EVALUATION_PROFILE_ID,
@@ -1096,6 +1098,176 @@ const childWithForgedEvidence = buildProfileChildContract(createdDocumentId, {
 check(
     readProductionDocumentRequirement(childWithForgedEvidence).status === 'failed',
     '序列化 Run Record /项目记忆形状不能冒充 Runtime-owned 创建收据'
+);
+const parentRasterDelivery = {
+    name: 'saveDocument',
+    arguments: { documentId: createdDocumentId, format: 'jpg' },
+    result: {
+        success: true,
+        documentId: createdDocumentId,
+        sourceHistoryStateRef: { documentId: createdDocumentId, historyStateId: 160 },
+        format: 'jpg',
+        savedPath: 'C:/fixture/parent-preview.jpg'
+    }
+};
+const childEditableDelivery = {
+    name: 'saveDocument',
+    arguments: { documentId: createdDocumentId, format: 'psd' },
+    result: {
+        success: true,
+        documentId: createdDocumentId,
+        sourceHistoryStateRef: { documentId: createdDocumentId, historyStateId: 160 },
+        savedPath: 'C:/fixture/parent-source.psd',
+        editableDocumentArtifact: {
+            version: 'runtime-editable-document-artifact/v1',
+            basis: 'uxp_post_save_file_metadata',
+            path: 'C:/fixture/parent-source.psd',
+            format: 'psd',
+            byteLength: 4096,
+            modifiedAt: 1,
+            documentId: createdDocumentId,
+            canvas: { width: 1440, height: 1440 }
+        }
+    }
+};
+const partialLifecycleEvidence = extendTaskRunDocumentCreationEvidence({
+    identity: taskRunIdentity,
+    toolCallLog: [...parentCreationLog, parentRasterDelivery]
+});
+const partialLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: partialLifecycleEvidence,
+    taskRunId: taskRunIdentity.sessionId,
+    generation: taskRunIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    partialLifecycle.unsettledDocumentCount === 1
+        && partialLifecycle.documents[0].rasterDelivered === true
+        && partialLifecycle.documents[0].editableDelivered === false,
+    '跨代创建证据保留当前 revision 的部分交付，不把单格式误报为已结算',
+    JSON.stringify(partialLifecycle)
+);
+const childLifecycleIdentity = advanceRuntimeSessionIdentity({
+    previous: taskRunIdentity,
+    now: '2026-08-24T12:01:00.000Z',
+    nonce: 'completion-chain-child'
+});
+const pairedLifecycleEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: partialLifecycleEvidence,
+    identity: childLifecycleIdentity,
+    toolCallLog: [childEditableDelivery]
+});
+const pairedLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: pairedLifecycleEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    pairedLifecycle.deliveredDocumentCount === 1
+        && pairedLifecycle.unsettledDocumentCount === 0,
+    '同 TaskRun 跨 Reflexion 的同 revision 源稿 /预览部分收据可以组成已结算文档',
+    JSON.stringify(pairedLifecycle)
+);
+const noFileRequirementLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: pairedLifecycleEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: false, editableRequired: false }
+});
+check(
+    noFileRequirementLifecycle.unsettledDocumentCount === 1,
+    '没有文件要求时不能用布尔真空把新建文档伪装成已交付；只能显式关闭',
+    JSON.stringify(noFileRequirementLifecycle)
+);
+const revisedLifecycleIdentity = advanceRuntimeSessionIdentity({
+    previous: childLifecycleIdentity,
+    now: '2026-08-24T12:02:00.000Z',
+    nonce: 'completion-chain-revised'
+});
+const revisionAfterDelivery = {
+    name: 'createRectangle',
+    arguments: { documentId: createdDocumentId, x: 0, y: 0, width: 1440, height: 1440 },
+    result: {
+        success: true,
+        documentId: createdDocumentId,
+        photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before: { documentId: createdDocumentId, historyStateId: 160, activeLayerId: 1 },
+            after: { documentId: createdDocumentId, historyStateId: 161, activeLayerId: 2 },
+            toolActionCompleted: false,
+            mutationObserved: true,
+            documentChanged: false
+        }
+    }
+};
+const revisedLifecycleEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: pairedLifecycleEvidence,
+    identity: revisedLifecycleIdentity,
+    toolCallLog: [revisionAfterDelivery]
+});
+const revisedLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: revisedLifecycleEvidence,
+    taskRunId: revisedLifecycleIdentity.sessionId,
+    generation: revisedLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    revisedLifecycle.unsettledDocumentCount === 1
+        && revisedLifecycle.documents[0].latestHistoryStateRef.historyStateId === 161
+        && revisedLifecycle.documents[0].rasterDelivered === false
+        && revisedLifecycle.documents[0].editableDelivered === false,
+    '交付后即使动作未完整结束，只要 Host revision 已变化，旧文件收据也会失效',
+    JSON.stringify(revisedLifecycle)
+);
+const exactCloseEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: taskRunCreationEvidence,
+    identity: childLifecycleIdentity,
+    toolCallLog: [{
+        name: 'closeDocument',
+        arguments: { documentId: createdDocumentId, save: false },
+        result: { success: true, closedDocument: 'TaskRun 候选' }
+    }]
+});
+const exactCloseLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: exactCloseEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    exactCloseLifecycle.closedDocumentCount === 1
+        && exactCloseLifecycle.unsettledDocumentCount === 0,
+    '成功的精确 documentId 关闭可以结算弃用候选',
+    JSON.stringify(exactCloseLifecycle)
+);
+const nameOnlyCloseEvidence = extendTaskRunDocumentCreationEvidence({
+    previous: taskRunCreationEvidence,
+    identity: childLifecycleIdentity,
+    toolCallLog: [{
+        name: 'closeDocument',
+        arguments: { documentName: 'TaskRun 候选', save: false },
+        result: { success: true, closedDocument: 'TaskRun 候选' }
+    }]
+});
+const nameOnlyCloseLifecycle = projectTaskRunCreatedDocumentLifecycle({
+    previous: nameOnlyCloseEvidence,
+    taskRunId: childLifecycleIdentity.sessionId,
+    generation: childLifecycleIdentity.generation,
+    toolCallLog: [],
+    deliveryRequirement: { rasterRequired: true, editableRequired: true }
+});
+check(
+    nameOnlyCloseLifecycle.unsettledDocumentCount === 1,
+    '按名称模糊关闭不能冒充精确 TaskRun 文档终态',
+    JSON.stringify(nameOnlyCloseLifecycle)
 );
 check(
     childWithSameTargetEvidence.status !== 'completed'

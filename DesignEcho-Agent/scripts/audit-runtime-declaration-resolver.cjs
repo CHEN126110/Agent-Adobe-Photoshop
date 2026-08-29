@@ -7931,6 +7931,295 @@ async function assertUnboundCreatedDesignRequiresPairedDeliveryInLiveLoop() {
 }
 
 /**
+ * D113 真实循环断言：同一 TaskRun 已有未结算新建候选时，第二次 composeDesign(new)
+ * 必须在执行前回到同一个 Agent；模型改用 active 后继续完成同 revision 交付。
+ */
+async function assertUnsettledCreatedDocumentReplansToActiveRevisionInLiveLoop() {
+  const createdHistory = { documentId: 641, historyStateId: 301 };
+  const finalHistory = { documentId: 641, historyStateId: 302 };
+  const tools = [
+    requireAgentTool('composeDesign'),
+    requireAgentTool('getLayerHierarchy'),
+    requireAgentTool('getCanvasSnapshot'),
+    requireAgentTool('saveDocument')
+  ];
+  let modelCallCount = 0;
+  let sawLifecycleBlock = false;
+  let rasterDelivered = false;
+  let editableDelivered = false;
+  let activeAttemptBlockSignals = [];
+  const executedComposeModes = [];
+  const agent = new Agent(
+    {
+      ...buildAgentTestConfig({
+        tools,
+        maxIterations: 16,
+        openingCanvasObservationMode: 'none'
+      }),
+      modelId: 'deepseek-v4-flash-vision-exp'
+    },
+    async (_modelId, messages) => {
+      modelCallCount += 1;
+      const messageText = JSON.stringify(messages);
+      sawLifecycleBlock = sawLifecycleBlock
+        || messageText.includes('task_run_created_document_unsettled');
+      if (modelCallCount === 1) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-compose-first',
+            name: 'composeDesign',
+            arguments: {
+              document: { mode: 'new', name: 'D113 候选' },
+              canvas: { width: 1440, height: 1440 }
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 2) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-compose-second-new',
+            name: 'composeDesign',
+            arguments: {
+              document: { mode: 'new', name: 'D113 候选-v2' },
+              canvas: { width: 1440, height: 1440 }
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 3) {
+        assert.strictEqual(
+          sawLifecycleBlock,
+          true,
+          'same Agent did not receive the unsettled-created-document preflight fact'
+        );
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-compose-active',
+            name: 'composeDesign',
+            arguments: {
+              document: { mode: 'active', name: 'D113 候选修订' },
+              canvas: { width: 1440, height: 1440 }
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 4) {
+        activeAttemptBlockSignals = [
+          '尚未读取目标 Photoshop 文档或画面',
+          '已有读取结果未包含可校验的 documentId',
+          'photoshop_document_required',
+          'task_run_created_document_unsettled',
+          'agent_tool_execution_preflight_blocked',
+          'tool_decision_replan'
+        ].filter((signal) => messageText.includes(signal));
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-readback',
+            name: 'getLayerHierarchy',
+            arguments: { includeHidden: true }
+          }]
+        };
+      }
+      if (modelCallCount === 5) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-review',
+            name: 'getCanvasSnapshot',
+            arguments: { expectedDocumentId: finalHistory.documentId, maxSize: 800 }
+          }]
+        };
+      }
+      if (modelCallCount === 6) {
+        const observationKeys = Array.from(
+          messageText.matchAll(/observationKey=([^\s"<]+)/g),
+          (match) => match[1]
+        );
+        const observationKey = observationKeys[observationKeys.length - 1];
+        assert(observationKey, 'D113 review turn did not receive the Runtime observationKey');
+        return {
+          content: '<visual_observation_review>'
+            + JSON.stringify({
+              version: 'visual-observation-review-batch/v1',
+              decisions: [{
+                version: 'visual-observation-review-decision/v1',
+                observationKey,
+                status: 'passed',
+                reviewer: 'primary_model',
+                summary: '当前候选已在原文档完成对比度修订，主体与文字层级清楚。',
+                issues: []
+              }]
+            })
+            + '</visual_observation_review>',
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-save-preview',
+            name: 'saveDocument',
+            arguments: { format: 'jpg', path: 'C:/fixture/主图/D113-候选.jpg' }
+          }]
+        };
+      }
+      if (!editableDelivered && rasterDelivered) {
+        if (!messageText.includes('task-completion-remediation')) {
+          return {
+            content: '当前文档已完成修订并导出预览。',
+            stopReason: 'end_turn'
+          };
+        }
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd113-save-editable',
+            name: 'saveDocument',
+            arguments: { format: 'psd', path: 'C:/fixture/主图/D113-候选.psd' }
+          }]
+        };
+      }
+      return {
+        content: '已在原文档完成修订，并交付同一最终版本的可编辑源稿和预览图。',
+        stopReason: 'end_turn'
+      };
+    },
+    async (toolName, arguments_) => {
+      if (toolName === 'getAcceptanceSnapshot') {
+        return {
+          success: true,
+          hasDocument: true,
+          document: { id: finalHistory.documentId, name: 'D113 候选', width: 1440, height: 1440 },
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          summary: { totalLayers: 1, truncated: false },
+          layers: [{ id: 2, name: '主视觉', type: 'shape', visible: true }]
+        };
+      }
+      if (toolName === 'composeDesign') {
+        executedComposeModes.push(arguments_.document?.mode);
+        if (arguments_.document?.mode === 'new') {
+          return {
+            success: true,
+            activeDocumentId: createdHistory.documentId,
+            documentId: createdHistory.documentId,
+            data: { createdDocument: true },
+            historyStateRef: createdHistory,
+            photoshopMutationCommit: {
+              version: 'photoshop-mutation-commit/v1',
+              basis: 'same_execute_as_modal',
+              bindingStrength: 'unguarded',
+              changeKind: 'document_creation',
+              beforeOpenDocumentIds: [41],
+              createdDocumentId: createdHistory.documentId,
+              after: { ...createdHistory, activeLayerId: 1 },
+              toolActionCompleted: true,
+              mutationObserved: true,
+              documentChanged: true
+            }
+          };
+        }
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before: { ...createdHistory, activeLayerId: 1 },
+            after: { ...finalHistory, activeLayerId: 2 },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: false
+          }
+        };
+      }
+      if (toolName === 'getLayerHierarchy') {
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          layers: [{ id: 2, name: '主视觉', kind: 'shape' }]
+        };
+      }
+      if (toolName === 'getCanvasSnapshot') {
+        return buildReviewedCanvasResult(finalHistory);
+      }
+      assert.strictEqual(toolName, 'saveDocument');
+      if (arguments_.format === 'jpg') {
+        rasterDelivered = true;
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          sourceHistoryStateRef: finalHistory,
+          format: 'jpg',
+          savedPath: arguments_.path,
+          outputPath: arguments_.path,
+          exportedFiles: [arguments_.path]
+        };
+      }
+      assert.strictEqual(arguments_.format, 'psd');
+      editableDelivered = true;
+      return {
+        success: true,
+        activeDocumentId: finalHistory.documentId,
+        documentId: finalHistory.documentId,
+        sourceHistoryStateRef: finalHistory,
+        format: 'psd',
+        savedPath: arguments_.path,
+        editableDocumentArtifact: {
+          version: 'runtime-editable-document-artifact/v1',
+          basis: 'uxp_post_save_file_metadata',
+          path: arguments_.path,
+          format: 'psd',
+          byteLength: 4096,
+          modifiedAt: 1,
+          documentId: finalHistory.documentId,
+          canvas: { width: 1440, height: 1440 }
+        }
+      };
+    }
+  );
+  const result = await agent.run('请设计一张新海报；发现问题时在当前候选上修订，完成后交付。');
+  assert.deepStrictEqual(
+    executedComposeModes,
+    ['new', 'active'],
+    `the blocked second new document reached the Tool executor or active revision was lost: ${JSON.stringify({
+      activeAttemptBlockSignals,
+      toolCallLog: (result.toolCallLog || []).map((entry) => ({
+        name: entry.name,
+        mode: entry.arguments?.document?.mode,
+        success: entry.result?.success,
+        code: entry.result?.code,
+        issue: entry.result?.preflight?.issue,
+        blockers: entry.result?.preflight?.blockers
+      }))
+    })}`
+  );
+  assert.strictEqual(sawLifecycleBlock, true);
+  assert.strictEqual(rasterDelivered, true);
+  assert.strictEqual(editableDelivered, true);
+  assert.strictEqual(
+    result.success,
+    false,
+    'the minimal D113 fixture intentionally leaves the independent visual-quality verdict unmodeled'
+  );
+  assert.strictEqual(result.stopReason, 'final_response');
+  assert.strictEqual(result.executionSummary?.taskCompletion?.status, 'needs_review');
+  const lifecycleRequirement = result.executionSummary?.taskCompletion?.required.find((requirement) => (
+    requirement.id === 'creative-document-lifecycle'
+  ));
+  assert.strictEqual(lifecycleRequirement?.status, 'passed');
+  assert.strictEqual(lifecycleRequirement?.actual?.createdDocumentCount, 1);
+  assert.strictEqual(lifecycleRequirement?.actual?.unsettledDocumentCount, 0);
+}
+
+/**
  * 治理切片 2（执行供给预留）真实循环断言（GATE-SIMPLIFY-001 合并后的契约）：
  * 已授权写入且零交付动作的运行，写前观察限量由账本单一 owner 承载——
  * 总次数上限 6 次调用（不再按轮），超过即转执行指令且不真正执行；
@@ -11427,6 +11716,7 @@ async function runBehaviorAssertions() {
   assertExecutionAuthorizationBlockerCarriesUnlockOptions();
   await assertZeroProgressWriteAuthorizedStopIsPushedBackAndEndsHonestly();
   await assertUnboundCreatedDesignRequiresPairedDeliveryInLiveLoop();
+  await assertUnsettledCreatedDocumentReplansToActiveRevisionInLiveLoop();
   await assertExecutionSupplyReserveGatesObservationInLiveLoop();
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();

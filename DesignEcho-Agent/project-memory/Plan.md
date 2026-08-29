@@ -1,10 +1,10 @@
 # Current Implementation Plan
 
-## 2026-08-29 唯一当前顺序：`D-095～D-111 + r32 reconciliation（已完成）→ r33 真实失败归因（已完成）→ D-112 同版本源稿 /预览交付 → fresh r34 → Task Profile /上下文效率独立治理 → D-102 /D-103 真机复验 → ONNX /构建链`
+## 2026-08-29 唯一当前顺序：`D-095～D-112 + r32/r33/r34 对账（已完成）→ D-113 新建文档生命周期 → fresh r35 → Task Profile /上下文效率独立治理 → D-102 /D-103 真机复验 → ONNX /构建链`
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 
-当前 D-112 进度：paired Completion、无 Manifest E2 双 refs、单格式反例与真实 Agent 推回 /补交循环均已实现；专项、边界审计、Main /Renderer 类型、Agent production build、治理与唯一完整核心 65/65 已通过。下一步只做最终差异审查、独立提交 /clean identities，再进入 fresh r34 真机，不提前混入 Task Profile、上下文效率或视觉质量修改。
+当前 D-113 进度：D-112 已提交 `8604c6f6` 并取得 clean identities；fresh r34 证明同 revision PSD/JPG 可以由真实 DeepSeek 自主完成，同时暴露同一 TaskRun 创建 v1/v2、只交付 v2 的独立生命周期缺口。“未结算创建对象阻止再次新建 + Completion 核对全部创建对象终态 + 跨 Reflexion 延续”已实现；真实 Agent 同形测试只执行 `new → active`，显式单格式和顺序多文档保持可达。专项边界、Main /Renderer 类型、简化棘轮、仓库卫生、Agent production build 与提交前唯一完整核心 65/65 已通过；下一步只做独立提交 /clean identities，再进入 fresh r35，不重复完整核心。
 
 1. `[已完成 f148 修复、验证与推送]`：完成态可选 generation 的多维容量证明已通过完整核心闸门 58/58，并以 `f148d512` 推送当前分支；提交后 Agent /UXP identity 已重建并在 r23 写前核实为同一干净提交。
 2. `[已完成 r23 / 已对账]`：同一句自然需求在全新 fixture 中完成 17 次模型调用、18 次 Tool Call、8 次成功写 /保存 /导出，生成 27,621,377 字节 PSD 与 822,776 字节 JPG；没有创建 r22 式 0 调用空子代。Attempt 因 `finalArtifactRefs` 为空判为 `submission_unknown_write_state`，随后已在同构建重启、0 文档、0 待处理请求和同 fixture 条件下 reconciliation。

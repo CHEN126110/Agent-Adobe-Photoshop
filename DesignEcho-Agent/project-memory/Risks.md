@@ -6,12 +6,19 @@
 
 ## 当前高风险
 
+### R-058 本 TaskRun 创建集合存在未交付 /未关闭的孤立 Photoshop 文档
+
+- 事实：fresh r34 的真实 DeepSeek Agent 在主图 `create_new` 任务中成功创建 v1 文档 5939，发现对比度问题后又新建 v2 文档 5968；只为 v2 生成同 revision PSD/JPG。Profile Completion 因“已创建文档 + 最终交付”通过，但 v1 仍 `unsaved + dirty`，外层 Attempt 只能以 `new_outside_document_opened` 拒绝。人工关闭 v1 才恢复现场，因此零人工介入失败。
+- 影响：模型把“修订”实现成“另建候选”时，会留下无法归属的活动文档；即使最终文件正确，Attempt 仍失败，用户需人工判断保留 /丢弃。若 Harness 自动关闭或静默改成活动文档写入，又会越过 Agent 作者权和破坏性操作授权。
+- 处理：D-113 已复用 TaskRun 创建证据，按每个 document/latest-history 记录 editable、raster 与显式 close 终态。未结算对象存在时只阻止下一次新建，允许当前文档修订与交付；Completion 在现有 owner 中核对全创建集合。多文档任务以前一对象已结算作为后续新建条件，不用关键词或固定数量限制。专项、边界审计、简化棘轮、类型、Agent build 与唯一完整核心 65/65 已通过，独立提交 /clean identities /r35 尚未完成。
+- 关闭条件：可复用攻击测试覆盖同形双新建、active 修订、旧 revision /跨文档交付、失败 /模糊 close、显式单格式、顺序多文档与跨 Reflexion；唯一完整核心、独立提交和 clean identities 通过；fresh r35 中 DeepSeek 不留下 orphan、无需人工关闭、6 个用户文档不变且 Attempt 正常终态。视觉质量单独评估。
+
 ### R-057 未绑定 creative Completion 丢失同版本可编辑源稿 /预览交付义务
 
 - 事实：fresh r33 的真实 AgentTaskPlan 为 `scenario=unknown /deliverables=[agent_resolved_result] /skillId=autonomous-agent`，模型未调用 `declareDesignIntent`，因此没有 `agenticArtifactContract`。Agent 创建并完成 9 层主图、两次成功导出 JPG，但活动文档保持 `unsaved + dirty`；`taskCompletion.kind=creative_design` 没有任何 delivery requirement，直到 Debug completion baseline 以 `new_outside_document_opened` 拒绝。显式 PSD 人工恢复成功，证明不是 UXP 保存 Provider 失效。
 - 影响：自然语言开放设计即使真实制作、看图和导出，也可能只留下扁平图、无可编辑源稿；Agent 用户正文会错误声称已交付，外层才把运行改成 unknown-write。正式成功率下降、人工介入增加，且交付缺口被误归因成模型慢或 Photoshop 故障。
 - 处理：D-112 已复用现有 TaskCompletion 与 `agentic-final-delivery-evidence`。对本 TaskRun 受信任 `document_creation` commit 新建的 creative document，按最后内容 mutation 的同一 document/history 要求 editable + raster 收据集合；用户明确单格式 /export-only 不扩张。Harness 只给缺失事实、收集全部 refs，不调用保存、不选路径、不推断品类。纯契约、旧 revision 攻击、双 refs E2、真实 Agent remediation 循环、Main /Renderer 类型、Agent production build、三类边界审计与唯一完整核心 65/65 已通过。Task Profile 未绑定率和上下文膨胀另立切片。
-- 关闭条件：专项攻击、类型 /build、唯一完整核心与独立提交通过；fresh r34 的无 Skill 自然请求由同一个 DeepSeek Agent 实例自主生成同 revision PSD/JPG，`finalArtifactRefs` 同时绑定两者，文档路径 /clean 状态读回成立，6 个外部文档不变且 Attempt 无人工恢复 /unknown-write。单次技术闭环不等于商业质量通过。
+- 关闭状态：D-112 已提交 `8604c6f6`，clean identities、65/65 和 r34 同一 Agent 自主同 revision PSD/JPG 已验证，说明 paired-delivery 本身闭合；r34 因另一个创建文档未结算而失败，已转入 R-058。R-057 保留为回归风险，不再是当前根因；单次技术交付仍不等于商业质量通过。
 
 ### R-056 live preflight 并发 Photoshop 读取会制造 Runtime identity 假缺失
 

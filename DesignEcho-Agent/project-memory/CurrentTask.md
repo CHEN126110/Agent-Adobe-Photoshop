@@ -1,48 +1,49 @@
 # Current Task
 
-## 2026-08-29 PAIRED-DELIVERY-FALLBACK-112：新建设计文档的同版本源稿 /预览交付
+## 2026-08-29 CREATED-DOCUMENT-LIFECYCLE-113：本 TaskRun 新建文档逐个结算
 
 ### 目标
 
-1. 修复 fresh r33 真实 DeepSeek Attempt 已生成并导出 JPG、但新建设计文档仍 `unsaved + dirty`，自然 final response 没有在同一 Agent 实例内补齐 PSD 的通用交付缺口。
-2. 复用现有 TaskCompletion 与 `agentic-final-delivery-evidence`，让未绑定 Manifest 的开放创意在本 TaskRun 新建设计文档时，也必须以最后内容 mutation 的同一 document/history 同时取得可编辑源稿与光栅预览；不新增第二 Completion /Delivery owner。
-3. 保持 Agent 作者权：Harness 只报告缺失交付事实并验证收据集合，不自动调用保存、不选择格式 /路径 /文件名、不从“主图”关键词绑定 Task Profile。
+1. 修复 fresh r34 真实 DeepSeek Attempt 在同一 TaskRun 中先创建 v1、发现对比度问题后又用 `composeDesign(document.mode=new)` 创建 v2，只交付 v2、把 v1 留成 `unsaved + dirty` 的通用生命周期缺口。
+2. 让本 TaskRun 创建的每个 Photoshop 文档在继续创建下一个或宣告完成前，都必须取得明确终态：按当前交付契约取得同 revision 文件收据，或由 Agent 显式关闭并取得成功 Tool 结果；不新增第二 Task Store、Completion 或 Photoshop 事务 owner。
+3. 保持 Agent 作者权与安全边界：Harness 不自动关闭候选、不把 `new` 静默改成 `active`、不选择保留哪一稿；`closeDocument(save=false)` 继续走既有破坏性操作人工确认。真正的多文档任务可按“创建 → 交付 /显式关闭 → 再创建”顺序推进。
 
 ### 当前事实
 
-- D-111 提交 `8a888924`、唯一完整核心 65/65、clean Agent /UXP identities 与 r32 reconciliation 均完成；r32 /r33 对账后 Attempt Submission /Terminal 对齐且全局 unknown-write 为 0，6 个用户文档 history 始终保持 `352:4125 /2480:4964 /3729:4013 /4126:5815 /4898:5797 /5816:5852`。
-- r33 fresh fixture 使用正常持久 Key、正式模型 `deepseek-v4-flash-vision-exp`、clean D-111 Agent /UXP 和真实 Photoshop 运行。11.4 分钟内 32 次模型调用、41 次 Tool Call、2,703,565 input tokens、51,449 output tokens；模型 /Tool 实测耗时约 528,514 /158,571ms。
-- Agent 创建文档 5862、完成两版设计与终审前读回，两次 `saveDocument(format=jpg)` 成功生成 `主图/粉咖微压直板加厚款木耳边-主图.jpg`，但文档仍无路径、dirty；完成 baseline 正确拒绝 `new_outside_document_opened`。Run 的 `taskCompletion.kind=creative_design` 只有执行 /目标 /读回 /画面 /布局要求，没有 delivery requirement。
-- 同一自然请求的 `AgentTaskPlan` 为 `scenario=unknown / deliverables=[agent_resolved_result] / skillId=autonomous-agent`，运行也没有 `declareDesignIntent`，因此 `agenticArtifactContract` 缺席。现有 D-087 同版本完整交付集合只在该显式契约存在时生效；回退 `buildDeclaredDeliveryRequirement` 又只从显式保存 /导出措辞或声明输出判断交付。
-- 手工恢复已明确标记为非正式成功：对 Agent 自建文档 5862 显式保存 29,519,705 字节 PSD（SHA-256 `23898b5531d8face186549e942fb0f0f4b2e063a1dc4609eafc9ddef3d2a3fb6`），读回 9 层、history 5935、clean 后只关闭该 fixture 文档；失败 Attempt 随后合法 reconciliation，安全账本归零。该恢复不回填正式 Run /成功率。
-- r33 JPG 视觉只达到基础电商排版：商品与配色清楚，但主 /副标题 /底部标签语义重复、字体与层级模板化、白底摄影仍为矩形拼贴、商业冲击力不足。D-102 语义抠图与设计质量改进仍为后续独立切片。
+- D-112 已以独立提交 `8604c6f6` 收口：Agent `designecho-8604c6f6aaed-f0bb660b89f3`、UXP `designecho-uxp-production-8604c6f6aaed-cb76a9e9c3fe` 均为 clean；唯一完整核心 65/65、Agent production build 与同 revision paired-delivery 专项通过。
+- r34 使用 fresh fixture `fixture-20260829141504-7703582fc8c8`、正式模型 `deepseek-v4-flash-vision-exp`、正常持久 Key、exact D-112 Agent /UXP 和真实 Photoshop。Run `run-20260829142918-b6f8c117-3d0e` 用时约 8 分 16 秒，22 次模型、17 次 Tool、1,385,086 input /40,891 output tokens，5 次恢复尝试；模型和 Tool 均真实执行。
+- 模型成功调用 `declareDesignIntent` 并绑定主图 `create_new` Profile。第一次成功 `composeDesign(new)` 创建文档 5939；发现白字对比度弱后，没有在当前文档修订，而是第二次 `composeDesign(new)` 创建文档 5968。v2 取得同 revision PSD 20,385,121 字节与 JPG 1,282,877 字节，Profile Completion 的交付检查通过；v1 仍未保存且 dirty。
+- 外层完成基线以 `new_outside_document_opened` 正确拒绝 Attempt。当前 `production-document` 只要求 `createdDocumentCount > 0`，`production-delivery` 只验证最终目标的交付集合，没有核对本 TaskRun 创建集合是否全部结算；这是 D-112 之后的独立通用缺口，不是 save Provider 或 paired-delivery 失效。
+- 人工恢复只关闭 TaskRun 自建的 clean v2 与弃用 v1，未保存 v1；该处置不计入零人工成功。重启 exact Runtime 后 Attempt 已合法 reconciliation，Submission /Terminal 为 13/13、全局 unknown-write 为 0；6 个用户文档 history 仍为 `352:4125 /2480:4964 /3729:4013 /4126:5815 /4898:5797 /5816:5852`。
+- r34 最终 JPG 相比 r33 有明显进步：全幅人物场景、商品融入和层级已成立；但巨大标题压迫、底部三枚信息块过重且遮鞋、文案重复，“木耳边不掉跟”缺少来源。自动 93 分不能替代人工盲评，当前视觉结论仍是 `needs_review`，未达到稳定商业质量。
 
 ### 实施边界
 
-- 只在通用 creative Completion 已确认本 TaskRun 新建设计文档时派生 paired-delivery 义务；已有文档局部修改、只读、分析、明确 raster-only /editable-only 或 export-only 请求不能被扩大。
-- paired 通过必须使用最后内容 mutation 之后、同一 document/history 的真实 `sourceHistoryStateRef` 与 PSD/PSB、JPG/PNG/WebP 收据；文件存在、Tool 名、输入 format、成功文案或旧 revision 都不能补造。
-- 最终交付投影必须保留源稿和预览的全部 result refs；不能退回“只取最后一次 save/export”。
-- 不修改 UXP `saveDocument`：显式 PSD 恢复已经证明 Provider 能正确保存可编辑文档。当前根因在交付义务没有进入未绑定 creative Completion，而不是 Photoshop 原子执行失败。
-- 不在本切片修 Task Profile 声明命中率、上下文 270 万 token 膨胀、`placeImage` 参数冲突、`composeDesign` schema 返工、D-102 抠图或依赖安全；分别立项并以同一 r33 证据验证。
+- 生命周期事实只来自本 TaskRun 的受信任 `document_creation` mutation commit、有 source revision 的保存 /导出结果和成功的精确 `closeDocument(documentId)` Tool 结果；文件名、助手正文、磁盘扫描和模型自报不能创建终态。
+- 第二个新建动作只在已有创建对象仍未结算时于通用执行 preflight 拒绝；返回事实与修订方向，由模型决定使用当前文档修订、先完成交付，还是请求用户批准关闭。Harness 不重写参数、不执行补救 Tool。
+- 多文档任务不被禁止：前一文档结算后可继续创建。明确 raster-only /editable-only 使用其原交付范围判断结算，不被强制扩大为 paired；默认新建设计仍沿用 D-112 的同 revision editable + raster 要求。
+- Completion 在现有 `creative_design` /`skill_evaluation_profile` owner 内增加创建集合终态要求；失败进入既有 natural-final remediation。不得另建完成 Gate、品类状态机或关闭队列。
+- TaskRun 创建事实跨 Reflexion 延续时同时保留最新 revision 与部分交付 /关闭状态；证据仍不授予 Tool 权限、关闭权限、质量通过或用户接受。
+- 本切片不修改 Task Profile 命中率、上下文压缩、设计知识、D-102 抠图、视觉评分或依赖；这些继续用独立样本和回滚边界治理。
 
 ### 下一步
 
-1. [已完成] 建立 created-document final-revision paired-delivery 纯投影并接入现有 `creative-delivery` requirement；文档创建事实读取受信任的 `document_creation` mutation commit，不绑定具体 Tool 名。
-2. [已完成] `agentic-final-delivery-evidence` 在无 Manifest、但 Completion 已派生 paired requirement 时，继续绑定同一最终 revision 的全部源稿 /预览 result refs；无交付义务时仍不激活 E2 分支。
-3. [已完成] 业务边界与 Runtime declaration 测试覆盖：raster-only 失败、同版本 pair 通过、旧版本 PSD 失败、用户明确 raster-only /editable-only 不扩张、无 Manifest E2 双 refs，以及真实 Agent 循环中“JPG 后错误收尾 → 通用 remediation → DeepSeek 视觉模型补 PSD → final response”。
-4. [进行中] Main /Renderer 类型、Agent production build、项目治理与提交前唯一完整核心 65/65 已通过；继续最终差异审查、独立提交与 clean identities。
-5. [待完成] fresh r34 真实 DeepSeek E2E：不得复用 r33；验证 Agent 在同一实例补齐 PSD/JPG、既有 6 文档不变、finalArtifactRefs 非空且同 revision。
-6. [后续独立] 处理 Task Profile 绑定可靠性与上下文 /Tool schema 膨胀，再接 D-102 语义抠图和商业设计质量 A/B。
+1. [已完成] 建立 TaskRun 新建文档生命周期纯投影，扩展既有跨 Reflexion 创建证据，覆盖 creation → mutation /未知完成 → partial delivery → paired /single-format delivery → explicit close。
+2. [已完成] 通用 Tool execution preflight 在存在未结算创建对象时阻止后续 `createDocument /composeDesign(new)`；`composeDesign(active)`、当前对象交付与结算后的顺序多文档继续可达。严格 `composeDesign(new)` 建档 commit 同时成为新目标 guard，模型原地修订不多耗一次机械读回。
+3. [已完成] 现有 creative /Profile Completion 已增加全部本轮创建对象终态要求；D-112 paired delivery、显式 raster-only /editable-only 和 E2 owner 未复制或放宽。
+4. [已完成] 攻击测试覆盖旧 revision、失败 /模糊 close、部分交付、无交付真空、显式单格式、顺序多文档、跨 Reflexion、r34 同形与真实 Agent `new → blocked new → active` 控制流；业务 /Runtime /作者权 /工具 /Executor /Capability /简化棘轮、Main /Renderer 类型、仓库卫生与 Agent production build 通过。
+5. [进行中] 最终差异审查与提交前唯一完整核心 65/65 已通过；继续完成独立提交和 clean Agent /UXP identities，不重复运行完整核心。
+6. [待完成] fresh r35 使用 exact D-113、`deepseek-v4-flash-vision-exp` 和真实 Photoshop；要求模型在 v1 上原地修订或合法结算，不留下 TaskRun orphan，6 个用户文档不变，技术与视觉分开计分。
 
 ### 验证与未知
 
-- 已验证：正式 r33 Provider /模型 /fixture /双 Runtime、真实工具序列、JPG /PSD 字节与层结构、交付失败状态、TaskPlan /Completion 缺失链、人工恢复与 reconciliation；D-112 纯契约、同 revision E2 双 refs、真实 Agent remediation 循环、业务 /能力 /作者权审计、Main /Renderer 类型、Agent production build 与唯一完整核心 65/65 均通过。
-- 合理推断：新通用要求能在真实 DeepSeek 请求中促使同一 Agent 补齐源稿；当前只由确定性模拟循环证明控制流，尚不能替代 r34 的真实 Provider /Photoshop 行为。
-- 未验证：独立提交与 clean identities；DeepSeek 在 r34 是否一次选择正确保存 /导出路径并形成非空 `finalArtifactRefs`；r34 商业质量是否改善。D-112 只解决技术交付，不把 r33 视觉结果写成专业达标。
+- 已验证：D-112 独立提交 /clean identities /65/65；fresh r34 exact DeepSeek /Photoshop 双文档创建、v2 同 revision PSD/JPG、Profile Completion 通过但外层 orphan 拒绝、人工处置与 canonical reconciliation；6 个用户文档未变。
+- 合理推断：在第二次新建前给出“当前创建对象尚未结算”的结构化失败，会让同一 Agent 改用 `active` 做原地修订；必须由 r35 真实模型行为验证，不能由静态测试替代。
+- 未验证：独立提交 /clean identities；真实 Photoshop 中 `closeDocument` 的精确结果形态（D-113 不自动触发它）；r35 能否零人工闭合。视觉质量仍需人工盲评，自动 93 分不算商业达标。
 
 ### 状态
 
-in_progress / d111_commit_and_r32_reconciliation_complete / r33_real_deepseek_attempt_failed / root_cause_unbound_creative_completion_lost_paired_delivery_obligation / paired_requirement_and_e2_projection_implemented / live_agent_remediation_loop_and_targeted_audits_passed / agent_production_build_and_full_core_65_passed / commit_clean_identities_and_r34_pending / manual_recovery_not_counted_as_success / safety_ledger_reconciled_zero / deepseek_exact_model_preserved
+in_progress / d112_commit_clean_identities_and_full_core_65_complete / r34_real_deepseek_paired_delivery_succeeded_but_attempt_failed / root_cause_current_taskrun_created_document_set_not_fully_settled / manual_orphan_close_not_counted_as_success / r34_reconciled_and_safety_ledger_zero / d113_lifecycle_preflight_completion_cross_reflexion_and_live_agent_loop_implemented / targeted_audits_types_agent_build_and_unique_full_core_65_passed / commit_clean_identities_and_r35_pending / deepseek_exact_model_preserved
 
 ---
 

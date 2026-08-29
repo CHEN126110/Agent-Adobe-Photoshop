@@ -410,7 +410,7 @@ import {
     prepareAgentMessagesForModel,
     retireDeliveredAgentMessageImages
 } from './message-context';
-import { buildTaskCompletionContract } from './task-completion-contract';
+import { buildTaskCompletionContract, buildTaskRunCreatedDocumentPreflightInput } from './task-completion-contract';
 import { projectAgenticFinalDeliveryStageEvidence } from './agentic-final-delivery-evidence';
 import {
     buildSummaryFromStatefulWrites as buildSummaryFromStatefulWritesFromModule,
@@ -6850,7 +6850,7 @@ export class Agent {
                             toolCalls: [call],
                             verificationToolCalls: toolCallsForCurrentControlTurn,
                             requiresUserVisiblePreActionRationale: requireUserVisiblePreActionRationale,
-                            completedToolCalls: this.toolCallLog
+                            ...buildTaskRunCreatedDocumentPreflightInput(this.currentTask, this.buildTaskCompletionContext(), this.toolCallLog)
                         });
                         executionPreflightByCallId.set(call.id, toolExecutionPreflight);
                         if (!toolExecutionPreflight.ready && toolExecutionPreflight.status === 'blocked') {

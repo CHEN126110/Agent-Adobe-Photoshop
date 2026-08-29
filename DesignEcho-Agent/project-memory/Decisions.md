@@ -2,6 +2,16 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-113 本 TaskRun 新建文档按对象逐个结算，Harness 不替 Agent 关闭或改稿
+
+- 状态：已采用并完成代码与提交前验证阶段；D-112 提交、clean identities、65/65 与 r34 真实归因已完成，D-113 运行事实 /业务 /Runtime /作者权 /工具 /Executor /Capability /简化棘轮、类型、Agent production build 与唯一完整核心 65/65 通过；独立提交、clean identities 与 r35 待验证。
+- 触发事实：r34 的 DeepSeek Agent 创建 v1 后发现对比度问题，又调用 `composeDesign(document.mode=new)` 创建 v2；v2 的同 revision PSD/JPG 与 Profile Completion 均通过，但 v1 仍未保存、dirty，使外层 Attempt 正确失败。D-112 paired delivery 没有失效，缺口是 Completion 只看最终目标，没有核对本 TaskRun 创建集合。
+- 决定：同一 TaskRun 的每个受信任 `document_creation` 对象必须在再次新建或完成前进入终态：按当前交付范围取得与最新内容 revision 对应的真实保存 /导出收据，或由 Agent 显式 `closeDocument(documentId)` 成功关闭。前一对象未结算时，通用执行 preflight 拒绝下一次 `createDocument` /`composeDesign(new)`；`composeDesign(active)` 与结算后的后续新建不受阻。
+- 作者权与安全：Harness 只报告对象未结算事实，不自动调用关闭、不从文件名 /品类 /助手文字选择弃稿、不把 `new` 改成 `active`。破坏性关闭继续使用既有 HITL；模型决定原地修订、交付当前候选或请求关闭。多文档任务按顺序逐个结算，不被全局单文档上限误伤。
+- Owner：现有 TaskRun 创建证据负责跨 Reflexion 保存 document/revision 与部分交付 /关闭终态；`agent-tool-execution-preflight` 负责第二次新建前的执行事实；现有 creative /Profile Completion 负责最终集合核对。Photoshop Provider、TransactionRunner、Safety Policy、E2 和 Evaluation owner 均不复制。
+- 回滚点：D-113 只扩展通用创建证据、执行 preflight、Completion 投影与可复用测试；若 r35 证明模型无法从 blocker 回到当前文档修订，先回滚写前阻断而保留 Completion 终态核对，再依据真实 Tool 选择调整模型可见说明，禁止改成自动 close 或静默参数重写。
+- 验证边界：r34 已证明问题形态和外层拒绝；尚未证明新 preflight 会让真实 DeepSeek 选择 `active`，也未证明跨 Reflexion、显式单格式和顺序多文档的全部结果形态。r35 技术通过仍不代表商业质量通过。
+
 ## D-097 固定 JSON 的终局视觉 Judge 不消费 Provider 原生思考预算
 
 - 状态：已采用并形成独立可回滚提交；专项 `audit:runtime-declaration`、Main /Renderer 类型检查、Agent production build 与完整核心闸门 58/58 已通过。r33 DeepSeek 真机待完成。

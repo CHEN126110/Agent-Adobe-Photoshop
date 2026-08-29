@@ -67,7 +67,12 @@ import {
     resolveRuntimeExecutionTarget,
     sameRuntimeExecutionDocument
 } from '../../../shared/agent-runtime-v5/runtime-execution-target';
-import { countTaskRunCreatedDocumentsForTarget } from '../../../shared/task-run-document-creation-evidence';
+import {
+    countTaskRunCreatedDocumentsForTarget,
+    projectTaskRunCreatedDocumentLifecycle,
+    type TaskRunDocumentCreationEvidence,
+    type TaskRunCreatedDocumentDeliveryRequirement
+} from '../../../shared/task-run-document-creation-evidence';
 
 const INSPECTION_TOOLS = new Set([
     'getDocumentInfo',
@@ -1948,6 +1953,104 @@ function explicitlyRequestsSingleFormatDelivery(input: ContractInput): boolean {
     return rasterOnly || editableOnly;
 }
 
+/**
+ * 新建文档的结算格式只来自当前 Task / Manifest 的既有交付 owner。
+ * 未绑定开放创意沿用 D-112 的源稿 + 预览默认；用户明确单格式时保持原范围。
+ */
+export function resolveTaskRunCreatedDocumentDeliveryRequirement(input: {
+    task: string;
+    context?: TaskCompletionContext;
+}): TaskRunCreatedDocumentDeliveryRequirement {
+    const contractInput: ContractInput = {
+        task: input.task,
+        context: input.context,
+        toolCallLog: []
+    };
+    const explicitSingleFormat = explicitlyRequestsSingleFormatDelivery(contractInput);
+    if (!input.context?.agenticArtifactContract && !explicitSingleFormat) {
+        return { rasterRequired: true, editableRequired: true };
+    }
+    const rasterRequired = taskRequestsRasterDelivery(contractInput);
+    const editableRequired = taskRequestsEditableDelivery(contractInput);
+    if (!rasterRequired && !editableRequired) {
+        return { rasterRequired: true, editableRequired: true };
+    }
+    return { rasterRequired, editableRequired };
+}
+
+export function buildTaskRunCreatedDocumentPreflightInput(
+    task: string,
+    context: TaskCompletionContext,
+    toolCallLog: AgentToolCallLogEntry[]
+): {
+    completedToolCalls: AgentToolCallLogEntry[];
+    taskRunCreatedDocumentLifecycle: {
+        taskRunId?: string;
+        generation?: number;
+        previous?: TaskRunDocumentCreationEvidence;
+        deliveryRequirement: TaskRunCreatedDocumentDeliveryRequirement;
+        toolCallLog: AgentToolCallLogEntry[];
+    };
+} {
+    const chain = context.taskRunDocumentCreation;
+    return {
+        completedToolCalls: toolCallLog,
+        taskRunCreatedDocumentLifecycle: {
+            previous: chain?.evidence,
+            taskRunId: chain?.taskRunId,
+            generation: chain?.generation,
+            toolCallLog: buildAgentOperationLedger(toolCallLog) as unknown as AgentToolCallLogEntry[],
+            deliveryRequirement: resolveTaskRunCreatedDocumentDeliveryRequirement({ task, context })
+        }
+    };
+}
+
+function buildTaskRunCreatedDocumentLifecycleRequirement(
+    input: ContractInput,
+    log: AgentToolCallLogEntry[],
+    id: string
+): TaskCompletionRequirement | undefined {
+    const chain = input.context?.taskRunDocumentCreation;
+    const deliveryRequirement = resolveTaskRunCreatedDocumentDeliveryRequirement({
+        task: input.task,
+        context: input.context
+    });
+    const lifecycle = projectTaskRunCreatedDocumentLifecycle({
+        previous: chain?.evidence,
+        taskRunId: chain?.taskRunId,
+        generation: chain?.generation,
+        toolCallLog: log,
+        deliveryRequirement
+    });
+    if (lifecycle.createdDocumentCount === 0) return undefined;
+    const status: TaskCompletionRequirement['status'] = lifecycle.unsettledDocumentCount === 0
+        ? 'passed'
+        : 'failed';
+    return {
+        id,
+        label: '结算本 TaskRun 创建的全部文档',
+        status,
+        expected: {
+            everyCreatedDocumentSettled: true,
+            rasterRequired: deliveryRequirement.rasterRequired,
+            editableRequired: deliveryRequirement.editableRequired
+        },
+        actual: {
+            createdDocumentCount: lifecycle.createdDocumentCount,
+            settledDocumentCount: lifecycle.settledDocumentCount,
+            deliveredDocumentCount: lifecycle.deliveredDocumentCount,
+            closedDocumentCount: lifecycle.closedDocumentCount,
+            unsettledDocumentCount: lifecycle.unsettledDocumentCount,
+            unsettledDocumentIds: lifecycle.unsettledDocumentIds,
+            documents: lifecycle.documents
+        },
+        reason: status === 'passed'
+            ? undefined
+            : `本 TaskRun 新建的 Photoshop 文档 ${lifecycle.unsettledDocumentIds.join(', ')} 尚未按当前交付范围取得最新 revision 文件收据，也没有由 Agent 通过精确 documentId 显式关闭。请在当前文档继续修订、完成交付，或在需要放弃候选时请求关闭确认；不能留下未结算文档后直接完成。`,
+        ...qualifiedCompletionFailure(status, 'required_artifact_missing', id)
+    };
+}
+
 function collectCurrentTaskRunCreatedDocumentIds(
     log: AgentToolCallLogEntry[]
 ): Set<number> {
@@ -3249,6 +3352,11 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
         'creative-delivery',
         { pairCreatedCreativeDocument: true }
     );
+    const documentLifecycleRequirement = buildTaskRunCreatedDocumentLifecycleRequirement(
+        input,
+        log,
+        'creative-document-lifecycle'
+    );
     const renderLayoutQuality = collectLatestRenderLayoutQualityState(log);
     const unresolvedComparisonFinding = Boolean(
         renderLayoutQuality?.unresolved
@@ -3468,6 +3576,7 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
         });
     }
 
+    if (documentLifecycleRequirement) requirements.push(documentLifecycleRequirement);
     if (deliveryRequirement) requirements.push(deliveryRequirement);
 
     const blockers: string[] = [];
@@ -3714,6 +3823,12 @@ function buildProfileProductionEvidenceContract(
     const deliveryRequirement = input.context?.agenticArtifactContract
         ? buildDeclaredDeliveryRequirement(input, log, 'production-delivery')
         : undefined;
+    const documentLifecycleRequirement = buildTaskRunCreatedDocumentLifecycleRequirement(
+        input,
+        log,
+        'production-document-lifecycle'
+    );
+    if (documentLifecycleRequirement) requirements.push(documentLifecycleRequirement);
     if (deliveryRequirement) requirements.push(deliveryRequirement);
 
     const blockers = requirements

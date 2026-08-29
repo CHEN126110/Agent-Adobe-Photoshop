@@ -95,6 +95,7 @@ import {
     type ExactPropertyExecutionScope,
     type AgentToolExecutionTargetGuard
 } from '../../../shared/agent-tool-execution-preflight';
+import { buildAgentOperationLedger } from '../../../shared/agent-operation-ledger';
 import {
     createGuardedAtomicToolExecutor,
     resolveSkillWorkflowTargetRebinding,
@@ -5825,7 +5826,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     taskRunDocumentCreationEvidence = extendTaskRunDocumentCreationEvidence({
                         previous: taskRunDocumentCreationEvidence,
                         identity: runtimeSessionIdentity,
-                        toolCallLog: result.toolCallLog || []
+                        toolCallLog: buildAgentOperationLedger(result.toolCallLog || [])
                     });
                 }
                 // 被复盘取代的这一轮也要留档（失败轨迹是 Eval 的原料），并把 runId 链给下一轮
