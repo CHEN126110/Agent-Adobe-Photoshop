@@ -23,9 +23,15 @@ import { getFriendlyProgressMessage } from './core/friendly-progress';
 import {
     buildImageToImageSelectionPayload,
     buildImageToImageSelectionSignature,
+    documentDisplayName,
     isSelectionOwnedByCandidateRun,
     toPhotoshopEntityId
 } from './core/image-to-image-selection';
+import {
+    buildCrossDocumentPlacementNotice,
+    resolveCrossDocumentPlacement,
+    type CrossDocumentPlacement
+} from './core/cross-document-placement';
 import { normalizeImageToImageError, normalizeInpaintingError } from './core/image-generation-errors';
 import {
     DEFAULT_IMAGE_TO_IMAGE_SIZE_PRESET,
@@ -1735,6 +1741,16 @@ function stopOptimizeTextPolling() {
 function readImageToImageSelectionPayload() {
     const { app } = require('photoshop');
     return buildImageToImageSelectionPayload(app.activeDocument);
+}
+
+/** 当前活动文档名。读不到（没有打开的文档等）时返回空串。 */
+function readActiveDocumentName(): string {
+    try {
+        const { app } = require('photoshop');
+        return documentDisplayName(app?.activeDocument);
+    } catch {
+        return '';
+    }
 }
 
 function pollImageToImageSelection() {
@@ -4477,7 +4493,12 @@ async function handleInpaintingGenerate(payload: any) {
                 fallbackOriginalWidth: maskResult.originalWidth || maskResult.width,
                 fallbackOriginalHeight: maskResult.originalHeight || maskResult.height,
                 sourceDocumentId: toPhotoshopEntityId(require('photoshop').app.activeDocument?.id),
-                appliedLayerId: null
+                // 名字要和 id 一起记：只记 id 的话，跨文档时只能说"当前在 X"，
+                // 说不出"原本属于哪个文档"，用户无从判断自己是不是切错了地方
+                sourceDocumentName: readActiveDocumentName(),
+                appliedLayerId: null,
+                appliedDocumentId: null,
+                appliedDocumentName: ''
             };
 
             // 捕获诊断跟着结果一起回面板：重绘区实得多少像素、置入时放大几倍，
@@ -4487,6 +4508,9 @@ async function handleInpaintingGenerate(payload: any) {
                 rawImages,
                 meta: generatedMeta,
                 capture: maskResult.capture || null,
+                // 与整图重生同理：结果归属跟着结果一起过线
+                sourceDocumentId: pendingInpaintingCandidates.sourceDocumentId,
+                sourceDocumentName: pendingInpaintingCandidates.sourceDocumentName,
                 warnings: Array.isArray(result.warnings) ? result.warnings : []
             });
             sendToWebView('inpaintingProgress', {
@@ -4542,10 +4566,19 @@ let pendingInpaintingCandidates: {
     fallbackHeight: number;
     fallbackOriginalWidth: number;
     fallbackOriginalHeight: number;
-    /** 生成这批候选时所在的文档。删旧结果图层前要比对它——deleteLayer 只认当前活动文档 */
+    /**
+     * 生成这批候选时所在的文档。一经写入永不改写——meta.targetBounds 只在这个文档里成立，
+     * 跨文档判断全靠它。
+     */
     sourceDocumentId: number | null;
+    /** 源文档名，只用于说人话的提示：跨文档时要说得出"原本属于哪个文档" */
+    sourceDocumentName: string;
     /** 本轮已经置入的图层。切换候选时先删掉它，避免几张候选在图层面板里越堆越多 */
     appliedLayerId: number | null;
+    /** 上一张置入到了哪个文档，与 appliedLayerId 配对（理由同图生图那份类型注释） */
+    appliedDocumentId: number | null;
+    /** 上一张所在文档的名字，只为在提示里点名它 */
+    appliedDocumentName: string;
 } | null = null;
 
 /**
@@ -4554,6 +4587,14 @@ let pendingInpaintingCandidates: {
  * 结果是「选区内有像素、选区外透明」的图层，贴到 targetBounds 指定的位置，
  * 所以不会覆盖选区外的任何原始内容。
  */
+/** 删除上一张结果图层的结果。跳过与失败要分开，调用方对两者的处置不同。 */
+type RemoveAppliedResultLayerOutcome =
+    | 'removed'
+    | 'missing'
+    | 'skipped-other-document'
+    | 'failed'
+    | 'unavailable';
+
 /**
  * 删掉本轮上一次置入的结果图层。
  *
@@ -4565,15 +4606,18 @@ async function removeAppliedResultLayer(
     layerId: number,
     layerLabel: string,
     expectedDocumentId?: number | null
-): Promise<void> {
-    if (!toolRegistry) return;
+): Promise<RemoveAppliedResultLayerOutcome> {
+    if (!toolRegistry) return 'unavailable';
     const deleteTool = toolRegistry.getTool('deleteLayer');
-    if (!deleteTool) return;
+    if (!deleteTool) return 'unavailable';
 
     // deleteLayer 只认 app.activeDocument（不接受 documentId）。用户在多个文档标签之间
     // 切换是常态，此时上一张结果图层还好好待在**原来那个文档**里，在当前文档当然找不到。
     // 不先校验就删，会拿到"未找到指定图层"，再翻译成"图层面板里有两个同名图层"——
     // 一个既不成立、又指挥用户去删不存在的图层的结论。
+    //
+    // 跳过要把"没删成"如实回报给调用方，而不是静默 return：跨文档置入放开之后，
+    // 调用方紧接着就会丢掉这个 layerId，那一层就再也没人认识、永远留在旧文档里了。
     if (typeof expectedDocumentId === 'number') {
         const { app } = require('photoshop');
         const activeDocumentId = toPhotoshopEntityId(app.activeDocument?.id);
@@ -4582,7 +4626,7 @@ async function removeAppliedResultLayer(
                 `[DesignEcho] 跳过移除上一次置入的${layerLabel}(id=${layerId})：` +
                 `它属于文档 ${expectedDocumentId}，当前活动文档是 ${activeDocumentId}`
             );
-            return;
+            return 'skipped-other-document';
         }
     }
 
@@ -4592,6 +4636,7 @@ async function removeAppliedResultLayer(
         if (parsed?.success === false) {
             throw new Error(parsed?.error || '未知原因');
         }
+        return 'removed';
     } catch (error: any) {
         const reason = error?.message || String(error);
         console.warn(`[DesignEcho] 未能移除上一次置入的${layerLabel}(id=${layerId}):`, reason);
@@ -4600,7 +4645,7 @@ async function removeAppliedResultLayer(
         // 不该报警；只有图层确实还在却删不掉，才会真的多出一个同名图层要用户处理。
         if (/未找到指定图层|not found/i.test(reason)) {
             console.log(`[DesignEcho] 上一次置入的${layerLabel}已不存在，无需移除`);
-            return;
+            return 'missing';
         }
 
         // 面板上只说用户能处理的事。原因（含内部工具名与调用建议）留在控制台供排查——
@@ -4611,6 +4656,61 @@ async function removeAppliedResultLayer(
             message: `上一张${layerLabel}没能自动删掉，图层面板里会有两个同名图层，手动删掉多余的那个就行`,
             type: 'warning'
         });
+        return 'failed';
+    }
+}
+
+/**
+ * 跨文档置入时没能删掉的上一张结果图层。
+ *
+ * deleteLayer 只能删当前活动文档里的图层，所以"在 A 置入过、又切到 B 换候选"时，
+ * A 里那一层删不掉。登记在这里而不是直接丢弃 layerId，是为了在用户切回 A 再置入时
+ * 顺手把它收掉——多数正常操作路径下用户根本不会看到图层堆积。
+ *
+ * 不能复用 appliedLayerId/appliedDocumentId：那一对必须与"本轮最新置入的那张"配对。
+ */
+let orphanedResultLayers: Array<{
+    documentId: number;
+    documentName: string;
+    layerId: number;
+    label: string;
+}> = [];
+
+/** 跨文档置入没删成时登记，等回到那个文档再清理 */
+function rememberOrphanedResultLayer(entry: {
+    documentId: number | null;
+    documentName: string;
+    layerId: number | null;
+    label: string;
+}): void {
+    if (typeof entry.documentId !== 'number' || typeof entry.layerId !== 'number') return;
+    if (orphanedResultLayers.some(
+        (item) => item.documentId === entry.documentId && item.layerId === entry.layerId
+    )) {
+        return;
+    }
+    orphanedResultLayers.push({
+        documentId: entry.documentId,
+        documentName: entry.documentName,
+        layerId: entry.layerId,
+        label: entry.label
+    });
+}
+
+/**
+ * 回到某个文档时，把之前留在这里删不掉的结果图层收掉。
+ *
+ * 在置入之前调用：此刻活动文档就是目标文档，deleteLayer 能真正删到它们。
+ * 删不掉（用户已手动删除 / 撤销过）也照样出表，不反复重试。
+ */
+async function reclaimOrphanedResultLayers(activeDocumentId: number | null): Promise<void> {
+    if (typeof activeDocumentId !== 'number' || orphanedResultLayers.length === 0) return;
+    const reclaimable = orphanedResultLayers.filter((item) => item.documentId === activeDocumentId);
+    if (reclaimable.length === 0) return;
+
+    orphanedResultLayers = orphanedResultLayers.filter((item) => item.documentId !== activeDocumentId);
+    for (const item of reclaimable) {
+        await removeAppliedResultLayer(item.layerId, item.label, item.documentId);
     }
 }
 
@@ -4640,19 +4740,77 @@ async function handleInpaintingApplySelection(payload: any) {
             return;
         }
 
+        // 这条链路此前完全没有文档校验，是三处里最危险的一处：重绘结果的 targetBounds
+        // 是**源文档选区的绝对坐标**，切到别的文档后点置入，会静默贴进当前文档的同名坐标，
+        // 目标画布更小时整层落在画布外——不报错、不裁切，用户看到的是"点了没反应"。
+        // 与整图重生同样处理：跨文档不拒绝，但落位换成按目标画布居中，并如实说明。
+        const { app: inpaintPhotoshopApp } = require('photoshop');
+        const inpaintActiveDocument = inpaintPhotoshopApp.activeDocument;
+        const inpaintActiveDocumentId = toPhotoshopEntityId(inpaintActiveDocument?.id);
+        const isInpaintCrossDocument =
+            typeof candidates.sourceDocumentId === 'number'
+            && inpaintActiveDocumentId !== null
+            && inpaintActiveDocumentId !== candidates.sourceDocumentId;
+
+        let inpaintCrossPlacement: CrossDocumentPlacement | null = null;
+        if (isInpaintCrossDocument) {
+            inpaintCrossPlacement = resolveCrossDocumentPlacement({
+                imageWidth: meta.outputWidth || candidates.fallbackWidth,
+                imageHeight: meta.outputHeight || candidates.fallbackHeight,
+                docWidth: Number(inpaintActiveDocument?.width) || 0,
+                docHeight: Number(inpaintActiveDocument?.height) || 0,
+                // 走哪条写入路径由下面 executeApplyRasterImageResult 的 isRawRgba 决定，
+                // 这里必须用同一个判据：有 raw RGBA 就走 putPixels，那条路不读 placementWidth，
+                // 缩不了——按缩放后尺寸算坐标会让图层整体错位
+                canScale: !rawImage
+            });
+
+            if (!inpaintCrossPlacement) {
+                const backTo = candidates.sourceDocumentName
+                    ? `「${candidates.sourceDocumentName}」`
+                    : '生成这批结果的那个文档';
+                sendToWebView('toast', {
+                    message: `读不到当前文档的画布尺寸，无法安全地把重绘结果放到这里。请切回${backTo}再置入。`,
+                    type: 'warning'
+                });
+                return;
+            }
+        }
+
         sendToWebView('inpaintingProgress', {
             progress: 60,
             message: '正在置入所选结果',
             stage: 'apply-result'
         });
 
+        // 回到这个文档了，先把之前留在这里没删掉的结果层收掉
+        await reclaimOrphanedResultLayers(inpaintActiveDocumentId);
+
+        let inpaintLeftoverDocumentName = '';
         if (typeof candidates.appliedLayerId === 'number') {
-            await removeAppliedResultLayer(
+            // 按"上一张实际落在哪个文档"比对：跨文档置入后它不在源文档里，
+            // 拿 sourceDocumentId 比会永远跳过删除，图层就一层层堆起来
+            const removalDocumentId = candidates.appliedDocumentId ?? candidates.sourceDocumentId;
+            const outcome = await removeAppliedResultLayer(
                 candidates.appliedLayerId,
                 '局部重绘结果',
-                candidates.sourceDocumentId
+                removalDocumentId
             );
+            if (outcome === 'skipped-other-document') {
+                // 删不掉就登记下来，等用户切回那个文档时再收；同时要在提示里说清楚，
+                // 否则那一层就成了用户不知情的持久写入
+                inpaintLeftoverDocumentName = candidates.appliedDocumentName
+                    || candidates.sourceDocumentName;
+                rememberOrphanedResultLayer({
+                    documentId: removalDocumentId,
+                    documentName: inpaintLeftoverDocumentName,
+                    layerId: candidates.appliedLayerId,
+                    label: '局部重绘结果'
+                });
+            }
             candidates.appliedLayerId = null;
+            candidates.appliedDocumentId = null;
+            candidates.appliedDocumentName = '';
         }
 
         const applyResult = await executeApplyRasterImageResult({
@@ -4663,11 +4821,18 @@ async function handleInpaintingApplySelection(payload: any) {
             isRawRgba: !!rawImage,
             width: meta.outputWidth || candidates.fallbackWidth,
             height: meta.outputHeight || candidates.fallbackHeight,
-            placementWidth: meta.outputWidth || candidates.fallbackWidth,
-            placementHeight: meta.outputHeight || candidates.fallbackHeight,
+            // 跨文档时尺寸与坐标都改用按目标画布算出来的那一套（理由同整图重生）
+            placementWidth: inpaintCrossPlacement
+                ? inpaintCrossPlacement.placementWidth
+                : (meta.outputWidth || candidates.fallbackWidth),
+            placementHeight: inpaintCrossPlacement
+                ? inpaintCrossPlacement.placementHeight
+                : (meta.outputHeight || candidates.fallbackHeight),
             originalWidth: meta.originalWidth || candidates.fallbackOriginalWidth,
             originalHeight: meta.originalHeight || candidates.fallbackOriginalHeight,
-            targetBounds: meta.targetBounds || undefined,
+            targetBounds: inpaintCrossPlacement
+                ? inpaintCrossPlacement.targetBounds
+                : (meta.targetBounds || undefined),
             layerName: '局部重绘结果'
         });
 
@@ -4676,6 +4841,29 @@ async function handleInpaintingApplySelection(payload: any) {
         }
 
         candidates.appliedLayerId = typeof applyResult.layerId === 'number' ? applyResult.layerId : null;
+        // 同图生图：只记"落在了哪"，绝不改写"为谁生成"
+        candidates.appliedDocumentId = inpaintActiveDocumentId;
+        candidates.appliedDocumentName = documentDisplayName(inpaintActiveDocument);
+
+        let inpaintCrossNotice = '';
+        if (isInpaintCrossDocument && inpaintCrossPlacement) {
+            inpaintCrossNotice = buildCrossDocumentPlacementNotice({
+                sourceDocumentName: candidates.sourceDocumentName,
+                activeDocumentName: candidates.appliedDocumentName,
+                placement: inpaintCrossPlacement,
+                resultLabel: '局部重绘结果',
+                leftoverDocumentName: inpaintLeftoverDocumentName
+            });
+            console.warn('[Inpaint] cross-document placement:', inpaintCrossNotice);
+            sendToWebView('toast', { message: inpaintCrossNotice, type: 'warning' });
+        } else if (inpaintLeftoverDocumentName) {
+            // 同文档置入也可能留下上一张（上一张落在别的文档里），这时没有跨文档提示可搭载
+            sendToWebView('toast', {
+                message: `上一张局部重绘结果还留在「${inpaintLeftoverDocumentName}」里，`
+                    + `插件只能删当前文档的图层。切回那个文档再置入一次会自动收掉它。`,
+                type: 'warning'
+            });
+        }
 
         sendToWebView('inpaintingProgress', {
             progress: 100,
@@ -4688,7 +4876,13 @@ async function handleInpaintingApplySelection(payload: any) {
             autoApplied: false,
             appliedIndex: index,
             writeMode: applyResult.writeMode,
-            sourceDocumentPreserved: applyResult.sourceDocumentPreserved === true
+            sourceDocumentPreserved: applyResult.sourceDocumentPreserved === true,
+            // 跨文档事实必须随成功消息一起过线：面板的成功卡是常驻的，
+            // 而 toast 会消失。两者冲突时用户信的是常驻那个，所以不能只发 toast。
+            // 注意别拿 writeMode / sourceDocumentPreserved 反推跨文档——
+            // 那两个字段来自落位工具，语义与"是否跨文档"无关。
+            crossDocument: isInpaintCrossDocument && !!inpaintCrossPlacement,
+            placementNotice: inpaintCrossNotice
         });
         sendToWebView('toast', { message: '已置入新图层', type: 'success' });
         await forceRefreshCanvas();
@@ -4715,11 +4909,25 @@ let pendingImageToImageCandidates: {
     meta: any;
     fallbackOriginalWidth: number;
     fallbackOriginalHeight: number;
-    /** 生成这批候选时所在的文档与源图层。用户点回源图层对照原图时，候选不该被当成过期结果清掉 */
+    /**
+     * 生成这批候选时所在的文档与源图层。用户点回源图层对照原图时，候选不该被当成过期结果清掉。
+     * 这两个值一经写入**永不改写**——它们是"这批结果是为谁生成的"这一事实，
+     * meta.targetBounds 里的坐标只在这个文档里成立，跨文档判断全靠它。
+     */
     sourceDocumentId: number | null;
+    /** 源文档名，只用于说人话的提示：跨文档时要说得出"原本属于哪个文档" */
+    sourceDocumentName: string;
     sourceLayerId: number | null;
     /** 本轮已经置入的图层。切换候选时先删掉它，避免几张候选在图层面板里越堆越多 */
     appliedLayerId: number | null;
+    /**
+     * 上一张置入到了哪个文档。与 appliedLayerId 配对，**不能拿 sourceDocumentId 顶替**：
+     * 跨文档置入后结果在新文档里，删它要跟新文档比对；而 sourceDocumentId 必须保持不变，
+     * 否则下一张候选会被误判成"同文档"，进而套用源文档的坐标贴到别处去。
+     */
+    appliedDocumentId: number | null;
+    /** 上一张所在文档的名字，只为在提示里点名它 */
+    appliedDocumentName: string;
 } | null = null;
 
 /**
@@ -4747,30 +4955,54 @@ async function handleImageToImageApplySelection(payload: any) {
             return;
         }
 
-        // 候选现在不会因为切图层 / 切文档而被清空（那些结果是按次计费买来的，见 webview
-        // applyImageToImageSelection 的说明），所以「会不会落错文档」这道防线必须放在写入这一步。
-        //
-        // 置入走的是 app.activeDocument。如果用户切到了别的文档，静默置入就会把结果贴进
-        // 不相干的文档里，而且 targetBounds 是按原文档坐标算的，位置也是错的。
-        // 这属于不可逆写入，宁可拒绝并说清要切回哪里，也不要"帮用户猜"。
-        const { app: photoshopApp } = require('photoshop');
-        const activeDocumentId = toPhotoshopEntityId(photoshopApp.activeDocument?.id);
-        if (
-            typeof candidates.sourceDocumentId === 'number'
-            && activeDocumentId !== null
-            && activeDocumentId !== candidates.sourceDocumentId
-        ) {
-            const activeName = String(photoshopApp.activeDocument?.name || '当前文档');
-            sendToWebView('toast', {
-                message: `这批结果是为另一个文档生成的，当前在「${activeName}」。请切回原文档再置入——`
-                    + `直接贴进来位置会错，结果也会留在不相干的文档里。`,
-                type: 'warning'
-            });
-            return;
-        }
-
         const meta = candidates.meta || {};
         const selectedSize = candidates.sizes[index];
+
+        // 候选不会因为切图层 / 切文档而被清空（那些结果是按次计费买来的，见 webview
+        // applyImageToImageSelection 的说明），所以「落到哪个文档」这件事必须在写入这一步定夺。
+        //
+        // 这里原先是直接拒绝。拒绝防住了错位，但把"位置沿用不了"这个技术约束
+        // 直接翻译成了"功能不可用"，代价有三个：切到别的文档对照原图是看图时的常态动作；
+        // 想把结果用到另一个文档是正当需求；而原文档一旦被关闭，"请切回原文档"
+        // 就成了一条走不通的路，按次计费买来的候选只能作废重生成。
+        //
+        // 真正失效的其实只有坐标——像素、位深与色彩配置都是按目标文档现算的
+        // （见 ApplyRasterImageResultTool 里的 getDocumentPixelSpec）。所以这里改成
+        // 替换掉失效的那部分：跨文档时重算成"按目标画布居中"，并如实告知。
+        const { app: photoshopApp } = require('photoshop');
+        const activeDocument = photoshopApp.activeDocument;
+        const activeDocumentId = toPhotoshopEntityId(activeDocument?.id);
+        const isCrossDocument =
+            typeof candidates.sourceDocumentId === 'number'
+            && activeDocumentId !== null
+            && activeDocumentId !== candidates.sourceDocumentId;
+
+        let crossDocumentPlacement: CrossDocumentPlacement | null = null;
+        if (isCrossDocument) {
+            crossDocumentPlacement = resolveCrossDocumentPlacement({
+                imageWidth: selectedSize?.width || meta.outputWidth || candidates.fallbackOriginalWidth,
+                imageHeight: selectedSize?.height || meta.outputHeight || candidates.fallbackOriginalHeight,
+                docWidth: Number(activeDocument?.width) || 0,
+                docHeight: Number(activeDocument?.height) || 0,
+                // 图生图恒走 placeEvent 路径（executeApplyImageToImageResult 里 isRawRgba 写死 false），
+                // 那条路会按 placementWidth 缩放后再平移，所以可以靠缩放适应画布
+                canScale: true
+            });
+
+            // 读不出目标画布尺寸时任何落点都是猜的，而这是不可逆写入——
+            // 这种情况下才回到"拒绝"，并且说清能怎么办
+            if (!crossDocumentPlacement) {
+                const backTo = candidates.sourceDocumentName
+                    ? `「${candidates.sourceDocumentName}」`
+                    : '生成这批结果的那个文档';
+                sendToWebView('toast', {
+                    message: `读不到当前文档的画布尺寸，无法安全地把结果放到这里。请切回${backTo}再置入。`,
+                    type: 'warning'
+                });
+                return;
+            }
+        }
+
         const resultImageFormat = resolveImageResultFormatHint({
             declaredFormat: meta.outputFormat,
             filePath,
@@ -4783,13 +5015,30 @@ async function handleImageToImageApplySelection(payload: any) {
             stage: 'apply-result'
         });
 
+        // 回到这个文档了，先把之前留在这里没删掉的结果层收掉
+        await reclaimOrphanedResultLayers(activeDocumentId);
+
+        let leftoverDocumentName = '';
         if (typeof candidates.appliedLayerId === 'number') {
-            await removeAppliedResultLayer(
+            // 理由同局部重绘：删除要跟"上一张实际落在哪"比对，而不是跟生成归属比对
+            const removalDocumentId = candidates.appliedDocumentId ?? candidates.sourceDocumentId;
+            const outcome = await removeAppliedResultLayer(
                 candidates.appliedLayerId,
                 'AI 生图结果',
-                candidates.sourceDocumentId
+                removalDocumentId
             );
+            if (outcome === 'skipped-other-document') {
+                leftoverDocumentName = candidates.appliedDocumentName || candidates.sourceDocumentName;
+                rememberOrphanedResultLayer({
+                    documentId: removalDocumentId,
+                    documentName: leftoverDocumentName,
+                    layerId: candidates.appliedLayerId,
+                    label: 'AI 生图结果'
+                });
+            }
             candidates.appliedLayerId = null;
+            candidates.appliedDocumentId = null;
+            candidates.appliedDocumentName = '';
         }
 
         const applyResult = await executeApplyImageToImageResult({
@@ -4800,11 +5049,19 @@ async function handleImageToImageApplySelection(payload: any) {
             // 统一套用 meta 里第一张的尺寸会让后面几张被拉伸。
             width: selectedSize?.width || meta.outputWidth || candidates.fallbackOriginalWidth,
             height: selectedSize?.height || meta.outputHeight || candidates.fallbackOriginalHeight,
-            placementWidth: meta.placementWidth || meta.originalWidth || candidates.fallbackOriginalWidth,
-            placementHeight: meta.placementHeight || meta.originalHeight || candidates.fallbackOriginalHeight,
+            // 跨文档时落位尺寸与坐标都换成按目标画布算出来的那一套：
+            // meta 里的这两组值是源文档像素，套到别的文档上会把图层甩出画布
+            placementWidth: crossDocumentPlacement
+                ? crossDocumentPlacement.placementWidth
+                : (meta.placementWidth || meta.originalWidth || candidates.fallbackOriginalWidth),
+            placementHeight: crossDocumentPlacement
+                ? crossDocumentPlacement.placementHeight
+                : (meta.placementHeight || meta.originalHeight || candidates.fallbackOriginalHeight),
             originalWidth: meta.originalWidth || candidates.fallbackOriginalWidth,
             originalHeight: meta.originalHeight || candidates.fallbackOriginalHeight,
-            targetBounds: meta.targetBounds || { left: 0, top: 0 },
+            targetBounds: crossDocumentPlacement
+                ? crossDocumentPlacement.targetBounds
+                : (meta.targetBounds || { left: 0, top: 0 }),
             layerName: candidates.filePaths.length > 1
                 ? 'AI 生图结果 ' + (index + 1)
                 : 'AI 生图结果'
@@ -4815,6 +5072,32 @@ async function handleImageToImageApplySelection(payload: any) {
         }
 
         candidates.appliedLayerId = toPhotoshopEntityId(applyResult.layerId);
+        // 记结果落在了哪个文档，而**不是**改写 sourceDocumentId。
+        // 改写源归属看起来能让下次删除对上，实则会把后续候选判成"同文档"，
+        // 于是第二张候选会拿源文档的 targetBounds 贴进当前文档——正是这次要消灭的错位。
+        candidates.appliedDocumentId = activeDocumentId;
+        candidates.appliedDocumentName = documentDisplayName(activeDocument);
+
+        // 跨文档落位是降级路径，必须说明白：用户看到图没落在预期位置时，
+        // 应该当场就知道原因和补救办法，而不是以为插件贴错了
+        let crossNotice = '';
+        if (isCrossDocument && crossDocumentPlacement) {
+            crossNotice = buildCrossDocumentPlacementNotice({
+                sourceDocumentName: candidates.sourceDocumentName,
+                activeDocumentName: candidates.appliedDocumentName,
+                placement: crossDocumentPlacement,
+                resultLabel: 'AI 生图结果',
+                leftoverDocumentName
+            });
+            console.warn('[I2I] cross-document placement:', crossNotice);
+            sendToWebView('toast', { message: crossNotice, type: 'warning' });
+        } else if (leftoverDocumentName) {
+            sendToWebView('toast', {
+                message: `上一张 AI 生图结果还留在「${leftoverDocumentName}」里，`
+                    + `插件只能删当前文档的图层。切回那个文档再置入一次会自动收掉它。`,
+                type: 'warning'
+            });
+        }
 
         // 落位做过取舍（生成图比例与原位置对不上）时如实说明。
         // 沉默地把画面拉伸到原位置尺寸，用户只会看到"图变形了"却不知道发生在哪一步。
@@ -4835,7 +5118,10 @@ async function handleImageToImageApplySelection(payload: any) {
             layerId: applyResult.layerId || null,
             layerName: applyResult.layerName || 'AI 生图结果',
             appliedIndex: index,
-            autoApplied: false
+            autoApplied: false,
+            // 与局部重绘同一约定：跨文档事实随成功消息过线，供常驻反馈卡如实措辞
+            crossDocument: isCrossDocument && !!crossDocumentPlacement,
+            placementNotice: crossNotice
         });
         sendToWebView('toast', { message: '已置入新图层', type: 'success' });
         await forceRefreshCanvas();
@@ -5166,8 +5452,12 @@ async function handleImageToImageGenerate(payload: any) {
             fallbackOriginalWidth: originalWidth,
             fallbackOriginalHeight: originalHeight,
             sourceDocumentId: toPhotoshopEntityId(doc?.id),
+            // 同局部重绘：跨文档提示要点名"原本属于哪个文档"，只有 id 说不出来
+            sourceDocumentName: documentDisplayName(doc),
             sourceLayerId: toPhotoshopEntityId(selectedLayer.id),
-            appliedLayerId: null
+            appliedLayerId: null,
+            appliedDocumentId: null,
+            appliedDocumentName: ''
         };
 
         // 上游"接受了档位但没照做"（如请求 4K 实际只出 896×1200）不是错误，不该中断流程，
@@ -5182,6 +5472,10 @@ async function handleImageToImageGenerate(payload: any) {
             images,
             imageSizes,
             meta: generatedMeta,
+            // 结果归属要跟着结果一起过线：面板此前拿不到任何文档信息，
+            // 用户只能靠点了被拒才知道这批图属于哪个文档
+            sourceDocumentId: toPhotoshopEntityId(doc?.id),
+            sourceDocumentName: documentDisplayName(doc),
             providerNotice: providerNotice || undefined,
             partialFailures: Array.isArray(result.partialFailures) ? result.partialFailures : []
         });

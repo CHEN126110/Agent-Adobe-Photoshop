@@ -5511,6 +5511,9 @@
                 </div>
                 <div class="section-content" style="padding: 0 14px 14px;">
                     <div class="inpainting-grid" id="imageToImageGrid"></div>
+                    <!-- 结果归属：只在"人已经不在生成这批结果的文档里"时出现，
+                         说明这次置入会落到哪、位置为什么不是原位 -->
+                    <div id="imageToImageOwnerNote" style="display:none; margin-top: 10px; font-size: 11px; color: #ffb454; line-height: 1.5;"></div>
                     <div id="imageToImagePartialFailures" style="display:none; margin-top: 10px; font-size: 11px; color: #f0b429; line-height: 1.5;"></div>
                 </div>
             </section>
@@ -5588,6 +5591,9 @@
                     </div>
                     <div class="section-content" style="padding: 0 14px 14px;">
                         <div class="inpainting-grid" id="inpaintingGrid"></div>
+                        <!-- 与整图重生同一条约定：人已经不在生成这批结果的文档里时，
+                             要在点击之前说清楚这次会落到哪 -->
+                        <div id="inpaintingOwnerNote" style="display:none; margin-top: 10px; font-size: 11px; color: #ffb454; line-height: 1.5;"></div>
                     </div>
                 </section>
             </div>
@@ -6080,7 +6086,12 @@
                     applyImageToImageSelection(data, { preservePrompt: true, clearResult: true });
                     break;
                 case 'inpaintingGenerated':
+                    inpaintingCandidateOwner = {
+                        documentId: data.sourceDocumentId ?? null,
+                        documentName: data.sourceDocumentName || ''
+                    };
                     handleInpaintingGenerated(data.images, data.rawImages || [], data.meta, data.warnings || [], data.capture || null);
+                    refreshCandidateOwnerNote('inpaint');
                     break;
                 case 'inpaintingError':
                     showInpaintingProgress(false);
@@ -6109,10 +6120,16 @@
                     markInpaintingApplied(data.appliedIndex);
                     // status 说下一步，反馈卡说刚发生了什么，两者不重复
                     setInpaintingState('applied', '可点其他结果替换，或重新生成');
+                    // 跨文档置入时"只覆盖选区内、选区外保持原样"是假话：结果按目标画布
+                    // 重新落位，与这个文档的任何选区都无关。反馈卡是常驻的，
+                    // 说错了比不说更糟——用户信常驻的那个，不信会消失的 toast。
                     showInpaintingFeedback(
                         'success',
                         '已置入新图层',
-                        '重绘结果只覆盖选区内的部分，选区外保持原样。可继续微调或再次生成。'
+                        data.crossDocument
+                            ? (data.placementNotice
+                                || '结果已按当前文档的画布重新落位，与本文档的选区无关。')
+                            : '重绘结果只覆盖选区内的部分，选区外保持原样。可继续微调或再次生成。'
                     );
                     break;
                 case 'imageToImageProgress':
@@ -6153,6 +6170,12 @@
                     }
                     break;
                 case 'imageToImageGenerated':
+                    // 记住这批结果属于哪个文档：置入的落位是否要降级取决于它，
+                    // 而用户需要在点击之前就看到这件事
+                    imageToImageCandidateOwner = {
+                        documentId: data.sourceDocumentId ?? null,
+                        documentName: data.sourceDocumentName || ''
+                    };
                     handleImageToImageGenerated(
                         data.images || [],
                         data.meta || null,
@@ -6165,10 +6188,13 @@
                     markImageToImageApplied(data.appliedIndex);
                     // status 与 feedback 标题不重复：一个说下一步能做什么，一个说刚发生了什么
                     setImageToImageState('applied', '可点其他结果替换，或重新生成');
+                    // 跨文档时把落位说明写进常驻反馈卡，与局部重绘同一约定
                     showImageToImageFeedback(
                         'success',
                         '已置入新图层',
-                        data.layerName ? ('图层「' + data.layerName + '」已生成。') : '所选结果已放到 Photoshop 新图层。'
+                        data.crossDocument && data.placementNotice
+                            ? data.placementNotice
+                            : (data.layerName ? ('图层「' + data.layerName + '」已生成。') : '所选结果已放到 Photoshop 新图层。')
                     );
                     break;
                 case 'mattingProgress':
@@ -6455,6 +6481,8 @@
         let inpaintingState = 'idle';
         let currentImageToImageData = {
             documentName: '',
+            /** 当前活动文档 id。与候选的归属文档比对，决定置入会不会走跨文档落位 */
+            documentId: null,
             width: 0,
             height: 0,
             selectionState: 'none',
@@ -7551,6 +7579,13 @@
                 failureEl.style.display = 'none';
                 failureEl.textContent = '';
             }
+
+            // 归属提示描述的是"这批候选"，候选被清成占位后它就该跟着收回——
+            // 否则重新生成期间（4K 要等几分钟）、或生成失败/点停止之后，
+            // 空候选区上会一直挂着"这批结果是在「A」里生成的"，指向一件已经点不到的事。
+            // 必须放在占位格重建完成之后：判断依据是读 DOM。
+            // 这里是所有清空路径（取消 / 失败 / 停止 / 重新生成 / 改数量 / 重进面板）的唯一收敛点。
+            refreshCandidateOwnerNote('generate');
         }
 
         /** 候选区当前是否只是占位（用于判断能否安全地跟随数量重排） */
@@ -7786,6 +7821,18 @@
             if (iconEl) iconEl.textContent = isGenerating ? '■' : '✨';
             if (labelEl) labelEl.textContent = isGenerating ? '停止生成' : '开始生成';
         }
+
+        /**
+         * 当前这批候选属于哪个文档。
+         *
+         * 置入走的是 Photoshop 的活动文档，而候选不会因为切文档被清空（按次计费买来的）。
+         * 于是"结果属于 A、人在 B"是一种常态，此时落位会降级为按 B 的画布居中——
+         * 这件事必须在用户点下去之前就说清楚，而不是等他看到图落在意外的位置。
+         */
+        let imageToImageCandidateOwner = { documentId: null, documentName: '' };
+
+        /** 局部重绘候选的归属文档，语义同上（结果区是分开的，所以各记各的） */
+        let inpaintingCandidateOwner = { documentId: null, documentName: '' };
 
         /** 与局部重绘同理：置入是异步的，期间要挡住重复点击 */
         let imageToImageApplyInFlight = false;
@@ -8245,8 +8292,14 @@
         }
 
         function handleImageToImageData(data) {
+            // 重进面板等于换了一批上下文，上一轮候选的归属信息不再有意义。
+            // 提示的显隐由下面 renderImageToImageCandidatePlaceholders 收敛处理，
+            // 这里把状态本身也清干净，免得日后放宽判定时冒出幽灵归属。
+            imageToImageCandidateOwner = { documentId: null, documentName: '' };
+
             currentImageToImageData = {
                 documentName: data.documentName || '当前文档',
+                documentId: data.documentId ?? null,
                 width: data.width || 0,
                 selectionState: data.selectionState || (data.hasSelectedLayer ? 'single' : 'none'),
                 height: data.height || 0,
@@ -8286,6 +8339,53 @@
             );
         }
 
+        /**
+         * 刷新"这批结果属于哪个文档"的提示。
+         *
+         * 两种模式各有独立的结果区，但判断依据与文案完全一致，收在一处，
+         * 免得日后只改了一边。当前活动文档由 imageToImageSelection 轮询持续推送，
+         * 模式切换不会中断它（轮询只在离开 AI 生图页时才停），所以两种模式都拿得到。
+         *
+         * 只在确实对不上时才出现：两个 id 都读到、且不相等。读不到 id 属于"不知道"，
+         * 不知道就不要吓唬用户——真正的防线在置入那一步（UXP 侧按活动文档决定落位）。
+         */
+        function refreshCandidateOwnerNote(kind) {
+            const isInpaint = kind === 'inpaint';
+            const note = document.getElementById(isInpaint ? 'inpaintingOwnerNote' : 'imageToImageOwnerNote');
+            if (!note) return;
+
+            const owner = isInpaint ? inpaintingCandidateOwner : imageToImageCandidateOwner;
+            const grid = document.getElementById(isInpaint ? 'inpaintingGrid' : 'imageToImageGrid');
+            const hasCandidates = isInpaint
+                ? !!grid && grid.querySelectorAll('.inpainting-item:not(.is-placeholder)').length > 0
+                : !isImageToImageCandidateAreaPlaceholder();
+
+            const ownerId = owner.documentId;
+            const currentId = currentImageToImageData.documentId ?? null;
+            const mismatched = ownerId !== null && currentId !== null && ownerId !== currentId;
+
+            if (!hasCandidates || !mismatched) {
+                note.style.display = 'none';
+                note.textContent = '';
+                return;
+            }
+
+            const from = owner.documentName ? `「${owner.documentName}」` : '另一个文档';
+            const to = currentImageToImageData.documentName
+                ? `「${currentImageToImageData.documentName}」`
+                : '当前文档';
+            const label = isInpaint ? '这批重绘结果' : '这批结果';
+            note.style.display = 'block';
+            note.textContent = `${label}是在${from}里生成的，你现在在${to}。`
+                + `点击置入会落到${to}并重新落位——原位置属于${from}，跨文档无法沿用。`;
+        }
+
+        /** 两个结果区的归属提示一起刷新：切文档影响的是两者 */
+        function refreshImageToImageOwnerNote() {
+            refreshCandidateOwnerNote('generate');
+            refreshCandidateOwnerNote('inpaint');
+        }
+
         function applyImageToImageSelection(data, options = {}) {
             const preservePrompt = options.preservePrompt === true;
             const clearResult = options.clearResult === true;
@@ -8296,6 +8396,8 @@
             currentImageToImageData = {
                 ...currentImageToImageData,
                 documentName: data.documentName || currentImageToImageData.documentName || '当前文档',
+                // 文档 id 要留住：判断"候选还是不是这个文档的"只能靠 id，名字会重名
+                documentId: data.documentId ?? currentImageToImageData.documentId ?? null,
                 width: data.width || currentImageToImageData.width || 0,
                 height: data.height || currentImageToImageData.height || 0,
                 selectionState: data.selectionState || (data.hasSelectedLayer ? 'single' : 'none'),
@@ -8358,6 +8460,9 @@
                             : '请先选中一个要编辑的图层')
                 );
             }
+
+            // 切文档后归属关系可能变了，提示要跟着当前文档走
+            refreshImageToImageOwnerNote();
         }
 
         /**
@@ -8436,6 +8541,10 @@
                     failureEl.textContent = '';
                 }
             }
+
+            // 刚拿到结果时人也可能已经切到别的文档了（生成 4K 要等几分钟，
+            // 期间去别的文档干点别的是常态），所以这里就要把归属说清楚
+            refreshImageToImageOwnerNote();
 
             // 结果已经在下面显示了，进度区必须收起——否则会停在 96% 的"正在准备"，
             // 和旁边"已生成"的卡片自相矛盾，用户不知道到底完没完。

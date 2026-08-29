@@ -26,11 +26,29 @@ export function toPhotoshopEntityId(value: unknown): number | null {
     return Number.isFinite(id) ? id : null;
 }
 
+/**
+ * 文档的显示名。
+ *
+ * title 优先、name 兜底：UXP 里 title 是标签页上那个名字，也是用户认得的那个；
+ * 但类型声明只覆盖了 name，所以按运行时能力取值。
+ * 读不到时返回空串，由调用方决定怎么措辞——不在这里编一个假名字充数。
+ *
+ * 逐项做类型判断而不是 `String(doc?.title || doc?.name || '')`：后者会把任何非字符串值
+ * （UXP 属性访问器在文档已关闭时可能返回意外类型）转成 "[object Object]" 这种假名字，
+ * 直接塞进给用户看的提示里。
+ */
+export function documentDisplayName(doc: any): string {
+    if (!doc) return '';
+    const title = typeof doc.title === 'string' ? doc.title.trim() : '';
+    if (title) return title;
+    return typeof doc.name === 'string' ? doc.name.trim() : '';
+}
+
 export function buildImageToImageSelectionPayload(doc: any): ImageToImageSelectionPayload {
     const activeLayers = Array.isArray(doc?.activeLayers) ? doc.activeLayers : [];
 
     const basePayload: ImageToImageSelectionPayload = {
-        documentName: doc?.title || doc?.name || '当前文档',
+        documentName: documentDisplayName(doc) || '当前文档',
         documentId: toPhotoshopEntityId(doc?.id),
         width: Number(doc?.width) || 0,
         height: Number(doc?.height) || 0,
@@ -119,8 +137,20 @@ export function isSelectionOwnedByCandidateRun(
         || layerId === toPhotoshopEntityId(ownership.appliedLayerId);
 }
 
+/**
+ * 轮询用的选中态指纹：变了才把新状态推给面板。
+ *
+ * 文档必须进指纹，理由和本文件顶部 documentId 那条注释是同一条——图层 id 只在文档内唯一。
+ * 漏掉文档时，"在文档 A 选中图层 2"和"切到文档 B 也选中图层 2"会算出同一个指纹，
+ * 轮询直接判定无变化返回，面板于是完全不知道用户已经换了文档：
+ * 它继续显示 A 的文档名和目标图层，用户以为一切正常，点置入却被"这批结果属于另一个文档"拦下。
+ * 新建文档的首个图层 id 撞号是常态，所以这不是理论情况。
+ * documentName 一并进指纹：另存为改名后，面板上显示的文档名不该停在旧名字上。
+ */
 export function buildImageToImageSelectionSignature(payload: ImageToImageSelectionPayload): string {
     return [
+        payload.documentId ?? 'nodoc',
+        payload.documentName,
         payload.selectionState,
         payload.selectedLayerId ?? 'none',
         payload.selectedLayerName,
