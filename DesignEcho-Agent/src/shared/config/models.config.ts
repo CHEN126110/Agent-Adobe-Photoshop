@@ -1080,6 +1080,14 @@ export interface ModelPreferences {
 export interface ModelThinkingPreference {
     /** 是否向支持的模型请求原生 Thinking / reasoning 输出 */
     enabled: boolean;
+    /**
+     * 推理强度档位。仅对声明 reasoningEfforts 的模型生效，其余模型忽略此值。
+     *
+     * 缺省（undefined）表示"不下发 reasoning_effort，用上游默认"——这与显式选 'medium'
+     * 不是一回事：实测 grok-4.3 不传时思考 1450 tok，显式 medium 是 3496 tok，差一倍多。
+     * 所以默认必须留空，不能替用户预设一个档位。
+     */
+    effort?: string;
 }
 
 export type ModelPreferencesPatch =

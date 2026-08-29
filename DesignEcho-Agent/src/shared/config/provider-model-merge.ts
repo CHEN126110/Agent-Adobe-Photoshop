@@ -46,6 +46,11 @@ export interface FetchedProviderModel {
     supportsThinking?: boolean;
     /** 拉取接口给出 thinking 时的格式（缺省 reasoning_content） */
     thinkingFormat?: ThinkingFormat;
+    /**
+     * Provider 明确声明支持 reasoning_effort 参数（可调推理档位）。
+     * 与 supportsThinking 分开：会思考 ≠ 强度可调，后者才配显示档位选择器。
+     */
+    supportsReasoningEffort?: boolean;
 }
 
 export interface MergeFetchedModelsResult {
@@ -61,6 +66,17 @@ export interface MergeFetchedModelsResult {
     /** 新发现但属于图片生成、Embedding、重排、音视频或审核用途的模型。 */
     newNonConversationModelIds: string[];
 }
+
+/**
+ * 用户可选的推理档位。
+ *
+ * 取值来自 2026-08-28 真机实测（OpenRouter，x-ai/grok-4.3，需真实推理的排版题）：
+ *   none 思考 0 tok / 1.9s ｜ low 1626 / 21.2s ｜ medium 3496 / 34.5s ｜ high 5594 / 46.2s
+ * 档位单调生效，none 是真关闭。刻意不含 'max' 与 'xhigh'：同一实测里 max 出 5352 tok，
+ * 与 high 在波动范围内持平，即 grok 上两者等价；列出来会让用户以为还有更高一档。
+ * 若日后确认某 provider 的 max 真比 high 更强，再按 provider 扩展，不要一刀切加档。
+ */
+export const REASONING_EFFORT_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 
 /** provider → 所需 apiKey 类型（给新发现模型补 requiredApiKey；不映射的 provider 留 undefined） */
 const PROVIDER_REQUIRED_KEY: Partial<Record<ModelProvider, ApiKeyType>> = {
@@ -270,6 +286,13 @@ export function mergeFetchedProviderModels(
             maxTokens: 8192,
             ...(typeof item.contextWindow === 'number' ? { contextWindow: item.contextWindow } : {}),
             ...(thinkingFormat ? { thinking: { supported: true, format: thinkingFormat } } : {}),
+            // 只有 provider 明确声明 reasoning_effort 才给档位清单：没声明就不显示档位选择器，
+            // 避免用户调了一个上游根本不认的参数（假开关比没有开关更糟）。
+            // 档位值域取 OpenAI 系通用集合；实测多数模型对超出集合的值静默忽略而非报错，
+            // 所以宁可少给几档，也不列出无法验证的档位。
+            ...(item.supportsReasoningEffort === true
+                ? { reasoningEfforts: [...REASONING_EFFORT_LEVELS], defaultReasoningEffort: 'medium' }
+                : {}),
             description: buildDynamicModelDescription(usage, isConversation)
         });
         newModelIds.push(modelId);

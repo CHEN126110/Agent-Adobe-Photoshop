@@ -378,6 +378,26 @@ function extractThinkingSupport(item: any, supportedParams: string[]): boolean |
     return undefined;
 }
 
+/**
+ * 模型是否支持**用户可选的推理档位**（reasoning_effort）。
+ *
+ * 与 extractThinkingSupport 的区别：那个只回答"会不会思考"，这个回答"思考强度能不能调"。
+ * 两者不是一回事——不少模型会输出 reasoning，但不接受 reasoning_effort 参数，
+ * 给这类模型显示档位选择器就是个假开关。
+ *
+ * 判据只认 provider 明确列出的 `reasoning_effort`：OpenRouter 的 supported_parameters
+ * 逐模型给出，是免费元数据（/api/v1/models 一次 GET，无 token 消耗）。
+ * 缺失时返回 undefined 而不是 false——"没声明"不等于"确定不支持"。
+ *
+ * 真机实测（2026-08-28，x-ai/grok-4.3，需真实推理的排版题，每档 2 次取中位）：
+ *   none 0 思考tok / 1.9s ｜ low 1626 / 21.2s ｜ medium 3496 / 34.5s ｜ high 5594 / 46.2s
+ * 档位确实单调生效。注意 max 实测 5352，与 high 在波动范围内持平——
+ * **不是每个模型都真有五档**，所以档位清单必须来自模型声明，不能在 UI 里写死。
+ */
+function extractReasoningEffortSupport(supportedParams: string[]): boolean | undefined {
+    return supportedParams.includes('reasoning_effort') ? true : undefined;
+}
+
 function extractToolUseSupport(item: any, supportedParams: string[]): boolean | undefined {
     const explicit = readBooleanFlag(item, [
         'supportsToolUse',
@@ -622,7 +642,8 @@ async function listOpenRouter(apiKey: string, timeoutMs: number): Promise<ListMo
                 supportsToolUse: extractToolUseSupport(item, supportedParams),
                 contextWindow: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
                 supportsThinking: supportsThinking ? true : undefined,
-                thinkingFormat: supportsThinking ? 'reasoning_content' : undefined
+                thinkingFormat: supportsThinking ? 'reasoning_content' : undefined,
+                supportsReasoningEffort: extractReasoningEffortSupport(supportedParams)
             });
         }
         return { success: true, models, baseUrlUsed: url };

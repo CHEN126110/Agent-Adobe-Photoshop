@@ -213,6 +213,20 @@ type CloudModelOption = {
     conversation: boolean;
 };
 
+/**
+ * 推理档位的用户可见名称与说明。
+ *
+ * 数字来自 2026-08-28 真机实测（OpenRouter x-ai/grok-4.3，需真实推理的排版题，每档 2 次中位），
+ * 写进界面是为了让"调高一档"有可预期的代价——耗时差了一个量级，用户该知道再点。
+ * 不同模型的绝对值不同，所以文案只给**相对量级**，不承诺具体秒数。
+ */
+const REASONING_EFFORT_LABELS: Record<string, { label: string; hint: string }> = {
+    none:   { label: '关闭',  hint: '不做额外推理，最快' },
+    low:    { label: '低',    hint: '轻量推理' },
+    medium: { label: '中',    hint: '推理量约为低档的两倍' },
+    high:   { label: '高',    hint: '推理最充分，耗时可达低档的两倍以上' }
+};
+
 /** 刷新结果消息里显示的 provider 中文/渠道名。 */
 const PROVIDER_REFRESH_LABELS: Record<string, string> = {
     'claude-subscription': 'Claude 订阅',
@@ -3224,6 +3238,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                 <span style={{ fontSize: '11px', color: 'var(--de-text-secondary, #888)' }}>
                                                     当前主模型思考格式：{getModelThinkingDisplayName(localPrefs.primaryModel)}
                                                 </span>
+
+                                                {/*
+                                                  推理强度档位。
+                                                  只在两个条件同时成立时出现：思考开着 + 模型目录声明了 reasoningEfforts。
+                                                  档位清单**取自模型声明**而不是写死——不是每个模型都有四档，
+                                                  写死会让用户调一个上游根本不认的值（假开关比没有开关更糟）。
+                                                */}
+                                                {localPrefs.thinking?.enabled !== false && (() => {
+                                                    const model = getModelById(localPrefs.primaryModel);
+                                                    const levels = Array.isArray(model?.reasoningEfforts) ? model!.reasoningEfforts : [];
+                                                    if (levels.length === 0) return null;
+                                                    const current = String(localPrefs.thinking?.effort || '');
+                                                    return (
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '2px' }}>
+                                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                                                {/* 「跟随模型」= 不下发 reasoning_effort。实测这与任何一档都不等价，
+                                                                    所以必须是独立选项，不能拿 medium 冒充默认。 */}
+                                                                <button
+                                                                    type="button"
+                                                                    className={`btn btn-sm ${current === '' ? 'btn-primary' : ''}`}
+                                                                    onClick={() => setLocalPrefs(p => ({
+                                                                        ...p,
+                                                                        thinking: { ...(p.thinking ?? { enabled: true }), effort: undefined }
+                                                                    }))}
+                                                                    title="不下发强度参数，使用模型自身默认"
+                                                                >跟随模型</button>
+                                                                {levels.map(level => {
+                                                                    const meta = REASONING_EFFORT_LABELS[level] || { label: level, hint: '' };
+                                                                    return (
+                                                                        <button
+                                                                            key={level}
+                                                                            type="button"
+                                                                            className={`btn btn-sm ${current === level ? 'btn-primary' : ''}`}
+                                                                            onClick={() => setLocalPrefs(p => ({
+                                                                                ...p,
+                                                                                thinking: { ...(p.thinking ?? { enabled: true }), effort: level }
+                                                                            }))}
+                                                                            title={meta.hint}
+                                                                        >{meta.label}</button>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                            <span style={{ fontSize: '11px', color: 'var(--de-text-secondary, #888)' }}>
+                                                                推理强度{current ? `：${REASONING_EFFORT_LABELS[current]?.hint || current}` : '：跟随模型默认'}
+                                                                　档位越高越慢，成本也越高
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         </div>
                                     )}

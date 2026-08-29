@@ -1560,6 +1560,24 @@ export class ModelService {
         });
     }
 
+    /**
+     * 组装本次请求的思考参数。
+     *
+     * 两个正交的旋钮，别混在一起：
+     * - thinkingEnabled：开/关。只有 deepseek / xiaomi 认 `thinking:{type:'disabled'}` 这种显式关闭，
+     *   其余 provider 关闭就是不下发思考参数。
+     * - reasoningEffort：**强度档位**。仅当模型目录明确声明 reasoningEfforts 时才下发；
+     *   provider 没声明就下发，等于赌上游能认这个参数，赌输了是 400 或被静默忽略——
+     *   后者更糟，用户以为调高了强度，实际什么都没变。
+     *
+     * 此前这里完全没消费 reasoningEffort，只有 Codex 订阅通道在用它，
+     * 于是 OpenAI 兼容通道（OpenRouter / Smile AI / DeepSeek…）的档位设置全部落空。
+     *
+     * 实测依据（2026-08-28，OpenRouter x-ai/grok-4.3，需真实推理的排版题，每档 2 次中位）：
+     *   none → 思考 0 tok / 1.9s；low 1626 / 21.2s；medium 3496 / 34.5s；high 5594 / 46.2s。
+     * 档位真实单调生效；不下发时是 1450 tok，**与任何一档都不等价**，所以"用户没选"必须
+     * 表现为不下发，而不是替他填一个 medium。
+     */
     private resolveThinkingRequestParams(model: ModelConfig, options?: ModelChatOptions): Record<string, any> {
         if (options?.thinkingEnabled === false) {
             if (model.provider === 'deepseek' || model.provider === 'xiaomi') {
@@ -1567,7 +1585,17 @@ export class ModelService {
             }
             return {};
         }
-        return getThinkingRequestParams(model.thinking);
+
+        const baseParams = getThinkingRequestParams(model.thinking);
+        const requestedEffort = String(options?.reasoningEffort || '').trim();
+        if (!requestedEffort) return baseParams;
+
+        // 只认模型目录声明过的档位：清单来自 provider 的 supported_parameters，
+        // 不在清单里就当用户没选，保持原有请求语义。
+        const declared = Array.isArray(model.reasoningEfforts) ? model.reasoningEfforts : [];
+        if (!declared.includes(requestedEffort)) return baseParams;
+
+        return { ...baseParams, reasoning_effort: requestedEffort };
     }
 
     private extractThinkingForResponse(

@@ -3830,6 +3830,28 @@ function resolveAgentThinkingEnabled(modelId: string): boolean {
     }
 }
 
+/**
+ * 用户在设置里选的推理档位。
+ *
+ * 只在**模型目录声明支持该档位**时返回，否则返回 undefined（= 不下发，保持上游默认）。
+ * 这样即使用户切到一个不支持档位的模型，也不会把一个上游不认的参数发出去。
+ *
+ * 与 manifest 档位的优先级：**用户显式选择优先**。manifest 的 required_model_profiles
+ * 是任务类型的默认画像，用户在设置里主动调档是更强的直接指令；两者都缺席才不下发。
+ */
+function resolveAgentReasoningEffort(modelId: string): string | undefined {
+    try {
+        const prefs = (useAppStore.getState() as any).modelPreferences;
+        const chosen = String(prefs?.thinking?.effort || '').trim();
+        if (!chosen) return undefined;
+        const model = getModelById(modelId);
+        const declared = Array.isArray(model?.reasoningEfforts) ? model!.reasoningEfforts : [];
+        return declared.includes(chosen) ? chosen : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 function createRuntimeSessionNonce(): string {
     const strongNonce = typeof globalThis.crypto?.randomUUID === 'function'
         ? globalThis.crypto.randomUUID()
@@ -4322,6 +4344,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
         const primaryThinkingEnabled = typeof runtimeParams.primaryModelThinkingEnabled === 'boolean'
             ? runtimeParams.primaryModelThinkingEnabled
             : resolveAgentThinkingEnabled(modelId);
+        // 关闭思考时不再谈强度：下发一个 effort 只会让上游在"已关闭"和"要多想"之间自相矛盾。
+        const userSelectedReasoningEffort = primaryThinkingEnabled
+            ? resolveAgentReasoningEffort(modelId)
+            : undefined;
         const runRecordModelIdentity = runtimeModelConfig?.provider
             ? {
                 modelId,
@@ -5408,9 +5434,14 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 // Runtime Context Compiler 注入；带 applicableStages 的知识仍只在真实 Stage 可见。
                 runtimeStageContextItems,
                 modelId,
+                // manifest 给任务类型的默认档位；用户在设置里显式选的档位优先级更高，
+                // 放在后面覆盖它（对象展开后写胜出）。两者都没有就不下发该参数。
                 ...projectManifestReasoningEffort(
                     runtimeContractBundle?.manifest || agenticManifestBundle?.manifest
                 ),
+                ...(userSelectedReasoningEffort
+                    ? { reasoningEffort: userSelectedReasoningEffort as ModelReasoningEffort }
+                    : {}),
                 ...(modelContextWindow ? { contextWindowTokens: modelContextWindow } : {}),
                 thinkingEnabled: primaryThinkingEnabled,
                 replayProviderReasoningContent: Boolean(
