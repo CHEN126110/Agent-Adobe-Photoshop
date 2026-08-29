@@ -331,7 +331,7 @@ const BOUNDARIES = [
     id: 'engineering-plans',
     title: '工程规划文档',
     validation: ['manual review'],
-    match: (entry) => /REFACTOR-PLAN\.md|project-master-plan|documentation-governance|design-agent-operating-system|design-agent-os-implementation-tree|design-knowledge-web-search-plan|ecommerce-socks-design-skill-plan|layout-grid-design-knowledge|agent-foundation-completion-plan|agent-capability-map|agent-development-methodology|agent-architecture(\.md|-system-review\.md)|design-agent-(execution-plan|research-and-roadmap|development-knowledge-base)|design-planner-mvp-plan/.test(entry.filePath)
+    match: (entry) => /REFACTOR-PLAN\.md|project-master-plan|documentation-governance|design-agent-operating-system|design-agent-os-implementation-tree|design-knowledge-web-search-plan|ecommerce-single-canvas-design-knowledge-candidate|ecommerce-socks-design-skill-plan|layout-grid-design-knowledge|agent-foundation-completion-plan|agent-capability-map|agent-development-methodology|agent-architecture(\.md|-system-review\.md)|design-agent-(execution-plan|research-and-roadmap|development-knowledge-base)|design-planner-mvp-plan/.test(entry.filePath)
   },
   {
     id: 'other-source',

@@ -1,5 +1,44 @@
 # Current Task
 
+## 2026-08-29 DESIGN-KNOWLEDGE-100：电商单画布设计知识候选研究包
+
+### 目标
+
+在 r32 reconciliation 因用户普通 DesignEcho 占用默认端口而不能安全推进期间，完成不污染 D-097/r33 单变量基线的专业设计知识研究切片。只从 W3C、Figma、IBM Carbon、Adobe、Shopify、Baymard、Eagle 冻结参考和用户真实成稿中提炼有来源、可撤回、可盲测的候选；不修改生产 Prompt、Knowledge、Craft Recipe、Evaluation 或 Photoshop。
+
+### 当前事实
+
+- 现有 Design Kernel 已覆盖信息层级、缩略图复核、素材观察和合成质量，继续添加“大标题、主体要大、配色统一”等泛化句只会重复上下文。
+- r32 普通重发的首个视觉偏差不是单一比例问题：四色平铺照片以大矩形嵌入，粉咖目标变体不突出，三个胶囊卖点争抢注意力，摄影没有形成穿着/细节/场景证明。
+- 本轮只读观察了 Eagle `LAKLHIYBNKNWN`、`LAKLE0ETHZ6AF`、`MK6GJVHBBCK6F` 和用户 `C-1204 / C-1105` 成稿；这些样本只提供关系机制与项目偏好，不能自动成为生产知识或隐藏参考。
+- 默认端口 8765–8769 仍由用户普通 DesignEcho PID 48836 占用；D-097 worktree 保持 `100a4268` 干净状态，本轮不强停应用、不连接或修改 Photoshop。
+
+### 实施边界
+
+- 新增一份明确标为 D 层、`candidate`、不可直接指导开发的研究包；每条来源区分 standard、standards note、research fact、vendor guidance、heuristic、project preference 与 case observation。
+- 现有知识足够的层级、网格、缩略图和通用真实性不重复发布；只保留中文标题断行、商品照片表达模式/合成一致性、目标变体缩略图显著性三条候选。
+- 首个 A/B 只测试“表达模式与合成一致性”，使用 C-1105 隔离未见 fixture；B0/B1 同模型、同预算、同 Tool surface、同素材 digest，用户成稿和 Eagle 参考只进入盲评侧。
+- 不新增第二 Knowledge Registry、A/B Runtime、Evaluator Gate、Tool、schema、关键词路由或固定模板；候选只有经多 Case 盲评和 Experience Publisher 发布记录后才可进入生产。
+
+### 下一步
+
+1. `[已完成]` 权威来源、现有代码、r32、三个 Eagle 锚点和两组用户成稿的只读差异审查已完成。
+2. `[已完成]` D-100 研究包已建立，包含三条候选、适用/不适用范围、owner 映射、首个固定未见 Case、B0/B1 单变量、晋升和撤回条件。
+3. `[已完成]` 文档治理、规划、JSON、编码、入口同步、变更边界和 UTF-8 快速检查均已通过，独立提交已完成；研究切片没有运行无关完整核心闸门。
+4. `[后续独立]` 默认端口释放后先回到 D-097 完成 r32 reconciliation 和 r33；只有技术链闭合且 C-02 被激活，才从共同父提交建立 B0/B1 代码分支并运行真实 Photoshop canary。
+
+### 验证与未知
+
+- 已验证来源和现有实现的差异，且视觉样本支持“表达模式、目标变体、中文排印”是比泛化尺寸阈值更具体的候选 owner。
+- 尚未验证任何候选能提高 DeepSeek 设计质量；研究包、网页来源和案例观察都不能代替盲化 A/B。
+- C-1105 是否能在零人工纠偏下形成同 revision PSD/JPG、候选是否增加模型调用/上下文成本、三条候选能否跨商品泛化均为未知。
+
+### 状态
+
+`validated / research_complete / source_and_visual_gap_audit_complete / production_unchanged / documentation_checks_passed / committed / no_photoshop_write`
+
+---
+
 ## 2026-08-29 DESIGN-EFFICIENCY-099：DeepSeek 缓存事实进入现有 Runtime Accounting
 
 ### 目标

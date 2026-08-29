@@ -2,6 +2,15 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-100 电商单画布设计知识候选研究
+
+- 现有 Design Kernel / Artifact Knowledge / Craft Recipe / Evaluation 已覆盖通用信息层级、缩略图、商品真实性和素材融合。D-100 没有重写这些内容，而是以来源强度和失效条件做差异审查，避免继续堆泛化设计原则。
+- W3C CLReq、WCAG 2.2、Figma Layout Guides、Carbon Typography、Adobe compositing、Shopify 商品摄影和 Baymard 商品列表研究已按 standard /standards note /research fact /vendor guidance 分级。只有中文标题断行、商品照片表达模式/合成一致性、目标变体缩略图显著性形成未发布候选。
+- 本轮只读观察了 r32 JPG、Eagle `LAKLHIYBNKNWN / LAKLE0ETHZ6AF / MK6GJVHBBCK6F` 与用户 `C-1204 / C-1105` 成稿。可迁移的是穿着/细节证据、紧凑标题组、明确的摄影关系和目标款识别；原素材、文案、坐标和品牌风格不得照抄。
+- 首个可执行 A/B 已冻结为 `main-image-c1105-airy-ruffle-unseen-v1`：Fixture 排除用户成稿、PSD、SKU、模板、TM、Eagle 和研究文档；B0/B1 同 DeepSeek、预算、Tool surface 与素材 digest，B1 只加入 C-02。研究完成不代表候选有效，真实 Photoshop canary、多 Case 重复和盲评均待完成。
+- D-100 仅新增 D 层研究文档与项目状态投影，没有修改生产 Prompt、Knowledge、Recipe、Evaluation、权限、Tool 或 Photoshop；默认端口仍由用户普通 DesignEcho 占用。
+- `git diff --check`、文档治理/规划、project-state JSON、入口同步、变更边界、Node 语法与 UTF-8 检查均通过，最终差异审查和独立提交已完成；按文档-only 规则没有重复运行无关 58 项核心闸门。
+
 ## 2026-08-29 D-099 DeepSeek 缓存事实进入 Runtime Accounting
 
 - r32 普通重发的 262 万 input token 暴露了完整历史、Tool schema 和重复观察成本，但旧账本无法判断 DeepSeek 上下文缓存真实命中情况。D-099 只补官方 cache hit / miss 观测，不修改模型、Prompt、工具、预算、权限、价格或 Photoshop 行为。

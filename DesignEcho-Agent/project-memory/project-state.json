@@ -1,7 +1,7 @@
 {
-  "currentFocus": "2026-08-29 DESIGN-EFFICIENCY-099：把 DeepSeek 官方 prompt cache hit / miss token 作为只读事实接入现有 Provider、transport attempt、Runtime Accounting、RunRecord 与 debug:runs 链路；不改变 Prompt、模型、工具、预算、权限、完成判定或 Photoshop。",
-  "currentMilestone": "DESIGN-EFFICIENCY-099",
-  "milestoneStatus": "deepseek_cache_usage_projection_and_stream_include_usage_tail_consumption_complete_focused_tests_typechecks_agent_uxp_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write_live_cache_rate_pending",
+  "currentFocus": "2026-08-29 DESIGN-KNOWLEDGE-100：建立有来源、分类型、不可直接进入生产的电商单画布知识候选；只保留中文标题断行、商品照片表达模式与目标变体缩略识别三条可证伪候选，并冻结单变量盲化 A/B。",
+  "currentMilestone": "DESIGN-KNOWLEDGE-100",
+  "milestoneStatus": "source_and_visual_gap_audit_complete_three_unpublished_candidates_and_c1105_single_variable_blind_ab_contract_documented_production_unchanged_documentation_checks_and_independent_commit_complete_no_photoshop_write",
   "verified": {
     "code": [
       "DeepSeek cache Runtime Accounting D-099 (2026-08-29): official prompt cache hit/miss tokens now travel through the existing Provider, Main/Renderer transport, Runtime Accounting digest, RunRecord and debug:runs path only when both values are safe non-negative integers and conserve inputTokens. DeepSeek tool streaming requests include usage and consume the choices-empty usage tail before delta early return. Partial, inconsistent and non-DeepSeek lookalike fields remain unknown. Focused attacks, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, final review and an independent commit passed; the simplification ratchet stayed at agent.ts 12826 lines; live cache-rate evidence remains pending; no Photoshop state was changed.",
@@ -100,6 +100,7 @@
       "The full 22-check maintenance:validate passed after the WEB-SEARCH-AGENT-TOOL-001 webSearch capability addition: 164-Tool registration audit (zero display/scope/set-sync/team-allowlist gaps), Agent business boundaries 0 violations, generic executor 0 violations, simplification ratchet unchanged, Main/Renderer typecheck, git diff --check and UXP production build all green. The DeepSeek-native search path itself has not been exercised with a real API key, so live search latency, source quality and degradation behavior remain unverified."
     ],
     "manual": [
+      "Design Knowledge D-100 (2026-08-29): read-only visual review covered the r32 output, Eagle items LAKLHIYBNKNWN, LAKLE0ETHZ6AF and MK6GJVHBBCK6F, plus user-authored C-1204 and C-1105 main-image sets. The reusable mechanisms are image-role evidence, explicit photo integration mode, compact role-based title groups and target-variant recognition; source assets, copy, coordinates and brand style remain non-transferable. The research package is candidate-only and has not changed production knowledge or proven quality improvement.",
       "The r32 ordinary message-edit rerun produced a PSD/JPG but is outside the formal Attempt. Its exported image has basic readable hierarchy yet remains below the frozen Eagle anchors: the raw flat-lay is embedded as a large rectangle, four colors dilute the pink-coffee focus, oversized pill labels compete with the product, and scene integration plus thumbnail impact are weak.",
       "A live D-096 two-process canary held a formal_capture lease while the official UXP loader returned runtime_capture_lease_active before connecting to UDT; releasing the owner removed the global lease. No Photoshop document, plugin session or Runtime was changed by that canary.",
       "r31 was the first formal main-image sample with 15 machine checks passed, verified zero UI protocol/correction interventions, five model-owned committed mutations, zero Harness writes, same-revision PSD/JPG and about 8m59s total runtime. Its automatic quality result was 85/needs_review and the official cohort is only 1 of 5 cases, so professional visual quality and repeat success remain unverified.",
@@ -116,6 +117,7 @@
     ]
   },
   "unverified": [
+    "D-100 candidate effectiveness: the C-1105 isolated unseen B0/B1 Photoshop canary, two repeats per arm, same DeepSeek/model budget/tool surface/input digest, zero-intervention same-revision PSD/JPG, blinded paired review, and three-case validation required before any Experience Publisher promotion.",
     "An isolated production Evaluation canary with candidate, provisional and published entries in the same project ledger, proving the exact model-visible prompt contains only the published calibration sample after D-098 is loaded.",
     "D-096 full maintenance validation, clean commit/build identities, a whole formal run-live window that rejects another worktree loader, real dead-owner recovery, and manual UDT reload detection through the existing runtime binding.",
     "A legal r32 reconciliation after the user finishes viewing and closes every r32 fixture document, followed by a fresh r33 DeepSeek V4 Flash Vision Provider-to-Photoshop attempt that preserves all external documents and produces same-revision PSD/JPG.",
@@ -311,37 +313,36 @@
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-EFFICIENCY-099",
-    "summary": "Preserve DeepSeek official prompt cache hit and miss token facts through the existing Runtime Accounting and RunRecord path so Harness latency work can distinguish cache behavior from call-count, history, schema and observation costs.",
-    "status": "implementation_focused_tests_typechecks_production_builds_full_core_58_and_independent_commit_complete_no_photoshop_write_live_cache_rate_pending",
+    "id": "DESIGN-KNOWLEDGE-100",
+    "summary": "Build a source-backed, unpublished design-knowledge candidate pack for ecommerce single-canvas hierarchy, product-photo integration and Chinese title composition without changing production behavior.",
+    "status": "research_and_visual_gap_audit_complete_candidate_document_created_production_unchanged_documentation_checks_and_independent_commit_complete",
     "mustDo": [
-      "Request usage on DeepSeek tool streams and consume the official choices-empty usage tail before delta early return.",
-      "Accept cache hit and miss only as a complete non-negative safe-integer pair whose sum equals provider inputTokens.",
-      "Carry the optional pair through the existing transport attempts, prompt-shape samples, bounded digest, RunRecord and debug:runs output.",
-      "Keep missing, partial, contradictory or non-DeepSeek lookalike fields unknown rather than coercing them to zero.",
-      "Attack the Provider projection and persisted digest in existing reusable tests instead of adding a one-off smoke or second telemetry store.",
+      "Classify each source and claim as standard, standards note, research fact, vendor guidance, heuristic, project preference or case observation.",
+      "Audit current Design Kernel, Artifact Knowledge, Craft Recipe and Evaluation before proposing anything new.",
+      "Keep only claims that add a concrete observable distinction and state applicability, failure cases, owner and rollback.",
+      "Freeze one held-out C-1105 B0/B1 case where only the product-photo integration candidate differs.",
+      "Keep Eagle anchors and user-authored finished work on the blinded review side, never in the test Agent context.",
       "Keep D-097 worktree unchanged for r32 reconciliation and r33 single-variable DeepSeek verification."
     ],
     "mustNotDo": [
-      "Do not change prompts, tool schemas, model selection, thinking, budgets, retries, pricing, permissions or completion behavior.",
-      "Do not create a second accounting ledger, tracing platform, cache implementation or performance gate.",
-      "Do not infer zero misses or zero hits when the Provider did not report a complete valid pair.",
-      "Do not modify historical r32 records or claim D-099 explains design quality or proves a speed improvement.",
-      "Do not put D-099 into the D-097 r33 single-variable runtime baseline.",
+      "Do not inject candidate text into production Prompt, Knowledge, Craft Recipe, Evaluation or Skill before blinded validation and publication.",
+      "Do not create a second Knowledge Registry, A/B Runtime, Evaluator Gate, Tool, schema, keyword route or fixed template.",
+      "Do not turn CLReq or WCAG into universal aesthetic gates outside their actual scope.",
+      "Do not copy Eagle or user-authored assets, copy, coordinates or brand style into model-visible context.",
+      "Do not claim the research document or visual inspection improves design quality.",
       "Do not stop the user-started normal DesignEcho or save, close or discard any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-EFFICIENCY-099",
+    "id": "DESIGN-KNOWLEDGE-100",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成审计：确认 DeepSeek 流式 usage 需要 include_usage 且 choices-empty 尾块被现有 delta 早退丢弃。",
-      "已完成实现：Provider 完整守恒投影、普通/流式传输、Runtime Accounting digest、RunRecord 与 debug:runs 接线。",
-      "已完成专项：Provider/持久化攻击、Main/Renderer 类型检查和 Agent/UXP production build 通过。",
-      "已完成：规划、变更边界、编码和 JSON 检查；简化棘轮拒绝新增 agent.ts 行数后以零基线放宽完成修正。",
-      "已完成：唯一一次完整 maintenance:validate 58/58、最终差异审查和独立提交。",
-      "待完成：默认端口释放后回到未包含 D-098 的 D-097 worktree，对账 r32 并运行 fresh r33。",
-      "条件后置：在 D-099 build 上用固定 DeepSeek Case 采集逐调用 cache hit/miss，再分别 A/B 历史、Tool schema、重复观察与调用次数。"
+      "已完成：权威来源、现有生产知识、r32、Eagle 锚点和用户成稿的只读差异审查。",
+      "已完成：只保留中文标题断行、照片表达模式/合成一致性、目标变体缩略显著性三条候选。",
+      "已完成：C-1105 隔离未见 Case、B0/B1 单变量、盲评轴、晋升与撤回条件已冻结。",
+      "已完成：文档治理、规划、JSON、编码、入口同步、变更边界、UTF-8、最终审查和独立提交。",
+      "待完成：默认端口释放后回到 D-097 worktree，对账 r32 并运行 fresh r33。",
+      "条件后置：r33 技术链闭合后只激活 C-02，建立共同父提交的 B0/B1 Photoshop canary。"
     ]
   },
   "convergenceBaseline": {
