@@ -2,9 +2,21 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-117 上传附件先取得请求级可执行来源句柄；通用 CLI 是受控 Provider，不是附件断链补丁
+
+- 状态：active；根因与 owner 已完成代码审计，进入 `INTAKE-091` 规划，尚未实现或实机验证。
+- 触发事实：用户上传一张明确命名的商品图并要求“置入 Photoshop 中抠图”时，Agent 能看到文件名和图片像素，却只搜索当前项目两次，随后要求用户再次提供本机路径。当前 `DesignImageInput` 只保存 `id / data / mediaType / source / name`，聊天引用只保留 `imageId`；`placeImage` 只接受 `filePath / UXP fileToken / imageData`，通用 Agent 没有把已选 `imageId` 解析成可执行字节的请求级 Provider。模型不应复制 Base64，Renderer 也不能伪造 UXP session token。
+- 根因归属：这是 Input Asset / Attachment Provider 与 Tool dispatch 的来源绑定缺口，不是模型缺少设计经验，也不是当前项目搜索不够深。详情页单附件分支能直接注入已有字节，只证明底层置入能力存在；不得把该 Skill 专用旁路继续复制到主图、SKU 或通用 Agent。
+- P0 决定：在用户提交时由 Harness 请求边界登记不可变附件，签发不透明 `attachmentRef`，绑定当前请求 / TaskRun、原始文件名、媒体类型、字节数、内容摘要、TTL 与消费状态。模型看到图片后显式选择 `attachmentRef`；`placeImage` 等声明支持附件的 Tool 在 dispatch 时解析为真实字节并携带来源身份，Harness 只解析和校验，不替 Agent 选图，也不把本地绝对路径或原始 Base64写进 Prompt、对话或长期状态。
+- 外部文件决定：用户明确给出路径或通过系统选择器授权目录时，由 File Capability Provider 签发有界 scope；只读搜索、元数据、读取和显式复制按 scope、路径身份、大小、扩展名、摘要、超时与收据执行。没有 scope 时不得全盘搜索，也不能因为同名文件命中就认定它等于上传字节。
+- CLI 决定：通用系统命令属于 Harness 的 Tool / Capability Provider，Skill 只能声明依赖或调用，不能各自内置一套 shell。建设顺序为只读环境观察 → 受控文件操作 → argv 化受控命令 → 必要时桌面输入。命令必须绑定 TaskRun、cwd、可见目录、可执行程序策略、环境变量脱敏、超时 /取消、输出上限、副作用分类与写后读回；默认不提供管理员权限、任意 `cmd /c` 字符串、跨 scope 文件访问或隐藏后台常驻进程。
+- 负面教训：已经收到附件时，“搜索项目 → 搜不到 → 让用户搬文件或报路径”是在把 Harness 的输入断链转嫁给用户；直接开放任意 CLI 则会用更大的权限面掩盖同一断链。两者都不是根因修复。
+- 验收：上传、拖拽和剪贴板图片都能生成不同、不可伪造的 `attachmentRef`；同一 TaskRun 中 Agent 可选中它并完成 `placeImage → removeBackground → 结构 /视觉读回`；跨 TaskRun、过期、摘要不匹配、媒体类型不支持和改写 ref 均 fail closed；附件未被模型选择时不得自动置入。外部目录与 CLI 分别用 scope 内通过、scope 外拒绝、取消 /超时和副作用收据夹具验证。
+- 回滚点：P0 只扩展通用输入来源绑定与已支持 Tool 的解析，不改变项目资源搜索、Photoshop 事务、设计作者权或业务 Skill。若来源生命周期有误，可独立关闭 `attachmentRef` Provider，现有图片视觉输入仍保留；不得回退为 Skill 专属注入或任意 shell。
+
 ## D-116 性能先按物理请求归因，再做同 Case 单变量优化；诊断不得取得 Agent 控制权
 
-- 状态：active；instrumentation-only 代码与专项验证已完成，完整核心验证、提交和修复后 fixed Case profiling 尚待完成，当前不能宣称已经提速。
+- 状态：active；归因与视觉恢复已提交为 `83a651be` 并通过 fresh 65 阶段核心验证；fixed Case revision 5 与一次性 fixture 已冻结，fresh profiling 尚待完成，当前不能宣称已经提速。
 - 触发事实：r35 / r38 中模型调用约占墙钟 92% / 93%，普通 Agent 回合为 35 / 29 次，截图与 transform 只占少量时间；但旧 `promptShapeSamples` 没有调用用途、上下文来源、输出形态或逐调用视觉 revision，因此“删上下文、降 reasoning、减少看图、移除 Final Judge”都不是已证明的根因修复。历史 run 602 进一步显示 22 次模型调用约 604 秒、Tool 约 67 秒、历史增长到约 15.9 万字，但它仍只是旧版本个案。
 - 决定：现有 Runtime Accounting 是物理模型 attempt 的唯一 observation-only owner。生产调用必须显式声明有限 `callKind`，并记录 stream 模式、iteration /generation、requested reasoning、transport attempt、上下文压缩和有限来源桶、输出体量；视觉输入只从本次真实 presentation 与 Runtime-owned observation / ReviewSet revision 投影为 run-scoped SHA-256。旧 v0 缺字段保持 unknown，不从内容、阶段或相邻事件猜测。
 - Tool owner：Tool name、origin、activity、Host revision 与 mutation 事实继续留在既有 AgentRunRecord / Tool log；Runtime Accounting 只保留原有聚合。当前记录没有单次 Tool duration 时，诊断必须显示 instrumentation unavailable，禁止用累计 `elapsedMs` 相减或复制第二 Tool 账本。若未来需要覆盖 Skill / Design Team 内部物理 Tool，应在真实 dispatch-settled 边界补回原 owner，并明确聚合是否计数，不能扫描 Skill 返回对象补造。

@@ -23,6 +23,7 @@
 - `diagnose-runs` 已能按 call kind 汇总模型耗时与 token、列最慢五次请求，并从既有 AgentRunRecord 读取 Tool name/origin/activity。现有 Tool 档案没有单次 duration，报告必须显示 instrumentation unavailable，不能用累计 elapsed 时间相减猜测。
 - INTAKE-090 当前工作树已通过一轮 fresh 65 阶段 `maintenance:validate`，覆盖 Agent / UXP 测试、Main / Renderer 类型检查与 UXP production build；这证明归因和视觉恢复改动未破坏现有核心边界，但尚不能证明真实任务已经提速。
 - 固定性能 Case `main-image-pink-coffee-unseen-v1` 的源目录已比 revision 4 少 4 张已处理平铺图；旧 fixture 已不存在，不能重放旧摘要。当前已将仍真实存在且摘要匹配的 64 张摄影输入冻结为 revision 5，并生成新的 path-bound 一次性 fixture；revision 4 的 19 次模型调用 /约 539 秒成功样本只保留为历史参考，不进入新 revision 的配对结论。
+- 新附件故障已归属为 `INTAKE-091`：聊天上传会给主模型文件名和像素，但当前通用执行链没有可由模型引用、由 Tool 解析的请求级附件句柄；项目搜索和任意 CLI 都不能证明同名文件就是上传字节。P0 方案是 `attachmentRef` Input Asset Provider，通用 CLI 独立归属 `INTAKE-088`。
 - 只读 Design Reliability preflight 曾可连接 Debug Bridge、Photoshop MCP 和真实 UXP Runtime；新的代码提交、匹配构建、一次性 fixture、Debug 写授权和打开文档 ownership 仍需重新核对后才可开始正式写入。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
 
@@ -41,6 +42,7 @@
 3. 用同一个固定 fresh Case 运行一次无人工纠正的 profiling，识别最慢 5 个调用、上下文增长来源和同 revision 重复视觉 presentation；随后一次只改一个可逆变量。
 4. 重建与提交一致的 Agent / UXP 调试运行，准备新的隔离 fixture 和授权，完成一轮真实写入、读回、保存、导出和诚实终态。
 5. fresh Attempt 同时证明 `finalArtifactObserved=true`、PSD/JPG 精确 `runtimeDeliveryResultRefs`、非空 Debug `finalArtifactRefs` 与外部文档零变化后，再冻结剩余 5 Case × 2 队列。
+6. 在 S1 正式队列扩大前完成一个上传附件的通用 `attachmentRef → placeImage → removeBackground → 同目标读回` E2E；随后再按 INTAKE-088 分阶段建设受控外部文件与 CLI Provider。
 
 ### 验证与未知
 

@@ -25,6 +25,7 @@
 - 现有 Runtime Accounting 已扩展为逐物理模型 attempt 的有界归因：调用用途、请求模式、iteration/generation、requested reasoning、上下文准备与来源桶、输出体量及 run-scoped 视觉 revision 摘要均进入同一 owner；没有第二模型账本，也不参与权限、预算、完成或审美判断。
 - 模型调用计时与脱敏投影已从 `agent.ts` 抽到品类中立适配模块；Agent 核心行数保持简化棘轮原基线，所有调用用途仍由调用方显式声明，适配模块不决定用途或路线。
 - Provider 输出恢复现在遵守视觉事实：带图响应截断且可恢复时会在恢复请求中重发同一像素；只有完整响应可消费 pending observation。恢复完整、blocked、异常或额度耗尽都会退休像素并清理状态；普通任务模型 /视觉预算只扣一次，Runtime Accounting 仍记录全部物理请求。
+- 聊天上传图片当前能以 `DesignImageInput` 像素进入主模型，但通用 Agent 没有可供 `placeImage` 消费的请求级附件来源句柄；`fileToken` 是 UXP session token，不能由 Renderer 或模型伪造。该缺口已归属 Input Asset / Attachment Provider，而不是项目搜索或模型能力。
 
 ## 已核实（构建与自动检查）
 
@@ -63,9 +64,11 @@
 3. 图片内容被压缩成单主体 bbox、矩形目标区和粗锚点，不能完整表达负空间、保护部位、多主体和视觉重量。
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
 5. 历史 Markdown、旧命令和旧模型配置可能再次进入上下文并误导开发。
+6. 已上传图片若没有请求级 `attachmentRef`，Agent 会把 Harness 输入断链误判成“文件不在项目”，产生无效搜索并把路径问题退回用户；直接开放任意 CLI 会扩大权限面但不证明同名文件身份。
 
 ## 当前下一步
 
 1. 当前 `S1-DELIVERY-REVIEW-ROOT-CAUSE-001` 的代码根因与核心验证已闭合，先提交可回滚基线；fresh Photoshop Attempt 仍是退出条件。
 2. INTAKE-090 observation-only 归因与视觉恢复修复已通过完整核心验证；提交该可回滚基线后固定同一 Case 跑一次。只有取得新样本后才选择一个可逆优化变量，不用删必要观察、降 reasoning 或缩短到无法完成的预算换取表面速度。
 3. 新提交与 Agent / UXP 构建身份一致、一次性 fixture 和写授权都就绪后，运行首轮隔离实机 Case；只有同时取得真实交付引用和外部文档零变化，才启动 S1 固定 5 Case × 2 次正式队列。
+4. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。

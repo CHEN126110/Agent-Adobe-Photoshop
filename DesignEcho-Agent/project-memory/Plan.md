@@ -24,6 +24,7 @@
 5. `[已完成]` 通过专项测试、Agent Renderer 类型检查、UXP 测试与一次完整 65 阶段 `maintenance:validate`。
 6. `[已完成]` 提交 S1 代码基线；完成 INTAKE-090 现有 Runtime Accounting 的用途、上下文、输出体量与视觉 revision 归因；同时修复“截断后未重发像素却可取得已观察信用”的事实错误。设计判断与普通任务预算 owner 不变，物理 recovery 成本如实记录。
 7. `[进行中]` INTAKE-090 已通过 fresh 65 阶段完整核心验证，当前提交可回滚基线；随后在同一固定 fresh Case 上完成一次 profiling，再在新一次性 fixture 上运行受控真实 Case；记录 canonical Attempt、Artifact、Review、性能归因与外部文档保护事实。
+8. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 
 ### 退出条件
 

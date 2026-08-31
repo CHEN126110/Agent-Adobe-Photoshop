@@ -58,11 +58,19 @@
 
 ### INTAKE-088 浏览器、桌面与命令能力扩展
 
-- 来源：用户希望 Agent 像 Codex 一样操作电脑；合并浏览器、MCP、桌面观察、文件和命令能力条目。
+- 来源：用户希望 Agent 像 Codex 一样操作电脑；2026-08-31 又明确要求加入系统命令 / CLI，避免只能访问当前项目；合并浏览器、MCP、桌面观察、文件和命令能力条目。
 - 归属层级：Tool / Capability Provider / Harness authorization。
-- 状态：paused
-- 下一步：设计主链达到 S1 后，再按只读观察 → 文件操作 → 受控命令 → 桌面输入逐级验证任务范围、批准、取消、超时、脱敏和副作用读回。
-- 边界：DesignEcho 仍是设计 Agent，不扩成任意电脑控制 Agent；已安装或可发现不等于已授权执行。
+- 状态：planned
+- 下一步：先由 `INTAKE-091` 闭合附件与受控外部文件来源；随后按只读环境观察 → scope 内文件操作 → argv 化受控命令 → 必要的桌面输入逐级实现，并验证 cwd、授权目录、可执行程序策略、取消、超时、输出上限、环境变量脱敏和副作用读回。
+- 边界：CLI 是通用 Harness Provider，Skill 只声明依赖；DesignEcho 获得的是任务范围内接近 Codex 的工程能力，不是默认管理员 shell、全盘隐式扫描或任意后台进程。已安装、可发现或模型请求不等于已授权执行。
+
+### INTAKE-091 上传附件与外部文件的可执行来源绑定
+
+- 来源：用户 2026-08-31 上传“厚袜子女中筒袜…tmall.com天猫.jpg”并要求置入 Photoshop 抠图；Agent 已看到像素和文件名，却因附件没有 Tool 可消费的来源句柄而搜索当前项目、再要求用户提供路径。
+- 归属层级：Input Asset / Attachment Provider / File Capability Provider / Tool dispatch / Harness request scope。
+- 状态：planned
+- 下一步：先实现请求级 `attachmentRef` 注册、不可变字节身份和有限生命周期，让 Agent 显式选择后由 `placeImage` 解析已有字节；再做 `placeImage → removeBackground → 同目标结构 /视觉读回` 的上传、拖拽和剪贴板 E2E。随后支持用户显式路径或选择器授权目录的只读搜索与复制收据，不等待任意 CLI 才解决附件任务。
+- 边界：不把 Base64、绝对路径或原始附件长期写入 Prompt /状态；不复用 UXP session token；不从文件名替 Agent 选图；不全盘扫描；不把详情页现有专属附件注入复制进通用 Agent。
 
 ### INTAKE-089 工作流画布、交互 UI 与多 Agent 形态
 

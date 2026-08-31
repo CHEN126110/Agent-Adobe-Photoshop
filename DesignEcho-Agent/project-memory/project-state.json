@@ -10,7 +10,8 @@
       "Invalid Evaluation batches fail closed without TaskCompletion, task-card, learning or primary-Agent recovery authority; advisory evaluateDesign cannot close canonical completion.",
       "Existing Runtime Accounting now records explicit model call kind, request mode, iteration/generation, requested reasoning, context preparation/source buckets, output shape and run-scoped visual revision attribution without gaining budget, permission, result or aesthetic authority.",
       "Truncated visual Provider responses no longer retire pixels while retaining observation credit: bounded recovery re-sends the same pixels, records each physical request, consumes logical task budget once and only marks visual input consumed after a complete response.",
-      "Tool name, origin and activity remain owned by AgentRunRecord; missing per-Tool duration stays explicit instead of being guessed or copied into a second Tool ledger."
+      "Tool name, origin and activity remain owned by AgentRunRecord; missing per-Tool duration stays explicit instead of being guessed or copied into a second Tool ledger.",
+      "Uploaded chat images currently reach the primary model as named pixels but have no request-scoped executable attachment handle for generic placeImage dispatch; project search and arbitrary CLI do not repair that source-binding gap."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
@@ -29,6 +30,7 @@
     "A fresh production sidecar Attempt proving finalArtifactObserved, exact PSD/JPG runtimeDeliveryResultRefs and non-empty Debug finalArtifactRefs under the current commit.",
     "Human-calibrated Evaluation defect detection and false-pass rate under the current production build.",
     "A fresh fixed-Case profile proving current call-kind, context/output and visual revision attribution in the production runtime.",
+    "A request-scoped attachmentRef E2E proving uploaded, dragged and pasted images can be explicitly selected by the Agent and resolved by placeImage without exposing paths or Base64.",
     "Per-Tool duration and nested Skill/Design-Team physical Tool coverage; current AgentRunRecord facts do not justify guessing these values.",
     "Five-case technical success and repeatability for the current production build.",
     "Main-image, SKU and detail-page multi-sample Photoshop E2E with editable source and same-revision export delivery.",
@@ -38,13 +40,15 @@
     "The code-level finalArtifactRefs root is repaired, but the current commit still lacks a fresh real sidecar Attempt.",
     "Evaluation protocol and authority are repaired, but false-high visual judgments remain uncalibrated.",
     "A dirty or commit-mismatched runtime would make new live evidence non-comparable.",
+    "Without a request-scoped attachment provider, uploaded pixels can be visible to the model yet unusable by execution Tools; unrestricted CLI would widen permissions without proving source identity.",
     "Open Photoshop documents with unresolved ownership must not be modified, saved or closed by the S1 test.",
     "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery."
   ],
   "nextActions": [
     "Commit the fully validated bounded Runtime performance attribution slice.",
     "Run one fixed profiling Case, then change only the highest-impact reversible variable.",
-    "Rebuild matching Agent/UXP runtimes and run one capture-ready isolated Photoshop Case before opening the full S1 cohort."
+    "Rebuild matching Agent/UXP runtimes and run one capture-ready isolated Photoshop Case before opening the full S1 cohort.",
+    "Implement request-scoped attachmentRef resolution before the full S1 cohort; then stage scoped external-file and CLI capabilities separately."
   ],
   "activeRequest": {
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
@@ -71,7 +75,8 @@
     "steps": [
       "Commit the fully validated Runtime Accounting model/context/output/visual attribution baseline.",
       "Run one fixed profiling Case without artificial behavior changes and select one reversible optimization variable.",
-      "Rebuild matching Agent/UXP runtimes and complete one authorized disposable-fixture Photoshop Case with canonical evidence."
+      "Rebuild matching Agent/UXP runtimes and complete one authorized disposable-fixture Photoshop Case with canonical evidence.",
+      "Close the generic uploaded-attachment source binding before expanding the S1 cohort; keep scoped CLI as a separate capability-provider phase."
     ]
   },
   "convergenceBaseline": {
