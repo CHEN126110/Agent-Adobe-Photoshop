@@ -1611,7 +1611,10 @@ function createExecuteToolWrapper(
         plannedRoles?: readonly DesignTeammateRole[];
         maxRevisions?: number;
         singleRole?: DesignTeammateRole;
-    }) => DesignTeamChildExecutionReservation
+    }) => DesignTeamChildExecutionReservation,
+    // Harness 私有 TaskRun 身份投影的晚绑定读取器：manifest 声明可能在 Agent 循环中途才
+    // 绑定 Runtime identity，wrapper 创建时不能冻结 undefined。它只是身份，不授权 Tool。
+    getRuntimeTaskIdentity?: () => RuntimeSessionIdentity | undefined
 ): ExecuteToolFn {
     // 每次自主运行一个团队工作区：多次委派之间自动共享队友成果
     const teamWorkspace = new DesignTeamWorkspace();
@@ -2418,6 +2421,8 @@ function createExecuteToolWrapper(
                 signal,
                 context,
                 guardedAtomicToolExecutor,
+                // 读取 getter 最新值：identity 可能在本轮 manifest 绑定后才存在。
+                runtimeTaskIdentity: getRuntimeTaskIdentity?.(),
                 runtimeDesignBriefDeclaration: runtimeContext?.runtimeDesignBriefDeclaration,
                 runtimeDesignBriefDigest: runtimeContext?.runtimeDesignBriefDigest,
                 runtimeDesignBriefRequiredInputKeys: runtimeContext?.runtimeDesignBriefRequiredInputKeys,
@@ -5710,7 +5715,8 @@ export const autonomousAgentExecutor: SkillExecutor = {
                         };
                     }
                     return currentAgent.reserveDesignTeamChildExecution(reservationInput);
-                }
+                },
+                () => runtimeSessionIdentity
             )
         );
 

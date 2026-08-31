@@ -267,6 +267,8 @@ function withUnifiedSkillRunner(executeParams: SkillExecuteParams): SkillExecute
                     skillId: childSkillId
                 }
                 : childExecuteParams.runtimeSkillExecutionLineage,
+            // TaskRun 身份投影只沿父 Skill 的 Harness 注入继承；child 传入的同名值一律不采信。
+            runtimeTaskIdentity: executeParams.runtimeTaskIdentity,
             runtimeDesignBriefDeclaration: childExecuteParams.runtimeDesignBriefDeclaration
                 || executeParams.runtimeDesignBriefDeclaration,
             runtimeDesignBriefDigest: childExecuteParams.runtimeDesignBriefDigest

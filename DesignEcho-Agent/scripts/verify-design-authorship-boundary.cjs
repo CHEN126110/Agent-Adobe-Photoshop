@@ -329,6 +329,35 @@ function createMainImageStagedDeliveryTestEnvironment(projectRoot) {
                 });
             });
         });
+        const groupPathById = new Map(
+            nodes.filter((node) => node.kind === 'group').map((node) => [node.id, node.path])
+        );
+        const contentLayersByParent = new Map();
+        Array.from(document.layers.values())
+            .filter((layer) => layer.kind !== 'group' && Number.isSafeInteger(layer.parentId))
+            .forEach((layer) => {
+                const siblings = contentLayersByParent.get(layer.parentId) || [];
+                siblings.push(layer);
+                contentLayersByParent.set(layer.parentId, siblings);
+            });
+        for (const [parentId, contentLayers] of contentLayersByParent) {
+            const parentPath = groupPathById.get(parentId);
+            if (!parentPath) continue;
+            contentLayers.forEach((layer, index) => {
+                nodes.push({
+                    id: layer.id,
+                    name: layer.name,
+                    path: `${parentPath}/${layer.name}`,
+                    kind: layer.kind,
+                    parentId,
+                    parentName: document.layers.get(parentId)?.name || null,
+                    depth: parentPath.split('/').length,
+                    index,
+                    locked: false,
+                    isBackgroundLayer: false
+                });
+            });
+        }
         nodes.push({
             id: document.backgroundLayerId,
             name: 'Background',
@@ -704,7 +733,17 @@ function createMainImageStagedDeliveryTestEnvironment(projectRoot) {
         designEcho,
         executeTool,
         toolCalls,
-        transactions
+        transactions,
+        documents,
+        getActiveDocument() {
+            return activeDocument;
+        },
+        setActiveDocument(document) {
+            if (!document || !documents.has(document.id)) {
+                throw new Error('positive_main_image_fixture_document_not_owned');
+            }
+            activeDocument = document;
+        }
     };
 }
 
@@ -1697,6 +1736,19 @@ const invalidMixedMainImageResult = await mainImageExecutor.execute({
     guardedAtomicToolExecutor: invalidMixedMainImageHarness.executor,
     runtimeDeliveryPlanAuthority: invalidMixedMainImageHarness.authority
 });
+const invalidAgenticActionHarness = createBrandedMainImageHarness(
+    '未知主图生产动作不能回退成其它路径。'
+);
+const invalidAgenticActionResult = await mainImageExecutor.execute({
+    params: { mainImageProductionAction: 'prepare-and-guess' },
+    context: {
+        userInput: '使用一个不存在的生产动作。',
+        projectContext: { projectPath: 'C:\\shop' }
+    },
+    guardedAtomicToolExecutor: invalidAgenticActionHarness.executor,
+    runtimeDeliveryPlanAuthority: invalidAgenticActionHarness.authority
+});
+await completeRuntimeOwnedSkillToolLedgerScope(invalidAgenticActionHarness.scope);
 const invalidMixedMainImageLedger = await completeRuntimeOwnedSkillToolLedgerScope(
     invalidMixedMainImageHarness.scope
 );
@@ -1857,6 +1909,8 @@ check(
         && invalidMixedMainImageResult.data?.status === 'blocked_invalid_slot_assignments'
         && invalidMixedMainImageHarness.hostCalls.length === 0
         && invalidMixedMainImageLedger?.entries.length === 0
+        && invalidAgenticActionResult.error === 'main_image_agentic_production_action_invalid'
+        && invalidAgenticActionHarness.hostCalls.length === 0
         && mismatchedMainImageRuntimeResult.success === false
         && mismatchedMainImageRuntimeResult.error === 'runtime_delivery_authority_executor_mismatch'
         && firstMismatchedMainImageHarness.hostCalls.length === 0
@@ -1867,6 +1921,8 @@ check(
         invalidMixedMainImageResult,
         invalidMixedMainImageHostCalls: invalidMixedMainImageHarness.hostCalls,
         invalidMixedMainImageLedger,
+        invalidAgenticActionResult,
+        invalidAgenticActionHostCalls: invalidAgenticActionHarness.hostCalls,
         mismatchedMainImageRuntimeResult,
         firstMismatchedMainImageHostCalls: firstMismatchedMainImageHarness.hostCalls,
         secondMismatchedMainImageHostCalls: secondMismatchedMainImageHarness.hostCalls,
@@ -2835,6 +2891,417 @@ check(
         && positiveMainImageDriftResults?.hostCallCount === 0
         && positiveMainImageDriftResults?.ledgerEntryCount === 0,
     JSON.stringify(positiveMainImageDriftResults)
+);
+
+const agenticMainImageProjectRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'designecho-main-image-agentic-')
+);
+const agenticMainImageOriginalWindow = global.window;
+const agenticMainImageHadOwnWindow = Object.prototype.hasOwnProperty.call(global, 'window');
+const agenticMainImageOriginalLocalStorage = global.localStorage;
+const agenticMainImageHadOwnLocalStorage = Object.prototype.hasOwnProperty.call(global, 'localStorage');
+let agenticMainImageFixtureError = '';
+let agenticMainImageEvidence = null;
+try {
+    const environment = createMainImageStagedDeliveryTestEnvironment(agenticMainImageProjectRoot);
+    global.window = {
+        ...(agenticMainImageOriginalWindow || {}),
+        designEcho: environment.designEcho
+    };
+    global.localStorage = {
+        getItem() {
+            return null;
+        },
+        setItem() {},
+        removeItem() {},
+        clear() {}
+    };
+    const assetPath = path.join(agenticMainImageProjectRoot, '摄影素材', 'hero.jpg');
+    fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+    fs.writeFileSync(assetPath, Buffer.from('agent-authored-main-image-fixture'));
+    const guardedExecutor = createGuardedAtomicToolExecutor({
+        userRequest: '准备一个 800 主图工作文档，由 Agent 自主设计后交付。',
+        executeTool: environment.executeTool
+    });
+    const ledgerScope = beginRuntimeOwnedSkillToolLedgerScope(guardedExecutor);
+    const deliveryAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+        scope: ledgerScope,
+        executor: guardedExecutor
+    });
+    const runtimeTaskIdentity = {
+        version: 'runtime-session-identity/v0',
+        sessionId: 'runtime-agentic-main-image-session',
+        runId: 'run-agentic-main-image-generation-1',
+        generation: 1,
+        issuedAt: '2026-08-31T00:00:00.000Z',
+        skillId: 'main-image-design',
+        taskType: 'ecommerce.main_image',
+        boundaries: {
+            identityOnly: true,
+            grantsPermission: false,
+            executesTools: false,
+            changesTaskResult: false,
+            categoryNeutral: true
+        }
+    };
+    const commonParams = {
+        executionScope: 'disposable-document',
+        photoshopConnection: {
+            connected: true,
+            documentWriteAvailable: true,
+            source: 'design-authorship-agentic-fixture'
+        }
+    };
+    const commonContext = {
+        userInput: '准备一个 800 主图工作文档，由 Agent 自主设计后交付。',
+        projectContext: { projectPath: agenticMainImageProjectRoot }
+    };
+    const beforeInvalidPrepareIdentityCallCount = environment.toolCalls.length;
+    const invalidPrepareIdentityResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'prepare',
+            size: '800'
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: guardedExecutor,
+        runtimeDeliveryPlanAuthority: deliveryAuthority,
+        runtimeTaskIdentity: {
+            ...runtimeTaskIdentity,
+            boundaries: {
+                ...runtimeTaskIdentity.boundaries,
+                grantsPermission: true
+            }
+        }
+    });
+    const invalidPrepareIdentityHostCallDelta = environment.toolCalls.length
+        - beforeInvalidPrepareIdentityCallCount;
+    const prepareResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'prepare',
+            size: '800'
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: guardedExecutor,
+        runtimeDeliveryPlanAuthority: deliveryAuthority,
+        runtimeTaskIdentity
+    });
+    const workspace = prepareResult?.data?.mainImageAgenticWorkspace;
+    const prepareCallCount = environment.toolCalls.length;
+    const prepareSaveExportCalls = environment.toolCalls.filter((call) => (
+        call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+    )).length;
+    const unchangedFinalizeResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'finalize',
+            mainImageWorkspaceRef: workspace?.workspaceRef
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: guardedExecutor,
+        runtimeDeliveryPlanAuthority: deliveryAuthority,
+        runtimeTaskIdentity
+    });
+    const saveExportAfterUnchanged = environment.toolCalls.filter((call) => (
+        call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+    )).length;
+    const beforeWrongIdentityCallCount = environment.toolCalls.length;
+    const wrongRuntimeTaskResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'finalize',
+            mainImageWorkspaceRef: workspace?.workspaceRef
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: guardedExecutor,
+        runtimeDeliveryPlanAuthority: deliveryAuthority,
+        runtimeTaskIdentity: {
+            ...runtimeTaskIdentity,
+            sessionId: 'runtime-different-agentic-main-image-session',
+            runId: 'run-different-agentic-main-image-generation-1'
+        }
+    });
+    const wrongIdentityHostCallDelta = environment.toolCalls.length - beforeWrongIdentityCallCount;
+    const targetGroup = workspace?.document?.groups?.find((group) => (
+        group.path?.join('/') === '点击图/800-1'
+    ));
+    const placed = await guardedExecutor('placeImage', { filePath: assetPath });
+    const placedLayerId = Number(placed?.layerId || placed?.data?.layerId);
+    const moved = await guardedExecutor('moveLayerToGroup', {
+        layerId: placedLayerId,
+        targetGroupId: targetGroup?.layerId,
+        position: 'inside-bottom'
+    });
+    const prepareLedger = await completeRuntimeOwnedSkillToolLedgerScope(ledgerScope);
+    const activeDocument = environment.getActiveDocument();
+    const targetLayer = activeDocument?.layers?.get(targetGroup?.layerId);
+    const originalTargetLayerName = targetLayer?.name;
+    if (targetLayer) targetLayer.name = '被替换的标准组';
+    const groupDriftExecutor = createGuardedAtomicToolExecutor({
+        userRequest: '组身份漂移必须在文件写入前停止。',
+        executeTool: environment.executeTool
+    });
+    const groupDriftScope = beginRuntimeOwnedSkillToolLedgerScope(groupDriftExecutor);
+    const groupDriftAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+        scope: groupDriftScope,
+        executor: groupDriftExecutor
+    });
+    const saveExportBeforeGroupDrift = environment.toolCalls.filter((call) => (
+        call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+    )).length;
+    const groupDriftResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'finalize',
+            mainImageWorkspaceRef: workspace?.workspaceRef
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: groupDriftExecutor,
+        runtimeDeliveryPlanAuthority: groupDriftAuthority,
+        runtimeTaskIdentity
+    });
+    const saveExportAfterGroupDrift = environment.toolCalls.filter((call) => (
+        call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+    )).length;
+    await completeRuntimeOwnedSkillToolLedgerScope(groupDriftScope);
+    if (targetLayer) targetLayer.name = originalTargetLayerName;
+
+    const originalDocumentId = activeDocument?.id;
+    if (activeDocument) activeDocument.id = originalDocumentId + 9000;
+    const wrongDocumentExecutor = createGuardedAtomicToolExecutor({
+        userRequest: '文档身份漂移必须在文件写入前停止。',
+        executeTool: environment.executeTool
+    });
+    const wrongDocumentScope = beginRuntimeOwnedSkillToolLedgerScope(wrongDocumentExecutor);
+    const wrongDocumentAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+        scope: wrongDocumentScope,
+        executor: wrongDocumentExecutor
+    });
+    const saveExportBeforeWrongDocument = environment.toolCalls.filter((call) => (
+        call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+    )).length;
+    const wrongDocumentResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'finalize',
+            mainImageWorkspaceRef: workspace?.workspaceRef
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: wrongDocumentExecutor,
+        runtimeDeliveryPlanAuthority: wrongDocumentAuthority,
+        runtimeTaskIdentity
+    });
+    const saveExportAfterWrongDocument = environment.toolCalls.filter((call) => (
+        call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+    )).length;
+    await completeRuntimeOwnedSkillToolLedgerScope(wrongDocumentScope);
+    if (activeDocument) activeDocument.id = originalDocumentId;
+
+    const finalExecutor = createGuardedAtomicToolExecutor({
+        userRequest: '同一 TaskRun 的新 Skill 调用完成主图交付。',
+        executeTool: environment.executeTool
+    });
+    const finalScope = beginRuntimeOwnedSkillToolLedgerScope(finalExecutor);
+    const finalAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+        scope: finalScope,
+        executor: finalExecutor
+    });
+    const nextGenerationRuntimeTaskIdentity = {
+        ...runtimeTaskIdentity,
+        runId: 'run-agentic-main-image-generation-2',
+        generation: 2,
+        parentRunId: runtimeTaskIdentity.runId,
+        issuedAt: '2026-08-31T00:01:00.000Z'
+    };
+    const finalizeResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'finalize',
+            mainImageWorkspaceRef: workspace?.workspaceRef
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: finalExecutor,
+        runtimeDeliveryPlanAuthority: finalAuthority,
+        runtimeTaskIdentity: nextGenerationRuntimeTaskIdentity
+    });
+    const ledger = await completeRuntimeOwnedSkillToolLedgerScope(finalScope);
+    const beforeRepeatedFinalizeCallCount = environment.toolCalls.length;
+    const repeatedExecutor = createGuardedAtomicToolExecutor({
+        userRequest: '已经消费的 workspace 不能重复提交。',
+        executeTool: environment.executeTool
+    });
+    const repeatedScope = beginRuntimeOwnedSkillToolLedgerScope(repeatedExecutor);
+    const repeatedAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+        scope: repeatedScope,
+        executor: repeatedExecutor
+    });
+    const repeatedFinalizeResult = await mainImageExecutor.execute({
+        params: {
+            ...commonParams,
+            mainImageProductionAction: 'finalize',
+            mainImageWorkspaceRef: workspace?.workspaceRef
+        },
+        context: commonContext,
+        guardedAtomicToolExecutor: repeatedExecutor,
+        runtimeDeliveryPlanAuthority: repeatedAuthority,
+        runtimeTaskIdentity: nextGenerationRuntimeTaskIdentity
+    });
+    await completeRuntimeOwnedSkillToolLedgerScope(repeatedScope);
+    const repeatedFinalizeHostCallDelta = environment.toolCalls.length - beforeRepeatedFinalizeCallCount;
+    const plan = ledger?.deliveryPlanBinding?.plan;
+    const finalFilesVerified = plan?.artifacts?.length === 2
+        && plan.artifacts.every((artifact) => (
+            fs.existsSync(artifact.path)
+            && readTestFileIdentity(artifact.path).byteLength > 0
+        ));
+    const saveExportCalls = environment.toolCalls.filter((call) => (
+        call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+    ));
+    agenticMainImageEvidence = {
+        prepareResult,
+        invalidPrepareIdentityResult,
+        invalidPrepareIdentityHostCallDelta,
+        workspace,
+        prepareCallCount,
+        prepareSaveExportCalls,
+        unchangedFinalizeResult,
+        saveExportAfterUnchanged,
+        wrongRuntimeTaskResult,
+        wrongIdentityHostCallDelta,
+        placed,
+        moved,
+        prepareLedger,
+        groupDriftResult,
+        groupDriftSaveExportDelta: saveExportAfterGroupDrift - saveExportBeforeGroupDrift,
+        wrongDocumentResult,
+        wrongDocumentSaveExportDelta: saveExportAfterWrongDocument - saveExportBeforeWrongDocument,
+        finalizeResult,
+        repeatedFinalizeResult,
+        repeatedFinalizeHostCallDelta,
+        ledger,
+        plan,
+        finalFilesVerified,
+        saveExportCalls,
+        toolCalls: environment.toolCalls,
+        stagingCleaned: Array.from(environment.transactions.values()).every((transaction) => (
+            !fs.existsSync(transaction.stagingRoot)
+            && !fs.existsSync(transaction.stagingParent)
+        ))
+    };
+} catch (error) {
+    agenticMainImageFixtureError = error instanceof Error ? error.stack || error.message : String(error);
+} finally {
+    if (agenticMainImageHadOwnWindow) {
+        global.window = agenticMainImageOriginalWindow;
+    } else {
+        delete global.window;
+    }
+    if (agenticMainImageHadOwnLocalStorage) {
+        global.localStorage = agenticMainImageOriginalLocalStorage;
+    } else {
+        delete global.localStorage;
+    }
+    const normalizedTemporaryRoot = path.resolve(agenticMainImageProjectRoot);
+    const normalizedOsTemporaryRoot = path.resolve(os.tmpdir());
+    if (path.dirname(normalizedTemporaryRoot) === normalizedOsTemporaryRoot
+        && path.basename(normalizedTemporaryRoot).startsWith('designecho-main-image-agentic-')) {
+        fs.rmSync(normalizedTemporaryRoot, { recursive: true, force: true });
+    } else {
+        agenticMainImageFixtureError = agenticMainImageFixtureError
+            || 'agentic_main_image_fixture_cleanup_scope_rejected';
+    }
+}
+check(
+    '主图 prepare 只建单规格文档与标准组，Agent 通用工具完成内容后 finalize 才提交真实非空组',
+    !agenticMainImageFixtureError
+        && agenticMainImageEvidence?.prepareResult?.success === true
+        && agenticMainImageEvidence?.invalidPrepareIdentityResult?.success === false
+        && agenticMainImageEvidence?.invalidPrepareIdentityResult?.error
+            === 'main_image_agentic_prepare_runtime_task_identity_required'
+        && agenticMainImageEvidence?.invalidPrepareIdentityHostCallDelta === 0
+        && agenticMainImageEvidence?.workspace?.status === 'prepared'
+        && agenticMainImageEvidence?.workspace?.boundaries?.grantsPermission === false
+        && agenticMainImageEvidence?.toolCalls?.filter((call) => call.toolName === 'createDocument').length === 1
+        && agenticMainImageEvidence?.toolCalls?.filter((call) => call.toolName === 'createGroup').length === 11
+        && agenticMainImageEvidence?.prepareSaveExportCalls === 0
+        && agenticMainImageEvidence?.unchangedFinalizeResult?.success === false
+        && agenticMainImageEvidence?.unchangedFinalizeResult?.error
+            === 'main_image_agentic_finalize_design_revision_unchanged'
+        && agenticMainImageEvidence?.saveExportAfterUnchanged === 0
+        && agenticMainImageEvidence?.wrongRuntimeTaskResult?.success === false
+        && agenticMainImageEvidence?.wrongRuntimeTaskResult?.error
+            === 'main_image_workspace_runtime_task_identity_mismatch'
+        && agenticMainImageEvidence?.wrongIdentityHostCallDelta === 0
+        && agenticMainImageEvidence?.placed?.success !== false
+        && agenticMainImageEvidence?.moved?.success !== false
+        && agenticMainImageEvidence?.groupDriftResult?.success === false
+        && String(agenticMainImageEvidence?.groupDriftResult?.error || '')
+            .startsWith('main_image_agentic_finalize_group_identity_mismatch:')
+        && agenticMainImageEvidence?.groupDriftSaveExportDelta === 0
+        && agenticMainImageEvidence?.wrongDocumentResult?.success === false
+        && agenticMainImageEvidence?.wrongDocumentResult?.error
+            === 'main_image_agentic_finalize_document_mismatch'
+        && agenticMainImageEvidence?.wrongDocumentSaveExportDelta === 0
+        && agenticMainImageEvidence?.finalizeResult?.success === true
+        && agenticMainImageEvidence?.finalizeResult?.data?.runtimeDeliveryReceipt?.status === 'ready'
+        && agenticMainImageEvidence?.finalizeResult?.data?.mainImageDeliveryTransaction?.workspaceConsumed === true
+        && agenticMainImageEvidence?.finalizeResult?.data?.resultImagePaths?.length === 1
+        && agenticMainImageEvidence?.plan?.artifacts?.length === 2
+        && agenticMainImageEvidence?.finalFilesVerified === true
+        && agenticMainImageEvidence?.saveExportCalls?.length === 2
+        && agenticMainImageEvidence?.saveExportCalls?.every((call) => (
+            String(call.toolName === 'saveDocument' ? call.params.path : call.params.outputPath)
+                .replace(/\\/g, '/').toLowerCase().includes('/.designecho-staging/')
+        ))
+        && agenticMainImageEvidence?.saveExportCalls?.filter((call) => (
+            call.toolName === 'saveDocument'
+        )).every((call) => call.params.asCopy === true)
+        && agenticMainImageEvidence?.ledger?.deliveryPlanBinding?.status === 'ready'
+        && agenticMainImageEvidence?.repeatedFinalizeResult?.success === false
+        && agenticMainImageEvidence?.repeatedFinalizeResult?.error
+            === 'main_image_workspace_not_found_or_expired'
+        && agenticMainImageEvidence?.repeatedFinalizeHostCallDelta === 0
+        && agenticMainImageEvidence?.stagingCleaned === true,
+    JSON.stringify({
+        error: agenticMainImageFixtureError,
+        prepareStatus: agenticMainImageEvidence?.prepareResult?.data?.status,
+        invalidPrepareIdentityError: agenticMainImageEvidence?.invalidPrepareIdentityResult?.error,
+        invalidPrepareIdentityHostCallDelta: agenticMainImageEvidence?.invalidPrepareIdentityHostCallDelta,
+        prepareError: agenticMainImageEvidence?.prepareResult?.error,
+        prepareBlockers: agenticMainImageEvidence?.prepareResult?.data?.blockers,
+        workspace: agenticMainImageEvidence?.workspace,
+        unchangedError: agenticMainImageEvidence?.unchangedFinalizeResult?.error,
+        wrongTaskError: agenticMainImageEvidence?.wrongRuntimeTaskResult?.error,
+        wrongIdentityHostCallDelta: agenticMainImageEvidence?.wrongIdentityHostCallDelta,
+        placed: agenticMainImageEvidence?.placed,
+        moved: agenticMainImageEvidence?.moved,
+        groupDriftError: agenticMainImageEvidence?.groupDriftResult?.error,
+        groupDriftSaveExportDelta: agenticMainImageEvidence?.groupDriftSaveExportDelta,
+        wrongDocumentError: agenticMainImageEvidence?.wrongDocumentResult?.error,
+        wrongDocumentSaveExportDelta: agenticMainImageEvidence?.wrongDocumentSaveExportDelta,
+        finalizeSuccess: agenticMainImageEvidence?.finalizeResult?.success,
+        finalizeError: agenticMainImageEvidence?.finalizeResult?.error,
+        finalizeReceipt: agenticMainImageEvidence?.finalizeResult?.data?.runtimeDeliveryReceipt,
+        transaction: agenticMainImageEvidence?.finalizeResult?.data?.mainImageDeliveryTransaction,
+        repeatedFinalizeError: agenticMainImageEvidence?.repeatedFinalizeResult?.error,
+        repeatedFinalizeHostCallDelta: agenticMainImageEvidence?.repeatedFinalizeHostCallDelta,
+        toolCalls: agenticMainImageEvidence?.toolCalls,
+        artifacts: agenticMainImageEvidence?.plan?.artifacts,
+        finalFilesVerified: agenticMainImageEvidence?.finalFilesVerified,
+        stagingCleaned: agenticMainImageEvidence?.stagingCleaned
+    })
+);
+check(
+    'Skill 的 TaskRun 身份只由 Harness 晚绑定透传，模型同名参数与子 Skill 覆盖都不能创建新身份',
+    skillToolsSource.includes("'runtimeTaskIdentity'")
+        && skillToolsSource.includes('runtimeTaskIdentity: options.runtimeTaskIdentity')
+        && autonomousExecutor.includes('getRuntimeTaskIdentity?.()')
+        && autonomousExecutor.includes('() => runtimeSessionIdentity')
+        && skillExecutorRegistrySource.includes('runtimeTaskIdentity: executeParams.runtimeTaskIdentity')
+        && !skillExecutorRegistrySource.includes(
+            'runtimeTaskIdentity: childExecuteParams.runtimeTaskIdentity'
+        )
 );
 const mainImageProductionStructure = {
     status: 'ready_production_document_structure',

@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：主图基础 5+4 生产骨架已提交；pre-bound / loop-bound agentic owner、同 executor 文件事务与真实正向行为验证已通过 fresh 65 阶段核心闸门，正在审查提交，随后实现 prepare → Agent 分层设计 → finalize。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：主图 prepare → 同一 Agent 通用 Tool 分层设计 → finalize 已完成代码、专项行为回归与 fresh 65 阶段完整核心闸门，正在最终审查并准备独立提交；真实 Photoshop 质量 Attempt 尚未开始。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -25,7 +25,8 @@
       "Main-image Photoshop hierarchy verification now binds the created documentId and Background layer id/role/lock, moves parent groups to document root and children to their parent, and compares readback order with the independent production spec; UXP group export isolates siblings and preserves the working canvas.",
       "Main-image production projection no longer supplies fixed DesignDSL regions, legacy Project State compositions, keyword-derived pain points/scenes, local visual recipes or array-index slot assignment when the Agent has not declared them.",
       "Pre-bound and loop-bound agentic main-image Runtimes now share one Manifest input/delivery responsibility projection; user goals, attached images, project assets and current Photoshop documents are represented only as allowed source kinds, while the unique workflow entry preserves the broad atomic Tool surface and grants no write authority.",
-      "Main-image live production now requires a branded guarded executor and a delivery authority issued for that same executor; explicit assignments scope document creation to their actual size keys, and editable/raster outputs are staged, verified from actual Tool results and file identities, then committed as one exact set."
+      "Main-image live production now requires a branded guarded executor and a delivery authority issued for that same executor; explicit assignments scope document creation to their actual size keys, and editable/raster outputs are staged, verified from actual Tool results and file identities, then committed as one exact set.",
+      "Open-creative main-image production now uses an explicit prepare/finalize seam: prepare creates one Agent-selected standard document and eleven empty groups without save/export, an identity-only workspace binds the same Runtime TaskRun/project/created-document receipt/group/revision across Reflexion generations, the Agent authors content with broad atomic Tools, and finalize exports only live-readback-proven nonempty groups plus an asCopy editable artifact through the existing exact staged transaction."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
@@ -35,7 +36,8 @@
       "The final integrated revision 5 follow-up tree passed a 65-stage maintenance:validate run covering Debug v5 producer-to-consumer provenance, runtime declaration behavior, TypeScript control-flow boundaries, zero-progress zero-Host behavior, exact/stale/unavailable Final Quality reentry, Design Reliability, design authorship, Main/Renderer type checks, Agent/UXP tests and the UXP production build.",
       "Pre-commit attack review found and then closed recommendation fallback, legacy fake publication, Main project/CDP bypass and candidate-set file-version drift; the bounded re-review has no remaining P0/P1, and the integrated anti-contamination tree passed a fresh 65-stage maintenance:validate including the Agent simplification ratchet, authorship/business boundaries, Main/Renderer type checks, Agent/UXP tests and UXP production build.",
       "INTAKE-092 passed a fresh 65-stage maintenance:validate run covering empty skeletons, per-slot multi-asset geometry, safe-box rejection, 1200 conversion, full 27-slot capacity, explicit low-budget rejection, neutral pending design projections, complete one-document 11-group hierarchy execution, eight injected hierarchy failures, Main/Renderer typecheck, Agent/UXP tests and UXP production build; final independent review found no remaining P0/P1, while the live Host remains pending.",
-      "The current owner/transaction increment passed Renderer typecheck plus runtime-declaration, capability, Skill Package, authorship, business-boundary and generic-executor audits. A real mainImageExecutor fixture completed one 800 document with 11 groups and an exact staged JPG/PSB commit; artifact, path, lease, commit-set and cross-executor identity drift all failed before Host dispatch. A fresh 65-stage maintenance:validate then passed, including Agent/UXP tests, Main/Renderer typecheck and the UXP production build."
+      "The current owner/transaction increment passed Renderer typecheck plus runtime-declaration, capability, Skill Package, authorship, business-boundary and generic-executor audits. A real mainImageExecutor fixture completed one 800 document with 11 groups and an exact staged JPG/PSB commit; artifact, path, lease, commit-set and cross-executor identity drift all failed before Host dispatch. A fresh 65-stage maintenance:validate then passed, including Agent/UXP tests, Main/Renderer typecheck and the UXP production build.",
+      "The prepare/finalize increment passes Renderer typecheck, design-authorship behavior, Runtime declaration, Tool, Skill Package, Skill coupling, Capability, business-boundary, generic-executor and simplification audits. The behavior fixture proves zero save/export during prepare, no final write for unchanged/empty/wrong-task/wrong-document/replaced-group/repeated finalize, and one exact cross-Skill JPG/PSB commit after Agent-authored generic Tool content. A fresh 65-stage maintenance:validate run then passed end to end, including Agent/UXP tests, Main/Renderer typecheck and the UXP production build."
     ],
     "manual": [
       "r31 is the only recorded formal zero-intervention technical pass in the earlier main-image reliability evidence; the current S1 cohort is not complete.",
@@ -61,7 +63,7 @@
     "The main-image business decision for which of the 5+4 slots are mandatory, whether 1200 conversion slots must be populated, and the final platform upload sizes; the supplied empty skeleton and JSX only prove container and per-nonempty-group export semantics.",
     "A fresh Photoshop Host run proving the new root/child panel order, Background flags, preserve-document-canvas JPEG pixels and source-document history invariance.",
     "Per-assignment visual-observation receipts proving the model saw the exact asset version used by each slot, and a first-class custom-size document/slot schema.",
-    "A prepare-to-Agent-layered-design-to-finalize path that lets each standard slot contain text, shapes, masks, multiple images and real layer relationships without duplicating a second DesignIR inside the Skill."
+    "A fresh normal-app Photoshop Host run proving the prepare workspace remains bound across real Skill calls, supports Agent-authored text/shapes/masks/multiple images, exports only real nonempty groups, keeps the activity document off staging paths and leaves every pre-existing document revision unchanged."
   ],
   "topRisks": [
     "The current receipt, context-causality and Evaluation-owner fixes still lack a fresh real sidecar Attempt.",
@@ -71,11 +73,10 @@
     "Open Photoshop documents with unresolved ownership must not be modified, saved or closed by the S1 test.",
     "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery.",
     "The new main-image production contract and staged delivery transaction are automatically verified but not yet Host-verified; path and dimensions must not be treated as proof that the model visually observed each assigned asset.",
-    "The current slotAssignments handoff expresses only one asset and one geometry per slot; treating it as the complete design representation would force professional layered work to be flattened or moved into the Skill executor."
+    "The new prepare/finalize seam is behavior-verified only against the simulated Host. Until a matching normal-app Photoshop run succeeds, Tool coverage, activity-document path invariance and professional layered design quality remain unproven."
   ],
   "nextActions": [
-    "Review, commit and push the fully validated agentic owner plus staged-delivery increment without the user's three unrelated UI files.",
-    "Implement prepare standard documents and slot receipts, let the same Agent use existing generic Tools for layered design, then finalize only the exact same TaskRun/document/group/revision set.",
+    "Review, commit and push the fully validated prepare/finalize increment without the user's three unrelated UI files.",
     "Rebuild matching normal Agent/UXP runtimes and rerun a natural request in a new ordinary project without fake or reusable Debug fixture state; verify design rationale, layered slot contents, 5+4 hierarchy and preserve-canvas exports.",
     "Use the fresh result to choose one design-quality variable only if the output still collapses into the same safe composition.",
     "Implement request-scoped attachmentRef resolution before the full S1 cohort; then stage scoped external-file and CLI capabilities separately."
@@ -106,8 +107,8 @@
     "source": "project-memory/Plan.md",
     "steps": [
       "Keep the already pushed anti-contamination baseline separate from unrelated UI work.",
-      "Finish the core gate and independent commit for pre-bound/loop-bound agentic ownership, exact-size assignment scope and staged whole-set delivery.",
-      "Implement prepare-to-Agent-layered-design-to-finalize without a second DesignIR or Skill-owned aesthetic decisions.",
+      "Keep the pushed pre-bound/loop-bound ownership and staged whole-set delivery baseline unchanged.",
+      "Finish the full gate and independent commit for prepare-to-Agent-layered-design-to-finalize without a second DesignIR or Skill-owned aesthetic decisions.",
       "Rebuild matching normal Agent/UXP runtimes and rerun the natural request in a clean ordinary project.",
       "Verify neutral candidate coverage, model-authored selection rationale, independent Final Judge execution, canonical delivery evidence and human visual comparison before selecting another variable.",
       "Close the generic uploaded-attachment source binding before expanding the S1 cohort; keep scoped CLI as a separate capability-provider phase."
@@ -129,5 +130,5 @@
     "capabilityDenialSuspectCount": null,
     "note": "Historical development baseline retained only because diagnose-runs consumes it. Its old write-success definition is not directly comparable with current Photoshop history/commit evidence and must not be reported as a current product rate."
   },
-  "lastUpdated": "2026-08-31"
+  "lastUpdated": "2026-09-01"
 }

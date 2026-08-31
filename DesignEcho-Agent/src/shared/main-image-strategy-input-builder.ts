@@ -90,6 +90,8 @@ export interface MainImageStrategyInputBuilderInput {
     selectedAsset?: MainImageDraftAsset | null;
     slotAssignments?: unknown;
     createEmptySkeleton?: boolean;
+    /** Agent 明确选择的纯结构规格；仅供空工作区建档，不携带 placement/scale。 */
+    requestedProductionSizeKeys?: string[];
     subjectBounds?: MainImageDraftSubjectBounds | null;
     sizePlans?: MainImageSizePlan[];
     copyCandidates?: string[];
@@ -320,6 +322,7 @@ function normalizeSizePlans(sizePlans: MainImageSizePlan[] | undefined): Normali
 function resolveProductionStructureSizeScope(input: {
     sizePlans: NormalizedSizePlan[];
     slotAssignments?: unknown;
+    requestedProductionSizeKeys?: string[];
 }): string[] | undefined {
     const assignmentKeys = Array.from(new Set(
         (Array.isArray(input.slotAssignments) ? input.slotAssignments : [])
@@ -330,6 +333,10 @@ function resolveProductionStructureSizeScope(input: {
             .filter(Boolean)
     ));
     if (assignmentKeys.length > 0) return assignmentKeys;
+    const explicitKeys = Array.from(new Set(
+        (input.requestedProductionSizeKeys || []).map(cleanString).filter(Boolean)
+    ));
+    if (explicitKeys.length > 0) return explicitKeys;
     const keys = Array.from(new Set(
         input.sizePlans.map((plan) => cleanString(plan.sizeKey)).filter(Boolean)
     ));
@@ -632,7 +639,8 @@ export function buildMainImageStrategyInputs(
         projectStyleStrategy,
         requestedSizeKeys: resolveProductionStructureSizeScope({
             sizePlans,
-            slotAssignments: input.slotAssignments
+            slotAssignments: input.slotAssignments,
+            requestedProductionSizeKeys: input.requestedProductionSizeKeys
         }),
         requestedImageType: resolveProductionStructureImageTypeScope({
             imageType,

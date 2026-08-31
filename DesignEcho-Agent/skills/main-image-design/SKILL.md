@@ -24,6 +24,17 @@ description: 电商主图工作法：从项目摄影图出发做点击图与转�
 
 场景、穿着、平铺、细节、包装和变体素材没有全局优先级。联系表只扩大观察覆盖，G 编号、文件顺序、目录名和历史样本不表示推荐名次；Agent 必须查看当前像素，并结合商品、点击目标、裁切空间和信息责任显式选定主视觉与辅助关系。吊牌、背景杂物等是需要观察和处理的事实，也不能在未看图时直接判定整张素材不可用。
 
+## 开放创意的两段式生产
+
+普通创意主图不要把一张素材和一个矩形 placement 一次性提交给 Skill 后就当成设计完成。使用下面的职责分工：
+
+1. Agent 先根据当前项目证据明确选择一个工作规格，调用 `main-image-design`，设置 `mainImageProductionAction=prepare`。Skill 只创建该规格的白色工作文档与标准空组，并返回 `mainImageWorkspaceRef`、真实 documentId、group layerId 和准备完成时的 Photoshop 历史版本；此时没有保存、导出或设计成稿。
+2. 控制权立即回到同一个 Agent。Agent 继续看素材和画面，使用通用 Photoshop 工具完成多素材组合、裁切、缩放、文字、形状、蒙版、层级和视觉平衡。需要哪些元素、放多大、是否用文字、采用什么版式，全部由 Agent 决定；Skill 不提供固定图层数或视觉答案。
+3. 至少一个标准子组已经有真实设计内容后，Agent 使用 prepare 返回的同一个 `mainImageWorkspaceRef` 调用 `mainImageProductionAction=finalize`。Skill 只读回同一 TaskRun、同一文档、同一组身份和新 Photoshop revision，导出真实非空组，并把可编辑稿与 raster 作为完整文件事务提交。
+4. 文件收据闭合后仍要由 Agent 查看真实导出图并判断视觉质量。finalize 成功只证明文件、路径、图层组和 Photoshop 版本一致，不证明画面已经好看。
+
+workspace 引用只是任务身份，不是权限。换 TaskRun、换项目、文档或组被替换、prepare 后没有发生设计变化、标准组仍为空、已经成功 finalize 后重复提交，都会在保存和导出前停止。若用户只是明确要求一个空骨架文件，仍使用 `createEmptySkeleton=true` 的确定性交付；不要把它与开放创意 prepare 混为一谈。
+
 ## 需要完成的设计判断（顺序由 Agent 决定）
 
 - **认料与方向**：联系表用于扩大候选覆盖，不直接选赢家；产品事实、材质和卖点必须有来源。只有具体的构图、气质或表达问题仍不确定时，才观察 Eagle 参考来回答该问题。

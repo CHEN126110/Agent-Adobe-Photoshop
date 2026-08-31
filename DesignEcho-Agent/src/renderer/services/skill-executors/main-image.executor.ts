@@ -108,6 +108,17 @@ import {
     type RuntimeStagedDeliveryContext,
     type RuntimeStagedDeliveryDispatchContext
 } from './runtime-staged-delivery.service';
+import {
+    buildMainImageAgenticPrepareRequestPackage,
+    inspectMainImageAgenticPreparedDocument,
+    normalizeMainImageAgenticProductionAction,
+    readMainImageAgenticPreparedDocumentId
+} from './main-image-agentic-production';
+import {
+    createMainImageAgenticWorkspace,
+    isMainImageAgenticRuntimeTaskIdentity
+} from './main-image-agentic-workspace';
+import { runMainImageAgenticFinalizeRuntime } from './main-image-agentic-finalize-runtime';
 
 type EmitMainImageStep = (
     kind: Parameters<typeof emitSkillStep>[1]['kind'],
@@ -169,6 +180,9 @@ function normalizeMainImageExecutionMode(value: unknown): MainImageControlledExe
 }
 
 function resolveMainImageExecutionMode(params: Record<string, any>): MainImageControlledExecutionMode {
+    if (normalizeMainImageAgenticProductionAction(params.mainImageProductionAction)) {
+        return 'product-disposable-live';
+    }
     const explicitMode = normalizeMainImageExecutionMode(params.mainImageExecutionMode);
     if (params.mainImageExecutionMode !== undefined && params.mainImageExecutionMode !== null) {
         return explicitMode;
@@ -1071,9 +1085,13 @@ async function runControlledMainImageProductPath(input: {
     signal?: AbortSignal;
     guardedAtomicToolExecutor?: SkillExecuteParams['guardedAtomicToolExecutor'];
     runtimeDeliveryPlanAuthority?: SkillExecuteParams['runtimeDeliveryPlanAuthority'];
+    runtimeTaskIdentity?: SkillExecuteParams['runtimeTaskIdentity'];
     emitStep: EmitMainImageStep;
 }): Promise<AgentResult> {
     const mode = resolveMainImageExecutionMode(input.params);
+    const agenticProductionAction = normalizeMainImageAgenticProductionAction(
+        input.params.mainImageProductionAction
+    );
     const runtimeExecutionAuthorized = mode === 'product-disposable-live'
         && isGuardedAtomicToolExecutor(input.guardedAtomicToolExecutor);
     const toolResults: Array<Record<string, unknown>> = [];
@@ -1110,9 +1128,53 @@ async function runControlledMainImageProductPath(input: {
         input.params.slotAssignments !== undefined
         && input.params.slotAssignments !== null
     )
-        || input.params.createEmptySkeleton === true;
+        || input.params.createEmptySkeleton === true
+        || agenticProductionAction === 'prepare';
+    const hasExplicitPrepareSize = Boolean(input.params.size)
+        || Array.isArray(input.params.sizes) && input.params.sizes.length > 0;
+    const explicitPrepareSizeKeys = agenticProductionAction === 'prepare'
+        ? resolveMainImageSizeKeys(input.params)
+        : [];
+    if (agenticProductionAction === 'prepare'
+        && !isMainImageAgenticRuntimeTaskIdentity(input.runtimeTaskIdentity)) {
+        return {
+            success: false,
+            message: '当前主图工作文档没有绑定到可续用的同一任务，本轮没有写入 Photoshop。',
+            error: 'main_image_agentic_prepare_runtime_task_identity_required',
+            toolResults,
+            data: { status: 'blocked_main_image_agentic_prepare_runtime_task_identity' }
+        };
+    }
+    if (agenticProductionAction === 'prepare' && !projectPath) {
+        return {
+            success: false,
+            message: '当前还没有可绑定的项目目录，本轮没有创建主图工作文档。',
+            error: 'main_image_agentic_prepare_project_path_required',
+            toolResults,
+            data: { status: 'blocked_main_image_agentic_prepare_project_path' }
+        };
+    }
+    if (agenticProductionAction === 'prepare'
+        && (!hasExplicitPrepareSize || explicitPrepareSizeKeys.length !== 1)) {
+        return {
+            success: false,
+            nonFatal: true,
+            message: '一次工作区准备只接受一个由 Agent 明确选择的标准主图规格；请选定后重新调用。',
+            error: 'main_image_agentic_prepare_requires_one_explicit_size',
+            toolResults,
+            data: {
+                status: 'blocked_main_image_agentic_prepare_requires_one_explicit_size',
+                agentReActContinuation: {
+                    status: 'needs_action',
+                    summary: '请根据当前项目规则选择一个明确规格，再以 prepare 重新提交；不要让 Harness 自动替你选择。',
+                    nextAction: 'choose_one_explicit_main_image_size'
+                }
+            }
+        };
+    }
     if (mode === 'product-disposable-live'
         && isProductionSubmission
+        && agenticProductionAction !== 'prepare'
         && !isRuntimeOwnedSkillDeliveryPlanAuthority(input.runtimeDeliveryPlanAuthority)) {
         return {
             success: false,
@@ -1126,6 +1188,7 @@ async function runControlledMainImageProductPath(input: {
     }
     if (mode === 'product-disposable-live'
         && isProductionSubmission
+        && agenticProductionAction !== 'prepare'
         && !isRuntimeOwnedSkillDeliveryPlanAuthorityForExecutor(
             input.runtimeDeliveryPlanAuthority,
             input.guardedAtomicToolExecutor
@@ -1214,7 +1277,9 @@ async function runControlledMainImageProductPath(input: {
     let materialPlanDetail: string;
     let materialPlanStatus: 'success' | 'error';
     if (isProductionSubmission) {
-        materialPlanDetail = input.params.createEmptySkeleton === true
+        materialPlanDetail = agenticProductionAction === 'prepare'
+            ? '已收到 Agent 工作文档准备请求；只创建一个明确规格的标准空组，不保存或导出。'
+            : input.params.createEmptySkeleton === true
             ? '已收到明确的标准空骨架请求；不会置入素材或导出 raster。'
             : `已收到 ${submittedAssignments.assignments.length} 个逐槽素材决定，覆盖 ${submittedSizeKeys.length} 份工作文档。`;
         materialPlanStatus = submittedAssignments.issues.length === 0 ? 'success' : 'error';
@@ -1230,12 +1295,14 @@ async function runControlledMainImageProductPath(input: {
         0.08
     );
     const explicitCustomSize = getExplicitMainImageCustomSize(effectiveParams);
-    const knowledgeResults = buildDesignMemoryKnowledgeResultsForSkill({
-        params: input.params,
-        userText,
-        scenario: 'main-image',
-        context: input.context
-    });
+    const knowledgeResults = agenticProductionAction === 'prepare'
+        ? []
+        : buildDesignMemoryKnowledgeResultsForSkill({
+            params: input.params,
+            userText,
+            scenario: 'main-image',
+            context: input.context
+        });
     const mainImageMemoryContext = buildMainImageMemoryContextForSkill({
         userText,
         knowledgeResults,
@@ -1258,7 +1325,9 @@ async function runControlledMainImageProductPath(input: {
     const parentHandoffStrategyInputs = ecommerceSocksChildStrategyInput.canUseAsChildStrategyInput
         ? ecommerceSocksChildStrategyInput.strategyInputsPatch
         : {};
-    const designProjectState = await readDesignProjectStateForMainImage(projectPath, toolResults);
+    const designProjectState = agenticProductionAction === 'prepare'
+        ? null
+        : await readDesignProjectStateForMainImage(projectPath, toolResults);
     const mainImageStateContext = buildMainImageStateContext({
         state: designProjectState,
         imageType,
@@ -1295,20 +1364,26 @@ async function runControlledMainImageProductPath(input: {
     const whiteBackgroundLiveToolRequest = whiteBackgroundExportContract
         ? buildMainImageWhiteBackgroundLiveToolRequest(whiteBackgroundExportContract)
         : null;
-    const controlledVision = await resolveControlledMainImageVisionSignal({
-        params: input.params,
-        context: input.context,
-        selectedAsset,
-        emitStep: input.emitStep,
-        toolResults
-    });
+    const controlledVision = agenticProductionAction === 'prepare'
+        ? { visionSignal: null, visionPreflight: undefined }
+        : await resolveControlledMainImageVisionSignal({
+            params: input.params,
+            context: input.context,
+            selectedAsset,
+            emitStep: input.emitStep,
+            toolResults
+        });
     const visionSignal = controlledVision.visionSignal;
     const strategy = buildMainImageStrategyInputs({
         userText,
         imageType,
         selectedAsset,
         slotAssignments: input.params.slotAssignments,
-        createEmptySkeleton: input.params.createEmptySkeleton === true,
+        createEmptySkeleton: agenticProductionAction === 'prepare'
+            || input.params.createEmptySkeleton === true,
+        requestedProductionSizeKeys: agenticProductionAction === 'prepare'
+            ? explicitPrepareSizeKeys
+            : undefined,
         projectAssets,
         subjectBounds,
         sizePlans,
@@ -1334,13 +1409,15 @@ async function runControlledMainImageProductPath(input: {
         ...strategy.strategyInputs,
         ...parentHandoffStrategyInputs
     };
-    const controlledAgentDraft = input.params.createEmptySkeleton === true ? null : buildMainImageAgentDraftPlan({
+    const skipsAgentDraft = agenticProductionAction === 'prepare'
+        || input.params.createEmptySkeleton === true;
+    const controlledAgentDraft = skipsAgentDraft ? null : buildMainImageAgentDraftPlan({
         userText,
         imageType,
         projectAssets,
         selectedAsset,
         slotAssignments: input.params.slotAssignments,
-        createEmptySkeleton: input.params.createEmptySkeleton === true,
+        createEmptySkeleton: false,
         subjectBounds,
         sizePlans,
         copyCandidates,
@@ -1377,8 +1454,28 @@ async function runControlledMainImageProductPath(input: {
         executionEnvironmentStatus,
         0.1
     );
+    const agenticPrepareRequestPackage = agenticProductionAction === 'prepare'
+        ? buildMainImageAgenticPrepareRequestPackage(strategy.liveExecutorRequestPackage)
+        : null;
+    if (agenticProductionAction === 'prepare') {
+        if (strategy.productionDocumentStructure.documents.length !== 1
+            || !agenticPrepareRequestPackage) {
+            return {
+                success: false,
+                message: '标准主图工作文档结构没有完整生成，本轮没有写入 Photoshop。',
+                error: 'main_image_agentic_prepare_structure_not_ready',
+                toolResults,
+                data: {
+                    status: 'blocked_main_image_agentic_prepare_structure_not_ready',
+                    blockers: strategy.productionDocumentStructure.blockers
+                }
+            };
+        }
+    }
+    const liveExecutorRequestPackage = agenticPrepareRequestPackage
+        || strategy.liveExecutorRequestPackage;
     const checkpoint = buildMainImageLiveExecutorCheckpoint({
-        requestPackage: strategy.liveExecutorRequestPackage,
+        requestPackage: liveExecutorRequestPackage,
         approvedLiveExecution: runtimeExecutionAuthorized,
         photoshopConnection,
         executionScope,
@@ -1478,7 +1575,7 @@ async function runControlledMainImageProductPath(input: {
         ...(whiteBackgroundExportContract ? { mainImageWhiteBackgroundExportContract: whiteBackgroundExportContract } : {}),
         ...(whiteBackgroundLiveToolRequest ? { mainImageWhiteBackgroundLiveToolRequest: whiteBackgroundLiveToolRequest } : {}),
         ...(controlledVision.visionPreflight ? { mainImageVisionPreflight: controlledVision.visionPreflight } : {}),
-        mainImageLiveExecutorRequestPackage: strategy.liveExecutorRequestPackage,
+        mainImageLiveExecutorRequestPackage: liveExecutorRequestPackage,
         mainImageLiveExecutorCheckpoint: checkpoint,
         mainImageLivePhotoshopAdapterContract: adapterContract,
         mainImageLiveAdapterHandoff: adapterHandoff,
@@ -1656,6 +1753,129 @@ async function runControlledMainImageProductPath(input: {
             error: adapterBuild.blockers[0] || checkpoint.blockers[0] || 'main_image_controlled_product_path_blocked',
             toolResults,
             data
+        };
+    }
+
+    if (agenticProductionAction === 'prepare') {
+        input.emitStep(
+            'tool_started',
+            '准备主图设计工作文档',
+            '只创建当前明确规格的标准文档与空组，完成后交还 Agent 自主设计。',
+            'running',
+            0.2
+        );
+        const runner = await runMainImageLiveExecutor({
+            checkpoint,
+            adapter: adapterBuild.adapter
+        });
+        const publicRunnerSummary = buildPublicMainImageRunnerSummary(runner);
+        const publicRunnerOperationResults = buildPublicMainImageOperationResults(runner);
+        if (runner.status !== 'completed_requires_review'
+            || runner.executedOperationCount !== checkpoint.operationCount
+            || runner.failedOperationCount > 0
+            || runner.failedReadbackCount > 0) {
+            return {
+                success: false,
+                message: '主图工作文档没有完整准备好；本轮没有保存或导出任何文件。',
+                error: runner.blockers[0] || 'main_image_agentic_prepare_runner_failed',
+                toolResults: [...toolResults, ...publicRunnerOperationResults],
+                data: {
+                    ...data,
+                    status: 'failed_main_image_agentic_prepare',
+                    mainImageControlledProductRunner: publicRunnerSummary,
+                    blockers: runner.blockers
+                }
+            };
+        }
+        const documentInfoResult = await input.guardedAtomicToolExecutor!('getDocumentInfo', {});
+        const hierarchyResult = await input.guardedAtomicToolExecutor!('getLayerHierarchy', {
+            includeHidden: true,
+            includeBounds: true,
+            flatList: true
+        });
+        const productionDocument = strategy.productionDocumentStructure.documents[0];
+        const expectedDocumentId = readMainImageAgenticPreparedDocumentId(runner);
+        if (!expectedDocumentId) {
+            return {
+                success: false,
+                message: '主图工作文档已尝试创建，但创建收据没有给出唯一文档身份；本轮没有保存或导出。',
+                error: 'main_image_agentic_prepare_created_document_receipt_missing',
+                toolResults: [...toolResults, ...publicRunnerOperationResults],
+                data: {
+                    ...data,
+                    status: 'failed_main_image_agentic_prepare_created_document_receipt',
+                    mainImageControlledProductRunner: publicRunnerSummary
+                }
+            };
+        }
+        const inspection = inspectMainImageAgenticPreparedDocument({
+            productionDocument,
+            expectedDocumentId,
+            documentInfoResult,
+            hierarchyResult
+        });
+        if (inspection.status !== 'ready' || !inspection.document) {
+            return {
+                success: false,
+                message: '主图工作文档已尝试创建，但最终文档、图层组或历史版本没有完成一致性读回；本轮没有保存或导出。',
+                error: inspection.blockers[0] || 'main_image_agentic_prepare_readback_failed',
+                toolResults: [...toolResults, ...publicRunnerOperationResults],
+                data: {
+                    ...data,
+                    status: 'failed_main_image_agentic_prepare_readback',
+                    mainImageControlledProductRunner: publicRunnerSummary,
+                    blockers: inspection.blockers
+                }
+            };
+        }
+        const workspace = createMainImageAgenticWorkspace({
+            runtimeTaskIdentity: input.runtimeTaskIdentity,
+            projectPath,
+            productionDocument,
+            document: inspection.document
+        });
+        if (workspace.status !== 'ready') {
+            return {
+                success: false,
+                message: '主图工作文档已经准备，但无法安全绑定到本次任务；本轮没有保存或导出。',
+                error: workspace.blockers[0] || 'main_image_agentic_workspace_binding_failed',
+                toolResults: [...toolResults, ...publicRunnerOperationResults],
+                data: {
+                    ...data,
+                    status: 'failed_main_image_agentic_workspace_binding',
+                    mainImageControlledProductRunner: publicRunnerSummary,
+                    blockers: workspace.blockers
+                }
+            };
+        }
+        input.emitStep(
+            'verification',
+            '主图设计工作文档已准备',
+            '文档与标准组已经按同一任务和 Photoshop 历史版本绑定；下一步由 Agent 自主完成画面。',
+            'success',
+            1
+        );
+        return {
+            success: true,
+            nonFatal: true,
+            message: [
+                '**主图工作文档已准备好**',
+                `画布：${inspection.document.canvasSize.width}×${inspection.document.canvasSize.height}。`,
+                '现在由主 Agent 观察素材、形成创意并使用通用 Photoshop 工具完成分层设计；此时尚未保存或导出。'
+            ].join('\n'),
+            toolResults: [...toolResults, ...publicRunnerOperationResults],
+            data: {
+                ...data,
+                status: 'main_image_agentic_workspace_prepared',
+                mainImageAgenticWorkspace: workspace.receipt,
+                mainImageControlledProductRunner: publicRunnerSummary,
+                countsAsTaskProgress: true,
+                agentReActContinuation: {
+                    status: 'needs_action',
+                    summary: '使用 workspace 中的真实 documentId 与 group layerId 继续设计；完成至少一个非空标准组后再调用 finalize。',
+                    nextAction: 'author_main_image_with_general_photoshop_tools'
+                }
+            }
         };
     }
 
@@ -2016,7 +2236,8 @@ export const mainImageExecutor: SkillExecutor = {
         context,
         signal,
         guardedAtomicToolExecutor,
-        runtimeDeliveryPlanAuthority
+        runtimeDeliveryPlanAuthority,
+        runtimeTaskIdentity
     }: SkillExecuteParams): Promise<AgentResult> {
         const emitStep: EmitMainImageStep = (
             kind,
@@ -2026,6 +2247,34 @@ export const mainImageExecutor: SkillExecutor = {
             percent
         ) => emitSkillStep(callbacks, { kind, title, detail, status, percent });
 
+        const agenticProductionAction = normalizeMainImageAgenticProductionAction(
+            params.mainImageProductionAction
+        );
+        if (params.mainImageProductionAction !== undefined && !agenticProductionAction) {
+            return {
+                success: false,
+                message: '主图生产动作无效，本轮没有读取、修改、保存或导出 Photoshop 文档。',
+                error: 'main_image_agentic_production_action_invalid',
+                toolResults: [],
+                data: { status: 'blocked_main_image_agentic_production_action_invalid' }
+            };
+        }
+        if (agenticProductionAction === 'finalize') {
+            const photoshopConnection = await resolveControlledPhotoshopConnection(params);
+            return runMainImageAgenticFinalizeRuntime({
+                workspaceRef: cleanString(params.mainImageWorkspaceRef),
+                projectPath: getMainImageProjectPath(context),
+                runtimeTaskIdentity,
+                guardedAtomicToolExecutor,
+                runtimeDeliveryPlanAuthority,
+                deliveryConvention: params.deliveryConvention,
+                deliveryVersion: cleanString(params.deliveryVersion) || undefined,
+                maxOperationCount: readNumber(params.maxOperationCount),
+                photoshopConnection,
+                emitStep
+            });
+        }
+
         return runControlledMainImageProductPath({
             params: params as Record<string, any>,
             context,
@@ -2033,6 +2282,7 @@ export const mainImageExecutor: SkillExecutor = {
             signal,
             guardedAtomicToolExecutor,
             runtimeDeliveryPlanAuthority,
+            runtimeTaskIdentity,
             emitStep
         });
     },

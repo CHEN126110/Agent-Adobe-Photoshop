@@ -25,8 +25,8 @@
 6. `[已完成]` 提交 S1 代码基线；完成 INTAKE-090 现有 Runtime Accounting 的用途、上下文、输出体量与视觉 revision 归因；同时修复“截断后未重发像素却可取得已观察信用”的事实错误。设计判断与普通任务预算 owner 不变，物理 recovery 成本如实记录。
 7. `[已完成]` 防污染旁路已根修并以 `217368bd` 提交推送；Task Profile 绑定前后保持中性浏览，旧伪发布被隔离，测试项目 /userData /CDP 使用独立信封，完成态审美复入绑定当前 ReviewSet 与必需 E2 证据。
 8. `[已完成]` INTAKE-092 基础生产骨架已以 `3cb1594e` 提交推送：三个真实工作画布、每文档 5 个点击槽 +4 个转化槽、空骨架、逐槽 assignment、动态预算、兄弟组隔离、保画布导出和精确层级读回均有持久回归。
-9. `[代码与完整验证已完成，待审查提交]` 闭合 agentic Runtime owner 与主图整组文件事务：pre-bound / loop-bound 复用同一输入和交付责任投影；唯一 workflow entry 不裁掉 broad atomic Tool；模型参数不能伪造执行批准；guarded executor 与 delivery authority 必须同源；显式 assignment 只展开实际规格；保存 /导出经 staging、实际结果路径、文件身份和 external commit 整组闭合。专项验证与 fresh 65 阶段 `maintenance:validate` 已通过，待最终差异审查、提交和推送。
-10. `[待开始]` 把当前“一素材一几何”的生产提交扩成 `prepare → Agent 分层设计 → finalize`：prepare 只建立标准文档 /槽位并返回 TaskRun-bound document /group /revision 收据；Agent 使用现有通用 Tool 完成文字、形状、蒙版、多图和排版；finalize 只对账同一收据、保存非空槽并整组交付，不复制第二套 DesignIR。
+9. `[已完成]` agentic Runtime owner 与主图整组文件事务已以 `a42de03b` 提交并推送：pre-bound / loop-bound 复用同一责任投影，broad atomic Tool 保持可达，guarded executor、delivery authority、staging、实际结果路径、文件身份与 external commit 同源闭合。
+10. `[代码与完整验证已完成，待审查提交]` 把“一素材一几何”之外的开放创意交付扩成 `prepare → Agent 分层设计 → finalize`：prepare 只建一个 Agent 明确规格的标准工作文档 /空组并返回 TaskRun-bound workspace；Agent 使用现有通用 Tool 完成文字、形状、蒙版、多图和排版；finalize 只对账同一任务、项目、document /group /revision 和真实非空组，再走 exact staged file transaction。持久回归已覆盖未修改、空组、TaskRun /document /group 漂移、跨 Skill 成功交付和重复 finalize，未复制第二套 DesignIR；fresh `maintenance:validate` 已单次通过 65 个核心检查。
 11. `[待开始]` 重建与提交一致的正常 Agent / UXP，在新普通项目中运行自然短提示，验证模型选图说明、按需参考、分层设计、真实 5+4 Photoshop 层级、保画布导出、Final Judge 与外部文档零变化。
 12. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 

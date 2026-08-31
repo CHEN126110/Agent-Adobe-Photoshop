@@ -26,6 +26,7 @@ import type {
     RuntimeActionPlanDeclaration,
     RuntimeActionPlanDigest
 } from '../../../shared/agent-runtime-v5/runtime-action-plan-declaration';
+import type { RuntimeSessionIdentity } from '../../../shared/agent-runtime-v5/runtime-session';
 import type { AgentTaskPlanningContract } from '../../../shared/agent-task-planning-contract';
 import {
     forwardRuntimeOwnedSkillDeliveryPlanBinding,
@@ -210,6 +211,8 @@ export interface SkillToolExecuteOptions {
     guardedAtomicToolExecutor?: GuardedAtomicToolExecutor;
     /** 仅由 Runtime continuation owner 注入；模型参数不能创建或覆盖。 */
     runtimeSkillExecutionLineage?: SkillExecutionRuntimeLineage;
+    /** 仅由 Harness 投影的当前 Runtime/TaskRun 身份；只是身份，不授权 Tool，模型参数不能创建。 */
+    runtimeTaskIdentity?: RuntimeSessionIdentity;
     runtimeDesignBriefDeclaration?: RuntimeDesignBriefDeclaration;
     runtimeDesignBriefDigest?: RuntimeDesignBriefDigest;
     runtimeDesignBriefRequiredInputKeys?: string[];
@@ -233,7 +236,10 @@ const RUNTIME_OWNED_SKILL_PARAM_NAMES = new Set([
     // 已退役的手工面板授权字段：旧模型消息、文本 Tool parser 或外部调用即使携带，
     // 也必须在进入业务执行器前剥离。真实授权只存在于不可序列化的函数 capability。
     '__manualPanelLegacyProfileAuthorized',
-    'runtimeWorkflowDeliveryReentry'
+    'runtimeWorkflowDeliveryReentry',
+    // Harness 私有的 TaskRun 身份投影：模型业务参数携带同名字段时必须剥离，
+    // 真实身份只经 options.runtimeTaskIdentity 透传。
+    'runtimeTaskIdentity'
 ]);
 
 function stripRuntimeOwnedSkillParams(params: Record<string, any>): Record<string, any> {
@@ -342,6 +348,7 @@ export async function executeSkillTool(
         context: options.context,
         guardedAtomicToolExecutor: options.guardedAtomicToolExecutor,
         runtimeSkillExecutionLineage: options.runtimeSkillExecutionLineage,
+        runtimeTaskIdentity: options.runtimeTaskIdentity,
         runtimeDesignBriefDeclaration: options.runtimeDesignBriefDeclaration,
         runtimeDesignBriefDigest: options.runtimeDesignBriefDigest,
         runtimeDesignBriefRequiredInputKeys: options.runtimeDesignBriefRequiredInputKeys,

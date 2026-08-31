@@ -17,6 +17,7 @@ export type MainImageLivePhotoshopToolAdapterStatus =
     | 'blocked_requires_explicit_live_approval'
     | 'blocked_non_disposable_scope'
     | 'blocked_missing_execute_tool'
+    | 'blocked_invalid_initial_state'
     | 'ready_for_guarded_live_adapter';
 
 export type MainImageLivePhotoshopExecuteTool = (
@@ -29,6 +30,20 @@ export interface MainImageLivePhotoshopToolAdapterInput {
     executeTool?: MainImageLivePhotoshopExecuteTool | null;
     approvedLiveAdapterRun?: boolean;
     executionScope?: 'disposable-document' | 'active-document' | 'project-document';
+    /**
+     * 同一 TaskRun 的 prepare 已由真实 Photoshop 读回绑定的文档状态。
+     * 这里只恢复 adapter 的机械寻址信息，不授予 Tool 权限，也不代表当前文档仍然有效。
+     */
+    initialState?: MainImageLivePhotoshopPreparedState;
+}
+
+export interface MainImageLivePhotoshopPreparedState {
+    documentId: number;
+    backgroundLayerId: number;
+    groupBindings: Array<{
+        path: string[];
+        layerId: number;
+    }>;
 }
 
 export interface MainImageLivePhotoshopToolAdapterBuildResult {
@@ -102,6 +117,37 @@ function getGroupPathKey(value: unknown): string {
 
 function getRequestGroupPathKey(request: MainImageLiveExecutorOperationRequest): string {
     return getGroupPathKey(request.groupPath || request.payloadPreview?.groupPath);
+}
+
+function normalizeInitialState(
+    value: MainImageLivePhotoshopPreparedState | undefined
+): AdapterRuntimeState | null {
+    if (!value) {
+        return {
+            groupIdsByPath: new Map(),
+            createdGroupPaths: []
+        };
+    }
+    const documentId = readPositiveId(value.documentId);
+    const backgroundLayerId = readPositiveId(value.backgroundLayerId);
+    if (!documentId || !backgroundLayerId || !Array.isArray(value.groupBindings)) return null;
+    const groupIdsByPath = new Map<string, number>();
+    const createdGroupPaths: string[][] = [];
+    for (const binding of value.groupBindings) {
+        const path = cleanStrings(binding?.path);
+        const pathKey = path.join('/');
+        const layerId = readPositiveId(binding?.layerId);
+        if (!pathKey || !layerId || groupIdsByPath.has(pathKey)) return null;
+        groupIdsByPath.set(pathKey, layerId);
+        createdGroupPaths.push(path);
+    }
+    if (groupIdsByPath.size === 0) return null;
+    return {
+        currentDocumentId: documentId,
+        backgroundLayerId,
+        groupIdsByPath,
+        createdGroupPaths
+    };
 }
 
 function extractLayerId(result: unknown): number | undefined {
@@ -640,6 +686,9 @@ function inferStatus(
     if (input.approvedLiveAdapterRun !== true) return 'blocked_requires_explicit_live_approval';
     if (input.executionScope !== 'disposable-document') return 'blocked_non_disposable_scope';
     if (!input.executeTool) return 'blocked_missing_execute_tool';
+    if (input.initialState && !normalizeInitialState(input.initialState)) {
+        return 'blocked_invalid_initial_state';
+    }
     return 'ready_for_guarded_live_adapter';
 }
 
@@ -656,6 +705,7 @@ function collectBlockers(
     if (status === 'blocked_requires_explicit_live_approval') blockers.push('explicit_live_adapter_approval_required');
     if (status === 'blocked_non_disposable_scope') blockers.push('guarded_adapter_requires_disposable_document_scope');
     if (status === 'blocked_missing_execute_tool') blockers.push('execute_tool_function_required');
+    if (status === 'blocked_invalid_initial_state') blockers.push('prepared_adapter_state_invalid');
     return cleanStrings(blockers);
 }
 
@@ -666,7 +716,7 @@ export function createMainImageLivePhotoshopToolAdapter(
     const canRunGuardedLiveAdapter = status === 'ready_for_guarded_live_adapter';
     const executeTool = input.executeTool;
     const contract = input.adapterContract || null;
-    const state: AdapterRuntimeState = {
+    const state: AdapterRuntimeState = normalizeInitialState(input.initialState) || {
         groupIdsByPath: new Map(),
         createdGroupPaths: []
     };

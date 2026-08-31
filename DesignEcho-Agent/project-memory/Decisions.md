@@ -2,6 +2,16 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-126 开放创意主图以 prepare / Agent 通用 Tool / finalize 交付，不把 Skill 扩成设计器
+
+- 状态：active；代码、专项行为回归与 fresh 65 阶段完整核心闸门已通过，真实 Photoshop Attempt 待完成。
+- `main-image-design` 对开放创意只拥有两段机械生产接缝。prepare 要求同一 Runtime TaskRun、当前项目和 Agent 明确选择的单一标准规格，只创建一份工作文档、锁定背景和 5+4 空组；不读取测试答案、不选素材、不放置元素、不保存、不导出。返回的 workspace 是有界、过期、容量受限的 identity-only 收据，绑定 TaskRun /project /创建收据 documentId /group layerId /prepared revision；它不授权 Tool，也不进入第二 Task Store。同一 TaskRun 内 Reflexion 只改变 runId /generation，workspace owner 使用稳定 sessionId；换 sessionId 才视为另一 TaskRun，项目 /文档 /组 /revision 仍分别精确核对。
+- prepare 返回后控制权回到同一个多模态 Agent。Agent 使用现有 broad atomic Photoshop Tool 完成素材选择、多图关系、文字、形状、蒙版、层级、缩放与版式；Design Project State、Knowledge、Eagle 和模型先验仍只是可选上下文，不能替代当前像素观察或取得设计作者权。Skill 不新增第二套 DesignIR，也不规定图层数、文案、组件或审美配方。
+- finalize 必须使用同一 workspace，并以实时 `getDocumentInfo + getLayerHierarchy` 证明同一项目、同一 TaskRun、同一 document /group 身份、prepared 后的新 revision 和至少一个含非 group 内容的标准子组。它不重新置图或变换，只把真实非空组编译为 exact export request，并复用现有 guarded executor、delivery authority、staging、文件 hash /大小、同 source revision、promotion 和 external commit。editable 写 staging 时必须 `asCopy=true`，不能让活动工作文档指向随后删除的临时路径。
+- 成功 external commit 后 workspace 立即消费；文件已经 promotion 但 authority 收据未闭合时也必须失效，防止 Agent 在同一正式路径上循环重交。未修改、空组、错误 TaskRun、错误项目、错误文档、被替换组、过期 /伪造 ref 和重复 finalize 都在正式文件写入前失败关闭。背景层名称受 Photoshop 本地化影响，只能用 background role、locked 和 layerId 识别，不能强绑「背景」或 `Background` 文本。
+- 正面经验：把“标准文件容器”“Agent 画面作者权”“文件事务”分成三段后，既能沿用用户 5+4 生产习惯，也允许 Agent 使用通用工具表达多层设计；同一 workspace 让 Harness 只做事实一致性而不决定画面。负面教训：把一张素材、一个矩形 placement 和一次导出包成完整 Skill，会让文件成功掩盖设计增量不足；在失败后追加修补动作只会重复错误，必须先改变执行接缝。
+- 回滚点：新路径由显式 `mainImageProductionAction=prepare|finalize` 激活；若真实 Host 暴露缺陷，可独立回滚此入口和 workspace 模块，现有 `slotAssignments` 确定性入口、5+4 spec、guarded Tool 和 staging transaction 保持不变。不得回滚为 Harness 选图、默认填槽、固定版式或全局素材扇出。
+
 ## D-125 主图固定生产骨架、Agent 设计作者权与整组交付事务分离
 
 - 状态：active；基础生产骨架已随 `3cb1594e` 提交并推送。当前增量已通过 Renderer 类型检查、Runtime 声明、Skill Package、Capability、作者权和业务边界专项验证，以及一轮 fresh 65 阶段 `maintenance:validate`；fresh 正常程序 Photoshop Attempt 待完成。

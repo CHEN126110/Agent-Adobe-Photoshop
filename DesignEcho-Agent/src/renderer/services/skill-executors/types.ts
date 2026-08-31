@@ -28,6 +28,7 @@ import type {
     RuntimeActionPlanDigest
 } from '../../../shared/agent-runtime-v5/runtime-action-plan-declaration';
 import type { RuntimeInteractiveReentry } from '../../../shared/agent-runtime-v5/runtime-interactive-reentry';
+import type { RuntimeSessionIdentity } from '../../../shared/agent-runtime-v5/runtime-session';
 
 /**
  * 技能执行参数
@@ -56,6 +57,12 @@ export interface SkillExecuteParams {
     runtimeWorkflowDeliveryReentry?: RuntimeWorkflowDeliveryReentry;
     /** Harness 签发的当前 Runtime/TaskRun/continuation/Workflow call 身份。 */
     runtimeSkillExecutionLineage?: SkillExecutionRuntimeLineage;
+    /**
+     * 仅由 Harness 投影的当前 Runtime/TaskRun 身份（identity-only）。
+     * 它不授权任何 Tool、不改变任务结果，也永远不能从模型参数创建或覆盖；
+     * 后续 prepare/finalize 用它对账「同一 TaskRun」。
+     */
+    runtimeTaskIdentity?: RuntimeSessionIdentity;
     /**
      * 仅由 Engine 在操作账本、owner、卡片指纹和作用域全部校验后注入。
      * 模型 Tool 参数永远不能创建这一通道，子 Skill 也不自动继承。

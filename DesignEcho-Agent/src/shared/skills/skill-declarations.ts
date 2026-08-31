@@ -1800,7 +1800,7 @@ export const MainImageSkill: SkillDeclaration = {
     // legacy/deterministic 路由不得跳过 Agent 循环直执；Manifest 绑定后的同一 Agent
     // 可以把自己的逐槽决定提交给这个受控 production entry。
     modelDirectExecution: 'forbidden',
-    description: '开工先用 readSkillPlaybook("main-image-design") 读取主图用途、店铺规格分文档体系和交付边界。手册不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. After the Agent explicitly binds the ecommerce.main_image Manifest, this is the single Skill-owned production submission entry: it consumes Agent-authored slotAssignments, creates the standard editable documents, and exports only assigned non-empty groups. It does not choose assets, copy, layout, or aesthetic direction.',
+    description: '开工先用 readSkillPlaybook("main-image-design") 读取主图用途、店铺规格分文档体系和交付边界。手册不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. For open creative work, call prepare with one explicit size to create the standard empty Photoshop workspace, use general Photoshop tools to author the layered design, then call finalize with the returned workspace reference. Finalize exports only groups proven non-empty by live Photoshop readback. The legacy slotAssignments submission remains available for deterministic one-placement production. This Skill never chooses assets, copy, layout, or aesthetic direction.',
     whenToUse: [
         'User explicitly delegates a main-image, cover, or first-image design deliverable',
         'User asks for a white background image (白底图)',
@@ -1826,7 +1826,7 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 店铺工作文档基线。三个标准文档都保留 5 个点击槽和 4 个转化槽；普通生产必须通过 slotAssignments 逐槽精确声明 sizeKey/imageType/slotName/variantId、objective、该槽自己的 asset、subjectBounds 与 placement，跨规格或跨槽复用也要逐条明示。没有 slotAssignments 时不得从候选第一项、selectedAsset、旧计划或文件名补位。用户明确只要空骨架时才设置 createEmptySkeleton=true，此时不置入素材、不导出 raster。调用是否可写由 Harness 签发的 guarded executor 与交付 authority 决定，模型参数不能自行批准执行。白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时可显式设置 strategy-only；提交 slotAssignments/createEmptySkeleton 时会进入受控生产；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
+        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。开放创意主图使用两段式交付：先以 mainImageProductionAction=prepare 和一个由 Agent 明确选择的 size 创建空工作文档；拿到 mainImageWorkspaceRef 后，使用通用 Photoshop 工具完成多图、文字、形状、蒙版与排版；至少一个标准子组真实非空后，以 mainImageProductionAction=finalize 和同一 workspaceRef 保存/导出。不要把 prepare 当设计完成，不要在 finalize 重新置图。未显式指定规格时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 选择；Harness 不代选规格。三个标准文档都保留 5 个点击槽和 4 个转化槽。legacy 确定性生产仍可用 slotAssignments 逐槽提交单次 placement；没有 slotAssignments 时不得从候选第一项、selectedAsset、旧计划或文件名补位。用户明确只要空骨架文件时才设置 createEmptySkeleton=true。调用是否可写由 Harness 签发的 guarded executor 与交付 authority 决定，模型参数不能自行批准执行。白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时可显式设置 strategy-only；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
@@ -1849,6 +1849,10 @@ export const MainImageSkill: SkillDeclaration = {
         }),
         objParam('customSize', 'Custom size object {width,height}'),
         objParam('agentDesignDecision', 'Agent-authored main-image direction; no Harness default visual plan is supplied'),
+        strParam('mainImageProductionAction', 'Two-step open-creative production action: prepare one standard workspace, then finalize the same Agent-authored workspace', false, {
+            enum: ['prepare', 'finalize']
+        }),
+        strParam('mainImageWorkspaceRef', 'Opaque workspace reference returned by prepare; required unchanged for finalize'),
         mainImageSlotAssignmentsParam(),
         boolParam('createEmptySkeleton', '只创建并保存当前规格的标准空骨架（白底文档、2 个父组、5+4 空槽），不置入素材或导出 raster；仅在用户明确要求空骨架时设置 true。'),
         numParam('desiredClickImageCount', 'Agent- or user-declared number of authored click directions, capped by authored directions and five structural slots'),
