@@ -49,7 +49,7 @@
 - 当前防污染切片在首轮局部绿色后接受了独立攻击审计；发现的推荐回落、旧学习伪发布、Main 测试项目 /CDP 旁路、裸 G 集合碰撞和文件版本漂移均已根修。完成态审美复入资格已从主循环下沉到纯逻辑策略，要求产物闭合、`needs_review`、同 revision ReviewSet、完整可靠 Judge、无 blocker 与必需 E2 交付证据同时成立。限定复审已无 P0/P1，fresh 65 阶段 `maintenance:validate` 已通过，含作者权、业务边界、Final Comparison、Learning、Tool、Skill Package、Runtime、Run Ledger、调试信封、Agent 简化棘轮、Main /Renderer 类型检查、Agent /UXP 测试和 UXP production build。
 - INTAKE-092 当前整合树的持久行为回归已覆盖空骨架 39 步、两张不同素材逐槽几何、非法 safeBox 写前拒绝、1200 转化槽、27 槽 120 步、显式低预算拒绝、固定 DSL /旧 State /关键词文案 /local recipe 不再补设计答案，以及完整单文档 11 组执行与 documentId、父子关系、根 /子组顺序、Background id /role /locked /层级的八类故障注入；fresh 65 阶段 `maintenance:validate` 已通过，独立复审确认测试实际经过 production validator 且无剩余 P0/P1。真实 Host Attempt 仍待执行，不能把自动绿色登记为实机或视觉质量通过。
 - 当前增量已通过 Renderer 类型检查、设计作者权、Runtime 声明、Capability Resolver、Skill Package、业务边界与通用 executor 审计。新增正向行为测试调用真实 `mainImageExecutor`、真实冻结计划 /staging /external commit 链和文件探针完成一份 800 文档的 11 组、JPG /PSB 整组提交；同组负例证明 artifact、路径、lease、commit 与跨 executor 身份漂移零 Host 失败。随后一轮 fresh 65 阶段 `maintenance:validate` 通过，覆盖 Agent /UXP 测试、Main /Renderer 类型检查和 UXP production build。
-- 主图开放创意生产现在以同一 Agent 的两段式 Skill 交付：prepare 只创建一个明确规格的工作文档和 11 个空组，签发不授权 Tool 的 TaskRun /project /创建收据 document /group /revision workspace；同一 TaskRun 的 Reflexion generation 可继续使用，换 sessionId 不可复用。中间设计完全使用通用 Photoshop Tool；finalize 只导出实时层级中真实非空且身份未漂移的标准组，并与 `asCopy` 可编辑稿走同一 staged transaction。行为回归证明非法 Task 身份在首次 Host 调用前停止，未修改、空组、错误 TaskRun、错误文档、被替换组和重复提交均不产生正式文件写入；跨 Skill 调用的成功路径只提交一个 Agent 实际填充组与对应 PSB。专项类型、作者权、Runtime、Skill /Capability、Tool、业务边界和通用 executor 审计已通过，fresh 65 阶段 `maintenance:validate` 也已完整通过；fresh Photoshop Host 仍待验证。
+- 主图开放创意生产现在以同一 Agent 的两段式 Skill 交付：prepare 只创建一个明确规格的工作文档和 11 个空组，签发不授权 Tool 的 TaskRun /project /创建收据 document /group /revision workspace；同一 TaskRun 的 Reflexion generation 可继续使用，换 sessionId 不可复用。中间设计完全使用通用 Photoshop Tool；finalize 只导出实时层级中真实非空且身份未漂移的标准组，并与 `asCopy` 可编辑稿走同一 staged transaction。行为回归证明非法 Task 身份在首次 Host 调用前停止，未修改、空组、错误 TaskRun、错误文档、被替换组和重复提交均不产生正式文件写入；跨 Skill 调用的成功路径只提交一个 Agent 实际填充组与对应 PSB。专项类型、作者权、Runtime、Skill /Capability、Tool、业务边界和通用 executor 审计及 fresh 65 阶段 `maintenance:validate` 均通过，代码已由 `293dd3df` 提交推送；fresh Photoshop Host 仍待验证。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -87,12 +87,11 @@
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
 5. 历史 Markdown、旧命令和旧模型配置可能再次进入上下文并误导开发。
 6. 已上传图片若没有请求级 `attachmentRef`，Agent 会把 Harness 输入断链误判成“文件不在项目”，产生无效搜索并把路径问题退回用户；直接开放任意 CLI 会扩大权限面但不证明同名文件身份。
-7. 主图生产结构已从错误画布和固定方案中解耦，但新的逐槽 assignment、整组 staging 事务与层级读回尚未经过 fresh Photoshop Host；当前交接格式也不足以表达专业分层构图。每 assignment 的“模型确实观察过该素材版本”仍缺少逐槽视觉观察收据引用，不能把路径 /尺寸完整误当作模型已经看图。
+7. 主图生产结构已从错误画布和固定方案中解耦，开放创意也不再受限于逐槽一素材一几何，但新的 prepare /finalize、整组 staging 事务与层级读回尚未经过 fresh Photoshop Host。每个实际素材的“模型确实观察过该版本”仍缺少逐对象视觉观察收据引用，不能把路径 /尺寸完整误当作模型已经看图。
 
 ## 当前下一步
 
-1. prepare /finalize 增量已通过 fresh 完整核心闸门；完成最终差异审查、独立提交和推送，保持用户 3 个未提交 UI 文件在本轮之外。
-2. 在正常程序的新普通项目中验证同一 Agent 能否主动采用 prepare /通用 Tool /finalize，并用真实 Photoshop 读回证明复杂分层、非空组导出、活动文档路径不被 staging 改绑和外部文档零变化。
-3. 在新的正常项目中重跑自然短提示；不使用 fake /Debug fixture 或用户参考项目作为 active test project，核对候选覆盖、选图说明、参考取舍、分层设计、真实 5+4 Photoshop 层级、保画布导出、诚实 Final Judge 和外部文档零变化。
-4. 只有取得新样本后才选择一个设计质量变量；若仍退化为相同安全构图，优先证伪 Agent 设计认知 /参考信息增益或 Evaluation 检出，不恢复推荐排序、固定 Eagle 步骤或品类 Prompt。
-5. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。
+1. `293dd3df` 已提交推送且未包含用户 3 个 UI 文件；在正常程序的新普通项目中验证同一 Agent 能否主动采用 prepare /通用 Tool /finalize，并用真实 Photoshop 读回证明复杂分层、非空组导出、活动文档路径不被 staging 改绑和外部文档零变化。
+2. 用自然短提示核对候选覆盖、选图说明、参考取舍、分层设计、真实 5+4 Photoshop 层级、保画布导出、诚实 Final Judge 和外部文档零变化；不使用 fake /Debug fixture 或用户参考项目作为 active test project。
+3. 只有取得新样本后才选择一个设计质量变量；若仍退化为相同安全构图，优先证伪 Agent 设计认知 /参考信息增益或 Evaluation 检出，不恢复推荐排序、固定 Eagle 步骤或品类 Prompt。
+4. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。

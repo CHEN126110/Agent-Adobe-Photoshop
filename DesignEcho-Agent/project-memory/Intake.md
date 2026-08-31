@@ -78,7 +78,7 @@
 - 归属层级：Main Image Skill production structure / delivery inventory / UXP exporter / Photoshop readback verification。
 - 状态：in_progress
 - 已实现：`main-image-production-spec.ts` 是 Skill-owned 唯一事实源；稳定 5+4 容器与 Agent 逐槽 `slotAssignments` 分离，assignmentKey 贯穿 structure / placement / operation / handoff / dry-run / live request。空骨架只保存 3 份可编辑稿，满 27 槽冻结为 120 步；非法主体 bounds、target /safe box 或低于冻结计划的显式预算写前拒绝。UXP 导出先隔离兄弟子组并保留工作画布，Adapter 以 documentId、Background id、父子路径和规格面板顺序读回。pre-bound / loop-bound agentic Runtime 复用唯一责任投影并保留 broad atomic Tool；guarded executor、delivery authority、staging、完整提交和实际 Tool result /文件身份形成同一事务链。开放创意新增 prepare /finalize：prepare 只创建 Agent 明确选择的单规格文档与空组，workspace 精确绑定同一 TaskRun /project /document /group /revision 且不授予权限；Agent 在中间使用通用 Tool 自主分层设计；finalize 只交付身份未漂移的真实非空组和 `asCopy` editable。模拟 Host 行为回归覆盖未修改、空组、TaskRun /document /group 漂移、跨 Skill 成功交付和重复提交。旧固定 DSL、Project State 三套方案、关键词痛点 /场景、local recipe 和 1200 禁转化已从生产投影清除。
-- 下一步：prepare /finalize 增量已通过 fresh 65 阶段完整核心闸门；完成只读审查、独立提交与推送。再在正常程序的新普通项目里验证真实 800 /750 /1200 文档、5+4 层级、Agent 多图 /文字 /形状 /蒙版设计、非空组逐图导出、活动工作文档不被 staging 改绑、外部文档零意外修改及设计质量。补逐 assignment 视觉观察收据引用，自定义尺寸槽位契约另行立项。
+- 下一步：prepare /finalize 增量已通过 fresh 65 阶段完整核心闸门，并由 `293dd3df` 独立提交推送。现在转入正常程序的新普通项目，验证真实 800 /750 /1200 文档、5+4 层级、Agent 多图 /文字 /形状 /蒙版设计、非空组逐图导出、活动工作文档不被 staging 改绑、外部文档零意外修改及设计质量。补逐 assignment 视觉观察收据引用，自定义尺寸槽位契约另行立项。
 - 边界：截图只能证明容器，不能规定子组内部素材、图层、文案、版式或必须填满的数量；`slotAssignments` 也只是一素材一几何的生产交接，不等于完整设计表达。1200 的四个转化槽先保留，是否必须生产 /交付需用户规则或真实非空成稿证据。工作画布与平台上传尺寸分字段，不能从当前 JSX 猜 800×800 /750×1000 下采样。测试 fixture 不能反向成为生产 Skill 规则，也不能在 Skill 内复制第二套 DesignIR。
 
 ### INTAKE-089 工作流画布、交互 UI 与多 Agent 形态

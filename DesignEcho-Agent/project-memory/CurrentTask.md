@@ -50,8 +50,8 @@
 
 ### 下一步
 
-1. prepare /finalize 增量的 fresh 65 阶段完整核心闸门已通过；完成只读差异审查、独立提交与推送，继续排除用户未提交的 3 个 UI 文件。
-2. 重建与提交一致的正常 Agent / UXP，在新的普通项目中运行自然短提示；不使用 Debug fixture、fake 变量或用户真实参考项目作为 active test project。验证 Agent 是否真实选择一个规格进入 prepare、能否在 workspace 中自主完成对象理解、选图依据、按需参考、文字 /形状 /蒙版 /多图分层、真实 5+4 Photoshop 层级、保画布导出、Final Judge 与外部文档零变化。
+1. prepare /finalize 增量已由 `293dd3df` 独立提交并推送到 `legacy/codex/agent-uxp`；用户未提交的 3 个 UI 文件未进入该提交。
+2. 重建与 `293dd3df` 一致的正常 Agent / UXP，在新的普通项目中运行自然短提示；不使用 Debug fixture、fake 变量或用户真实参考项目作为 active test project。验证 Agent 是否真实选择一个规格进入 prepare、能否在 workspace 中自主完成对象理解、选图依据、按需参考、文字 /形状 /蒙版 /多图分层、真实 5+4 Photoshop 层级、保画布导出、Final Judge 与外部文档零变化。
 3. 若作品仍退化为相同安全构图，保持 Agent /Evaluation owner 归因，按 GMR 只改变一个可证伪变量；不得恢复 recommendation、旧状态注入、固定版式或测试答案。
 4. fresh Attempt 同时证明 `finalArtifactObserved=true`、PSD/JPG 精确 `runtimeDeliveryResultRefs`、非空 Debug `finalArtifactRefs` 与外部文档零变化后，再冻结剩余 5 Case × 2 队列。
 5. 在 S1 正式队列扩大前完成一个上传附件的通用 `attachmentRef → placeImage → removeBackground → 同目标读回` E2E；随后再按 INTAKE-088 分阶段建设受控外部文件与 CLI Provider。

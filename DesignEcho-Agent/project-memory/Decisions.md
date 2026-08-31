@@ -4,7 +4,7 @@
 
 ## D-126 开放创意主图以 prepare / Agent 通用 Tool / finalize 交付，不把 Skill 扩成设计器
 
-- 状态：active；代码、专项行为回归与 fresh 65 阶段完整核心闸门已通过，真实 Photoshop Attempt 待完成。
+- 状态：active；代码、专项行为回归与 fresh 65 阶段完整核心闸门已通过，并由 `293dd3df` 提交推送；真实 Photoshop Attempt 待完成。
 - `main-image-design` 对开放创意只拥有两段机械生产接缝。prepare 要求同一 Runtime TaskRun、当前项目和 Agent 明确选择的单一标准规格，只创建一份工作文档、锁定背景和 5+4 空组；不读取测试答案、不选素材、不放置元素、不保存、不导出。返回的 workspace 是有界、过期、容量受限的 identity-only 收据，绑定 TaskRun /project /创建收据 documentId /group layerId /prepared revision；它不授权 Tool，也不进入第二 Task Store。同一 TaskRun 内 Reflexion 只改变 runId /generation，workspace owner 使用稳定 sessionId；换 sessionId 才视为另一 TaskRun，项目 /文档 /组 /revision 仍分别精确核对。
 - prepare 返回后控制权回到同一个多模态 Agent。Agent 使用现有 broad atomic Photoshop Tool 完成素材选择、多图关系、文字、形状、蒙版、层级、缩放与版式；Design Project State、Knowledge、Eagle 和模型先验仍只是可选上下文，不能替代当前像素观察或取得设计作者权。Skill 不新增第二套 DesignIR，也不规定图层数、文案、组件或审美配方。
 - finalize 必须使用同一 workspace，并以实时 `getDocumentInfo + getLayerHierarchy` 证明同一项目、同一 TaskRun、同一 document /group 身份、prepared 后的新 revision 和至少一个含非 group 内容的标准子组。它不重新置图或变换，只把真实非空组编译为 exact export request，并复用现有 guarded executor、delivery authority、staging、文件 hash /大小、同 source revision、promotion 和 external commit。editable 写 staging 时必须 `asCopy=true`，不能让活动工作文档指向随后删除的临时路径。
