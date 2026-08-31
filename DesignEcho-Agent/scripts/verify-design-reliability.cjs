@@ -135,6 +135,9 @@ const {
   MAIN_IMAGE_MANIFEST
 } = require(path.join(ROOT, "src", "shared", "agent-runtime-v5", "manifests", "main-image.manifest.ts"));
 const {
+  buildSkillDeliveryPlanDigest
+} = require(path.join(ROOT, "src", "shared", "skills", "skill-delivery-convention.ts"));
+const {
   DETAIL_PAGE_MANIFEST
 } = require(path.join(ROOT, "src", "shared", "agent-runtime-v5", "manifests", "detail-page.manifest.ts"));
 const {
@@ -7127,6 +7130,139 @@ async function main() {
     }).status,
     "incomplete",
     "任一交付 revision 不匹配时不得拼接旧文件或扫描目录补造最终稿"
+  );
+
+  const manifestBoundContract = {
+    version: "agentic-artifact-completion-contract/v0",
+    skillId: "ecommerce.main_image",
+    taskType: "ecommerce.main_image.v1",
+    deliveryPlanBindingRequired: true,
+    deliveryReceiptProducerSkillIds: ["main-image-design"],
+    deliveryOutputs: ["main_image_psd", "main_image_preview", "delivery_manifest"],
+    exitCriteria: []
+  };
+  const manifestBoundConvention = {
+    version: "skill-delivery-convention/v0",
+    provenance: "skill_fallback",
+    supportRefs: [],
+    editable: {
+      projectRelativeRoot: "主图/可编辑稿",
+      fileNamePattern: "{defaultName}",
+      format: "psd"
+    },
+    raster: {
+      projectRelativeRoot: "主图/预览",
+      fileNamePattern: "{defaultName}",
+      format: "jpg"
+    },
+    pairing: "one_editable_per_raster",
+    versionPolicy: "new_version"
+  };
+  const manifestBoundPlanArtifacts = [{
+    artifactId: "main-image-editable",
+    kind: "editable_document",
+    pairId: "main-image-pair",
+    order: 0,
+    path: "C:\\fixture\\主图\\主图.psd",
+    format: "psd",
+    sourceHistoryRole: "same_document_revision"
+  }, {
+    artifactId: "main-image-preview",
+    kind: "raster_export",
+    pairId: "main-image-pair",
+    order: 1,
+    path: "C:\\fixture\\主图\\主图.jpg",
+    format: "jpg",
+    sourceHistoryRole: "same_document_revision"
+  }];
+  const manifestBoundReceipt = buildRuntimeDeliveryReceipt({
+    status: "ready",
+    outputs: manifestBoundContract.deliveryOutputs,
+    resultRefs: ["inner-save", "inner-export"],
+    resultRefProofs: [{ resultRef: "inner-save", effect: "save_export" }, {
+      resultRef: "inner-export",
+      effect: "save_export"
+    }],
+    artifacts: manifestBoundPlanArtifacts.map((artifact, index) => ({
+      path: artifact.path,
+      kind: artifact.kind,
+      proof: artifact.kind === "editable_document" ? "editable_document_artifact" : "file_probe",
+      fileIdentity: {
+        sha256: (index === 0 ? "a" : "b").repeat(64),
+        byteLength: 4096 + index
+      },
+      sourceHistoryStateRef: r38Revision,
+      planBinding: {
+        artifactId: artifact.artifactId,
+        pairId: artifact.pairId,
+        order: artifact.order,
+        format: artifact.format,
+        sourceHistoryRole: artifact.sourceHistoryRole
+      }
+    })),
+    expectedDeliveryPlan: {
+      digest: buildSkillDeliveryPlanDigest({
+        convention: manifestBoundConvention,
+        artifacts: manifestBoundPlanArtifacts
+      }),
+      convention: manifestBoundConvention,
+      artifacts: manifestBoundPlanArtifacts
+    },
+    sourceHistoryStateRef: r38Revision
+  });
+  assert.strictEqual(manifestBoundReceipt.status, "ready", "测试收据本身必须完整");
+  const manifestBoundProducerLog = [r38ToolLog[0], {
+    callId: "main-image-finalize-call",
+    name: "main-image-design",
+    arguments: { mainImageProductionAction: "finalize" },
+    result: {
+      success: true,
+      data: {
+        status: "main_image_agentic_delivery_completed",
+        runtimeDeliveryReceipt: manifestBoundReceipt
+      }
+    }
+  }];
+  const manifestBoundEvidence = projectAgenticFinalDeliveryEvidence({
+    deliveryOutputs: manifestBoundContract.deliveryOutputs,
+    contract: manifestBoundContract,
+    requirements: [{ id: "production-delivery", label: "交付", status: "passed" }],
+    toolCallLog: manifestBoundProducerLog,
+    reviewedTarget: r38ReviewedTarget,
+    reviewedHistoryStateRef: r38Revision
+  });
+  assert.deepStrictEqual(
+    manifestBoundEvidence,
+    {
+      status: "passed",
+      resultRefs: ["inner-save", "inner-export"],
+      artifactPaths: ["C:\\fixture\\主图\\主图.psd", "C:\\fixture\\主图\\主图.jpg"]
+    },
+    "Manifest-bound agentic delivery must consume the workflow typed receipt"
+  );
+  assert.strictEqual(
+    projectAgenticFinalDeliveryEvidence({
+      deliveryOutputs: manifestBoundContract.deliveryOutputs,
+      contract: manifestBoundContract,
+      requirements: [{ id: "production-delivery", label: "交付", status: "passed" }],
+      toolCallLog: r38ToolLog,
+      reviewedTarget: r38ReviewedTarget,
+      reviewedHistoryStateRef: r38Revision
+    }).status,
+    "incomplete",
+    "Atomic PSD/JPG saves must not bypass a Manifest-bound workflow producer"
+  );
+  assert.strictEqual(
+    projectAgenticFinalDeliveryEvidence({
+      deliveryOutputs: manifestBoundContract.deliveryOutputs,
+      contract: manifestBoundContract,
+      requirements: [{ id: "production-delivery", label: "交付", status: "passed" }],
+      toolCallLog: [...manifestBoundProducerLog, r38ToolLog[2]],
+      reviewedTarget: r38ReviewedTarget,
+      reviewedHistoryStateRef: r38Revision
+    }).status,
+    "incomplete",
+    "A later generic save/export must invalidate the workflow delivery receipt"
   );
 
   console.log("Design Reliability 纯逻辑验证通过：TaskRun 合并、真实 mutation、假完成、人工评审分母、发布门禁与 cohort 可比性均已覆盖。");

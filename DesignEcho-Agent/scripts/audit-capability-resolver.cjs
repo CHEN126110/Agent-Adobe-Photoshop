@@ -55,6 +55,7 @@ const files = {
   engine: 'src/renderer/services/design-agent/engine.ts',
   agent: 'src/renderer/services/agent-runtime/agent.ts',
   agenticFinalDelivery: 'src/renderer/services/agent-runtime/agentic-final-delivery-evidence.ts',
+  agenticWorkflowDelivery: 'src/renderer/services/agent-runtime/agentic-workflow-delivery-receipt.ts',
   taskClosureCapabilityRuntime: 'src/renderer/services/agent-runtime/task-closure-capability-runtime.ts',
   terminalClosure: 'src/renderer/services/agent-runtime/terminal-closure-checkpoint.ts',
   runtimeReferenceAdapter: 'src/renderer/services/agent-runtime/runtime-reference-adapter.ts',
@@ -805,6 +806,10 @@ requireToken('agenticFinalDelivery', 'projectAgenticFinalDeliveryEvidence({', 'A
 requireToken('agenticFinalDelivery', 'collectRuntimeFinalArtifactPaths({', 'Agentic final delivery must bind exact saved artifact paths from result refs.');
 requireToken('agenticFinalDelivery', 'resultRefs: Array.from(new Set(resultRefs))', 'Agentic final delivery must retain every same-revision editable and raster result ref.');
 forbidPattern('agenticFinalDelivery', /callModel|executeTool|saveDocument\(|quickExport\(/, 'Agentic delivery evidence must not execute or select a delivery action.');
+requireToken('agenticWorkflowDelivery', 'deliveryPlanBindingRequired !== true', 'Workflow receipt selection must stay inactive unless the Manifest explicitly requires a bound DeliveryPlan.');
+requireToken('agenticWorkflowDelivery', 'deliveryReceiptProducerSkillIds', 'Workflow receipt selection must consume Manifest-declared producer identities.');
+requireToken('agenticWorkflowDelivery', "classifyAgentToolExecution(entry.name, entry.arguments) === 'save_export'", 'A later generic save/export must invalidate a bound workflow receipt.');
+forbidPattern('agenticWorkflowDelivery', /callModel|executeTool|saveDocument\(|quickExport\(/, 'Workflow receipt selection must remain evidence-only.');
 requireToken('agent', 'const laterEntries = this.toolCallLog.slice(receiptIndex + 1);', 'Delivery receipts must inspect every later Tool result.');
 requireToken('agent', 'const laterSaveExportExists = laterEntries.some', 'Single-document delivery must detect a later save/export boundary.');
 requireToken('agent', 'const laterContentMutationExists = findLatestObservedPhotoshopMutationIndex(laterEntries)', 'Every delivery scope must detect later Photoshop content mutations.');

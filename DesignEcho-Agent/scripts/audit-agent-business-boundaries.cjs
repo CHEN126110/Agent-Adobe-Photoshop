@@ -297,6 +297,8 @@ const agentOrchestrationTypesPath = path.join(
   'types.ts'
 );
 const taskCompletionContractPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'task-completion-contract.ts');
+const runtimeDeliveryReceiptPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-delivery-receipt.ts');
+const skillDeliveryConventionPath = path.join(root, 'src', 'shared', 'skills', 'skill-delivery-convention.ts');
 const agentOperationLedgerPath = path.join(root, 'src', 'shared', 'agent-operation-ledger.ts');
 const designTaskPolicyPath = path.join(root, 'src', 'renderer', 'services', 'agent-policies', 'design-task-policy.ts');
 const designQualityVerdictPath = path.join(root, 'src', 'shared', 'design-quality-verdict-bundle.ts');
@@ -3916,6 +3918,8 @@ async function run() {
     resolvePolicyGateBlockSignature
   } = require(policyGateRepeatGuardPath);
   const { buildTaskCompletionContract } = require(taskCompletionContractPath);
+  const { buildRuntimeDeliveryReceipt } = require(runtimeDeliveryReceiptPath);
+  const { buildSkillDeliveryPlanDigest } = require(skillDeliveryConventionPath);
   const { buildAgentOperationLedger } = require(agentOperationLedgerPath);
   const { buildDesignTaskContractRemediationDirective } = require(designTaskPolicyPath);
   const { buildDesignVerdict, isDesignVerdictDeliverable } = require(designQualityVerdictPath);
@@ -11214,6 +11218,99 @@ async function run() {
     exitCriteria: ['advisory-only'],
     reviewRubricRef: evaluationProfile.profileId
   };
+  const agenticBoundMainImageArtifactContract = {
+    ...agenticMainImageArtifactContract,
+    deliveryPlanBindingRequired: true,
+    deliveryReceiptProducerSkillIds: ['main-image-design']
+  };
+  const boundMainImageRevision = { documentId: 41, historyStateId: 102 };
+  const boundMainImageConvention = {
+    version: 'skill-delivery-convention/v0',
+    provenance: 'skill_fallback',
+    supportRefs: [],
+    editable: {
+      projectRelativeRoot: '主图/可编辑稿',
+      fileNamePattern: '{defaultName}',
+      format: 'psd'
+    },
+    raster: {
+      projectRelativeRoot: '主图/预览',
+      fileNamePattern: '{defaultName}',
+      format: 'jpg'
+    },
+    pairing: 'one_editable_per_raster',
+    versionPolicy: 'new_version'
+  };
+  const boundMainImagePlanArtifacts = [{
+    artifactId: 'main-image-editable',
+    kind: 'editable_document',
+    pairId: 'main-image-pair',
+    order: 0,
+    path: 'C:\\project\\主图\\可编辑稿\\main-image.psd',
+    format: 'psd',
+    sourceHistoryRole: 'same_document_revision'
+  }, {
+    artifactId: 'main-image-preview',
+    kind: 'raster_export',
+    pairId: 'main-image-pair',
+    order: 1,
+    path: 'C:\\project\\主图\\预览\\main-image.jpg',
+    format: 'jpg',
+    sourceHistoryRole: 'same_document_revision'
+  }];
+  const boundMainImageRuntimeArtifacts = boundMainImagePlanArtifacts.map((artifact, index) => ({
+    path: artifact.path,
+    kind: artifact.kind,
+    proof: artifact.kind === 'editable_document'
+      ? 'editable_document_artifact'
+      : 'file_probe',
+    fileIdentity: {
+      sha256: String(index + 1).repeat(64),
+      byteLength: 1024 + index
+    },
+    sourceHistoryStateRef: boundMainImageRevision,
+    planBinding: {
+      artifactId: artifact.artifactId,
+      pairId: artifact.pairId,
+      order: artifact.order,
+      format: artifact.format,
+      sourceHistoryRole: artifact.sourceHistoryRole
+    }
+  }));
+  const boundMainImageDeliveryReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    outputs: agenticBoundMainImageArtifactContract.deliveryOutputs,
+    resultRefs: ['bound-main-image-save', 'bound-main-image-export'],
+    resultRefProofs: [{
+      resultRef: 'bound-main-image-save',
+      effect: 'save_export'
+    }, {
+      resultRef: 'bound-main-image-export',
+      effect: 'save_export'
+    }],
+    artifacts: boundMainImageRuntimeArtifacts,
+    expectedDeliveryPlan: {
+      digest: buildSkillDeliveryPlanDigest({
+        convention: boundMainImageConvention,
+        artifacts: boundMainImagePlanArtifacts
+      }),
+      convention: boundMainImageConvention,
+      artifacts: boundMainImagePlanArtifacts
+    },
+    sourceHistoryStateRef: boundMainImageRevision
+  });
+  const boundMainImageFinalizeOperation = {
+    callId: 'bound-main-image-finalize-call',
+    name: 'main-image-design',
+    arguments: { mainImageProductionAction: 'finalize' },
+    result: {
+      success: true,
+      data: {
+        status: 'main_image_agentic_delivery_completed',
+        runtimeDeliveryReceipt: boundMainImageDeliveryReceipt
+      }
+    }
+  };
   const agenticMainImageProductionLog = [
     currentDocumentRead,
     successfulOperation('createDocument', {
@@ -11269,6 +11366,30 @@ async function run() {
       })
     ]
   );
+  const buildBoundMainImageProfileContract = (deliveryOperations) => buildTaskCompletionContract({
+    task: '生成一个单画布视觉。',
+    context: { agenticArtifactContract: agenticBoundMainImageArtifactContract },
+    toolCallLog: [...agenticMainImageProductionLog, ...deliveryOperations],
+    evaluationProfile,
+    evaluationProfileResult
+  });
+  const agenticBoundMainImageAtomicBypassContract = buildBoundMainImageProfileContract([
+    successfulOperation('quickExport', { documentId: 41, format: 'png' }, {
+      outputPath: 'main-image.png'
+    }),
+    successfulOperation('saveDocument', { documentId: 41, format: 'psd' }, {
+      filePath: 'main-image.psd'
+    })
+  ]);
+  const agenticBoundMainImageCompleteContract = buildBoundMainImageProfileContract([
+    boundMainImageFinalizeOperation
+  ]);
+  const agenticBoundMainImagePostFinalizeBypassContract = buildBoundMainImageProfileContract([
+    boundMainImageFinalizeOperation,
+    successfulOperation('quickExport', { documentId: 41, format: 'png' }, {
+      outputPath: 'later-main-image.png'
+    })
+  ]);
   const agenticMainImageUnsavedRemediation = buildDesignTaskContractRemediationDirective({
     task: '请完成当前设计。',
     context: { agenticArtifactContract: agenticMainImageArtifactContract },
@@ -12121,6 +12242,19 @@ async function run() {
       && requirementById(agenticMainImageCompleteContract, 'production-delivery')?.status === 'passed'
       ? []
       : ['agentic-delivery:psd-and-preview-receipts-did-not-complete-profile-task']),
+    ...(agenticBoundMainImageAtomicBypassContract?.status === 'failed'
+      && requirementById(agenticBoundMainImageAtomicBypassContract, 'production-delivery')?.status === 'failed'
+      ? []
+      : ['agentic-delivery:manifest-bound-workflow-was-bypassed-by-atomic-save-export']),
+    ...(agenticBoundMainImageCompleteContract?.status === 'completed'
+      && requirementById(agenticBoundMainImageCompleteContract, 'production-delivery')?.status === 'passed'
+      && requirementById(agenticBoundMainImageCompleteContract, 'production-delivery')?.actual?.deliveryBasis === 'manifest_bound_workflow_receipt'
+      ? []
+      : ['agentic-delivery:manifest-bound-workflow-receipt-did-not-close-delivery']),
+    ...(agenticBoundMainImagePostFinalizeBypassContract?.status === 'failed'
+      && requirementById(agenticBoundMainImagePostFinalizeBypassContract, 'production-delivery')?.status === 'failed'
+      ? []
+      : ['agentic-delivery:later-generic-export-did-not-invalidate-workflow-receipt']),
     ...(agenticMainImageUnsavedRemediation
       && /保存可编辑文档与预览图片/.test(agenticMainImageUnsavedRemediation.shortReason)
       && !/(quickExport|saveDocument)/.test(agenticMainImageUnsavedRemediation.directive)

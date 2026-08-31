@@ -3046,6 +3046,13 @@ function buildAgenticArtifactCompletionContract(
         bundle.stagePlan.expectedWorkMode
     );
     if (!effectiveContract) return undefined;
+    const workflowProducerSkillIds = Array.from(new Set(
+        (bundle.manifest.workflow_entry_skill_ids?.length
+            ? bundle.manifest.workflow_entry_skill_ids
+            : bundle.manifest.legacy_skill_ids || [])
+            .map((value) => String(value || '').trim())
+            .filter(Boolean)
+    ));
     return {
         version: 'agentic-artifact-completion-contract/v0',
         skillId: bundle.manifest.skill_id,
@@ -3053,6 +3060,12 @@ function buildAgenticArtifactCompletionContract(
         ...(effectiveContract.workMode ? { workMode: effectiveContract.workMode } : {}),
         ...(effectiveContract.productionObligation
             ? { productionObligation: effectiveContract.productionObligation }
+            : {}),
+        ...(effectiveContract.deliveryPlanBindingRequired === true
+            ? {
+                deliveryPlanBindingRequired: true as const,
+                deliveryReceiptProducerSkillIds: workflowProducerSkillIds
+            }
             : {}),
         deliveryOutputs: [...effectiveContract.deliveryOutputs],
         exitCriteria: [...effectiveContract.exitCriteria],

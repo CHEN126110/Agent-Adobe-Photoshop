@@ -8,6 +8,7 @@ import type {
     TaskCompletionReferenceObservation,
     TaskCompletionRequirement
 } from './types';
+import { resolveAgenticWorkflowDeliveryReceipt } from './agentic-workflow-delivery-receipt';
 import {
     readAgentVisualObservationOverflow,
     readAgentVisualObservation,
@@ -2094,18 +2095,33 @@ function buildDeclaredDeliveryRequirement(
         ? projectCreatedDocumentPairedDelivery(input, log)
         : undefined;
     if (!taskRequestsDelivery(input) && !pairedDelivery) return undefined;
+    const deliveryPlanBindingRequired = input.context?.agenticArtifactContract
+        ?.deliveryPlanBindingRequired === true;
+    const workflowDeliveryEvidence = deliveryPlanBindingRequired
+        ? resolveAgenticWorkflowDeliveryReceipt({
+            contract: input.context?.agenticArtifactContract,
+            toolCallLog: log
+        })
+        : undefined;
     const rasterRequired = Boolean(pairedDelivery) || taskRequestsRasterDelivery(input);
     const editableRequired = Boolean(pairedDelivery) || taskRequestsEditableDelivery(input);
-    const rasterDeliveryCount = pairedDelivery?.rasterDeliveryCount ?? countRasterDelivery(log);
-    const editableDeliveryCount = pairedDelivery?.editableDeliveryCount ?? countEditableDelivery(log);
+    const rasterDeliveryCount = deliveryPlanBindingRequired
+        ? workflowDeliveryEvidence?.rasterArtifactCount || 0
+        : (pairedDelivery?.rasterDeliveryCount ?? countRasterDelivery(log));
+    const editableDeliveryCount = deliveryPlanBindingRequired
+        ? workflowDeliveryEvidence?.editableArtifactCount || 0
+        : (pairedDelivery?.editableDeliveryCount ?? countEditableDelivery(log));
     const deliveryPassed = (!rasterRequired || rasterDeliveryCount > 0)
         && (!editableRequired || editableDeliveryCount > 0)
         && (rasterRequired || editableRequired
             ? true
-            : rasterDeliveryCount + editableDeliveryCount > 0);
+            : rasterDeliveryCount + editableDeliveryCount > 0)
+        && (!deliveryPlanBindingRequired || Boolean(workflowDeliveryEvidence));
     const status: TaskCompletionRequirement['status'] = deliveryPassed ? 'passed' : 'failed';
     let reason: string | undefined;
-    if (!deliveryPassed && pairedDelivery) {
+    if (!deliveryPassed && deliveryPlanBindingRequired) {
+        reason = '当前 Manifest 要求由其 Workflow owner 提交绑定执行前 DeliveryPlan 的完整交付收据；普通 save/export 文件即使存在，也不能替代这张同任务、同版本收据。';
+    } else if (!deliveryPassed && pairedDelivery) {
         reason = '本轮新建设计文档需要交付同一最终版本的可编辑源稿与预览图片，但当前没有同时取得该 document/history 的 PSD/PSB 保存和 JPG/PNG/WebP 导出收据。';
     } else if (!deliveryPassed && rasterRequired && editableRequired) {
         reason = '交付要求包含可编辑文档和预览图片，但当前没有同时取得成功的文档保存与图片导出收据。';
@@ -2127,11 +2143,22 @@ function buildDeclaredDeliveryRequirement(
         expected: {
             rasterRequired,
             editableRequired,
-            deliveryOutputs: input.context?.agenticArtifactContract?.deliveryOutputs || []
+            deliveryOutputs: input.context?.agenticArtifactContract?.deliveryOutputs || [],
+            deliveryPlanBindingRequired,
+            ...(deliveryPlanBindingRequired ? {
+                deliveryReceiptProducerSkillIds: input.context?.agenticArtifactContract
+                    ?.deliveryReceiptProducerSkillIds || []
+            } : {})
         },
         actual: {
             rasterDeliveryCount,
             editableDeliveryCount,
+            ...(workflowDeliveryEvidence ? {
+                deliveryBasis: 'manifest_bound_workflow_receipt',
+                producerSkillId: workflowDeliveryEvidence.producerSkillId,
+                producerCallId: workflowDeliveryEvidence.callId,
+                resultRefCount: workflowDeliveryEvidence.receipt.resultRefs.length
+            } : {}),
             ...(pairedDelivery ? {
                 deliveryBasis: pairedDelivery.basis,
                 documentId: pairedDelivery.documentId,

@@ -24,6 +24,7 @@ import {
     isRuntimeRasterDeliveryOutput,
     readTaskCompletionRequiredDeliveryOutputs
 } from './task-completion-contract';
+import { resolveAgenticWorkflowDeliveryReceipt } from './agentic-workflow-delivery-receipt';
 import type {
     AgenticArtifactCompletionContract,
     AgentExecutionSummary,
@@ -34,6 +35,7 @@ import type { AgentDeliveryStageEvidence } from './terminal-closure-checkpoint';
 
 export interface AgenticFinalDeliveryEvidenceInput {
     deliveryOutputs: readonly string[];
+    contract?: AgenticArtifactCompletionContract;
     requirements: readonly TaskCompletionRequirement[];
     toolCallLog: readonly AgentToolCallLogEntry[];
     reviewedTarget: RuntimeExecutionTargetAnchor;
@@ -62,6 +64,7 @@ export function projectAgenticFinalDeliveryStageEvidence(input: {
     if (!input.reviewedPreview) return { deliveryEvidencePassed: false };
     const evidence = projectAgenticFinalDeliveryEvidence({
         deliveryOutputs,
+        contract: input.contract,
         requirements: input.summary.taskCompletion?.required || [],
         toolCallLog: input.toolCallLog,
         reviewedTarget: input.reviewedPreview.target,
@@ -90,6 +93,52 @@ export function projectAgenticFinalDeliveryEvidence(
         || readTaskCompletionRequiredDeliveryOutputs({ required: [requirement] }).length > 0
     ));
     if (deliveryRequirement?.status !== 'passed') return incompleteEvidence();
+
+    if (input.contract?.deliveryPlanBindingRequired === true) {
+        const workflowEvidence = resolveAgenticWorkflowDeliveryReceipt({
+            contract: input.contract,
+            toolCallLog: input.toolCallLog
+        });
+        const receiptTarget = workflowEvidence?.receipt.sourceHistoryStateRef
+            ? resolveRuntimeExecutionTarget({
+                result: {
+                    documentId: workflowEvidence.receipt.sourceHistoryStateRef.documentId
+                }
+            })
+            : undefined;
+        if (!workflowEvidence
+            || workflowEvidence.receipt.settlementScope !== 'single_document_revision'
+            || !workflowEvidence.receipt.sourceHistoryStateRef
+            || !receiptTarget
+            || !sameRuntimeExecutionDocument(receiptTarget, input.reviewedTarget)
+            || !samePhotoshopHistoryStateRef(
+                workflowEvidence.receipt.sourceHistoryStateRef,
+                input.reviewedHistoryStateRef
+            )) {
+            return incompleteEvidence();
+        }
+        const resultRefs = Array.from(new Set(workflowEvidence.receipt.resultRefs));
+        const artifactPaths = collectRuntimeFinalArtifactPaths({
+            entries: input.toolCallLog,
+            resultRefs,
+            producerReceiptCallRefs: [workflowEvidence.callId],
+            producerReceiptE2CallRefs: [workflowEvidence.callId],
+            includeProducerReceipts: true
+        });
+        const editableRequired = input.deliveryOutputs.some(isRuntimeEditableDeliveryOutput);
+        const rasterRequired = input.deliveryOutputs.some(isRuntimeRasterDeliveryOutput);
+        if (resultRefs.length === 0
+            || artifactPaths.length === 0
+            || (editableRequired && workflowEvidence.editableArtifactCount === 0)
+            || (rasterRequired && workflowEvidence.rasterArtifactCount === 0)) {
+            return incompleteEvidence();
+        }
+        return {
+            status: 'passed',
+            resultRefs,
+            artifactPaths
+        };
+    }
 
     const latestMutationIndex = findLatestObservedPhotoshopMutationIndex(input.toolCallLog);
     const resultRefs = input.toolCallLog.flatMap((entry, index) => {

@@ -5985,6 +5985,16 @@ function assertAgenticManifestOwnerOnlyCapabilityBinding() {
     context: {}
   });
   assert(preBoundProjection, 'pre-bound agentic Runtime did not build its responsibility projection');
+  assert.strictEqual(
+    preBoundProjection.artifactContract.deliveryPlanBindingRequired,
+    true,
+    'agentic completion projection dropped Manifest delivery_plan_binding_required'
+  );
+  assert.deepStrictEqual(
+    preBoundProjection.artifactContract.deliveryReceiptProducerSkillIds,
+    ['main-image-design'],
+    'agentic completion projection did not retain the Manifest workflow delivery owner'
+  );
   assert.deepStrictEqual(preBoundProjection.bindingContext.resolvedInputs, [
     { inputKey: 'product', sourceKinds: ['user_goal'] },
     { inputKey: 'asset_source', sourceKinds: ['attached_image'] }

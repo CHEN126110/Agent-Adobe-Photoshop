@@ -516,6 +516,12 @@ export interface AgenticArtifactCompletionContract {
     taskType: string;
     workMode?: RuntimeStagePlanEffectiveContract['workMode'];
     productionObligation?: RuntimeStagePlanEffectiveContract['productionObligation'];
+    /**
+     * Manifest 明确要求 typed DeliveryPlan 时，普通原子 save/export 只能作为工作动作，
+     * 不能自行满足正式交付。完成层必须消费下列 Workflow producer 的 ready receipt。
+     */
+    deliveryPlanBindingRequired?: true;
+    deliveryReceiptProducerSkillIds?: string[];
     deliveryOutputs: string[];
     exitCriteria: string[];
     reviewRubricRef?: string;
