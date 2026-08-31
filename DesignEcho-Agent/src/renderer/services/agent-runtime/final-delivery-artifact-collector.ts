@@ -1,6 +1,6 @@
 import { classifyAgentToolExecution } from '../../../shared/agent-tool-execution-preflight';
 import { readRuntimeDeliveryReceipt } from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
-import { collectRuntimeFinalArtifactPaths } from '../../../shared/runtime-final-artifact-paths';
+import { collectRuntimeFinalArtifactPathCandidates } from '../../../shared/runtime-final-artifact-paths';
 import { getSkillById } from '../../../shared/skills/skill-declarations';
 import type { AgentToolCallLogEntry } from './types';
 
@@ -18,7 +18,7 @@ export interface AgentDebugSkuDeliverySource {
 }
 
 export interface AgentFinalDeliveryDebugProjection {
-    paths: string[];
+    pathCandidates: unknown[];
     skuDeliverySource?: AgentDebugSkuDeliverySource;
 }
 
@@ -94,7 +94,7 @@ export function collectAgentFinalDeliveryDebugProjection(
     input: AgentFinalDeliveryArtifactCollectionInput
 ): AgentFinalDeliveryDebugProjection {
     const { producerReceiptCallRefs, producerReceiptE2CallRefs } = resolveProducerReceiptRefs(input);
-    const paths = collectRuntimeFinalArtifactPaths({
+    const pathCandidates = collectRuntimeFinalArtifactPathCandidates({
         entries: input.entries,
         resultRefs: input.resultRefs,
         producerReceiptCallRefs,
@@ -103,7 +103,7 @@ export function collectAgentFinalDeliveryDebugProjection(
     });
     const skuDeliverySource = collectDebugSkuDeliverySource(input, producerReceiptE2CallRefs);
     return {
-        paths,
+        pathCandidates,
         ...(skuDeliverySource ? { skuDeliverySource } : {})
     };
 }

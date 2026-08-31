@@ -111,6 +111,43 @@ export type FinalQualityModelProtocolResult =
         diagnosisRepairTargetCount: 0;
     };
 
+/**
+ * Final-quality acquisition/runtime 在模型协议形成前异常时，仍投影到同一个有界协议摘要。
+ * 该摘要只说明 Evaluation owner 未能运行，不包含异常正文，也不授予主 Agent 重试、
+ * Photoshop 写入、完成或质量通过权限。
+ */
+export function projectFinalQualityEvaluationRuntimeFailure(): FinalQualityModelProtocolDigest {
+    return {
+        judgeStatus: 'unavailable',
+        judgeFailureKind: 'evaluation_runtime_failed',
+        diagnosisRepairStatus: 'not_run',
+        diagnosisRepairTargetCount: 0,
+        actionableDiagnosisCount: 0,
+        evidenceScope: {
+            finalArtifactObserved: false,
+            selectedSourceCompared: false,
+            declaredReferenceCompared: false,
+            candidateSetCompared: false
+        }
+    };
+}
+
+/** 已知当前 Photoshop revision 不再等于已评分 revision 时，旧评分只保留 stale 事实。 */
+export function projectFinalQualityRevisionStale(): FinalQualityModelProtocolDigest {
+    return {
+        judgeStatus: 'stale',
+        diagnosisRepairStatus: 'stale',
+        diagnosisRepairTargetCount: 0,
+        actionableDiagnosisCount: 0,
+        evidenceScope: {
+            finalArtifactObserved: false,
+            selectedSourceCompared: false,
+            declaredReferenceCompared: false,
+            candidateSetCompared: false
+        }
+    };
+}
+
 export function projectFinalQualityModelProtocolDigest(
     result: FinalQualityModelProtocolResult,
     actionableDiagnosisCount: number,

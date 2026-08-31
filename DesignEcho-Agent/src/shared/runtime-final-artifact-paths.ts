@@ -17,8 +17,21 @@ export interface RuntimeFinalArtifactToolLogEntry {
     succeeded?: boolean;
 }
 
+export interface RuntimeFinalArtifactCollectionInput {
+    entries: readonly RuntimeFinalArtifactToolLogEntry[];
+    resultRefs?: readonly string[];
+    producerReceiptCallRefs?: readonly string[];
+    /** E2 已把复合生产者声明的精确 save/export resultRefs 绑定到该外层 Skill call。 */
+    producerReceiptE2CallRefs?: readonly string[];
+    includeProducerReceipts: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(value: object, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function normalizeRef(value: unknown): string {
@@ -177,23 +190,113 @@ function collectReferencedResultPaths(
     }
 }
 
-/**
- * 从 E2 精确 resultRef 和一次已结算的复合生产者收据中收集最终文件事实。
- *
- * producerReceiptCallRefs 必须由调用方根据注册 Skill 身份显式签发；即使签发，单文档
- * 收据仍须匹配最终 revision，多文档收据仍须绑定最后一次 mutation 与 E2 精确 save/export；
- * 复合 Skill 的内部 resultRef 只能由 Agent 在 E2 验证通过后映射回同一个外层 call。
- * 旧收据或其后又发生 mutation 的收据都会失效。函数不递归扫描业务对象、不读取目录，
- * 也不把这些路径写入生产结果或完成/质量判断。
- */
-export function collectRuntimeFinalArtifactPaths(input: {
+function collectSingleArtifactRecordCandidate(
+    record: Record<string, unknown>,
+    addCandidate: (value: unknown) => void
+): void {
+    const keys = ['filePath', 'path', 'outputPath'].filter((key) => hasOwn(record, key));
+    if (keys.length === 0) {
+        addCandidate(undefined);
+        return;
+    }
+    const firstValue = record[keys[0]];
+    addCandidate(firstValue);
+    if (keys.slice(1).some((key) => record[key] !== firstValue)) {
+        addCandidate(undefined);
+    }
+}
+
+function collectReferencedResultPathCandidates(
+    value: unknown,
+    addCandidate: (value: unknown) => void
+): void {
+    if (!isRecord(value)) {
+        addCandidate(value);
+        return;
+    }
+    for (const record of readResultRecords(value)) {
+        const editableArtifactDeclared = hasOwn(record, 'editableDocumentArtifact');
+        const editableArtifact = record.editableDocumentArtifact;
+        if (editableArtifactDeclared) {
+            if (isRecord(editableArtifact)) {
+                if (hasOwn(editableArtifact, 'path')) {
+                    addCandidate(editableArtifact.path);
+                } else {
+                    addCandidate(undefined);
+                }
+                if (hasOwn(record, 'savedPath')
+                    && record.savedPath !== editableArtifact.path) {
+                    addCandidate(record.savedPath);
+                    addCandidate(undefined);
+                }
+            } else {
+                addCandidate(editableArtifact);
+                if (hasOwn(record, 'savedPath')) addCandidate(record.savedPath);
+            }
+        } else if (hasOwn(record, 'savedPath')) {
+            addCandidate(record.savedPath);
+        }
+
+        const exportedFilesDeclared = hasOwn(record, 'exportedFiles');
+        const exportedFiles = record.exportedFiles;
+        const exportedFileValues: unknown[] = [];
+        if (exportedFilesDeclared) {
+            if (!Array.isArray(exportedFiles)) {
+                addCandidate(exportedFiles);
+            } else {
+                for (const exportedFile of exportedFiles) {
+                    if (typeof exportedFile === 'string') {
+                        addCandidate(exportedFile);
+                        exportedFileValues.push(exportedFile);
+                    } else if (isRecord(exportedFile)) {
+                        const pathKey = ['filePath', 'path', 'outputPath']
+                            .find((key) => hasOwn(exportedFile, key));
+                        if (pathKey) exportedFileValues.push(exportedFile[pathKey]);
+                        collectSingleArtifactRecordCandidate(exportedFile, addCandidate);
+                    } else {
+                        addCandidate(exportedFile);
+                    }
+                }
+            }
+        }
+
+        if (hasOwn(record, 'filePath')
+            && !exportedFileValues.some((value) => value === record.filePath)) {
+            addCandidate(record.filePath);
+        }
+        if (hasOwn(record, 'outputPath')
+            && !hasOwn(record, 'filePath')
+            && !exportedFilesDeclared) {
+            addCandidate(record.outputPath);
+        } else if (hasOwn(record, 'outputPath')
+            && !hasOwn(record, 'filePath')
+            && Array.isArray(exportedFiles)
+            && exportedFiles.length === 0) {
+            addCandidate(record.outputPath);
+            addCandidate(undefined);
+        }
+
+        if (hasOwn(record, 'screens')) {
+            if (!Array.isArray(record.screens)) {
+                addCandidate(record.screens);
+            } else {
+                for (const screen of record.screens) {
+                    if (isRecord(screen) && hasOwn(screen, 'path')) {
+                        addCandidate(screen.path);
+                    } else {
+                        addCandidate(undefined);
+                    }
+                }
+            }
+        }
+    }
+}
+
+function prepareFinalArtifactCollection(input: RuntimeFinalArtifactCollectionInput): {
     entries: readonly RuntimeFinalArtifactToolLogEntry[];
-    resultRefs?: readonly string[];
-    producerReceiptCallRefs?: readonly string[];
-    /** E2 已把复合生产者声明的精确 save/export resultRefs 绑定到该外层 Skill call。 */
-    producerReceiptE2CallRefs?: readonly string[];
-    includeProducerReceipts: boolean;
-}): string[] {
+    finalResultRefs: Set<string>;
+    producerReceiptIndex?: number;
+} {
     const entries = Array.isArray(input.entries) ? input.entries : [];
     const finalResultRefs = new Set(
         (input.resultRefs || []).map(normalizeRef).filter(Boolean)
@@ -216,6 +319,54 @@ export function collectRuntimeFinalArtifactPaths(input: {
             finalRevision
         })
         : undefined;
+    return { entries, finalResultRefs, producerReceiptIndex };
+}
+
+/**
+ * 受控 Debug 投影使用的原始逻辑候选。只选择与 E2/resultRef 绑定的路径字段，
+ * 但不修剪非法值、不去重，也不把超过 96 项截成可信集合。第 97 项是 overflow 哨兵；
+ * absent/valid/invalid 的唯一裁决仍由 debug-final-artifact-refs 完成。
+ */
+export function collectRuntimeFinalArtifactPathCandidates(
+    input: RuntimeFinalArtifactCollectionInput
+): unknown[] {
+    const { entries, finalResultRefs, producerReceiptIndex } = prepareFinalArtifactCollection(input);
+    const candidates: unknown[] = [];
+    const addCandidate = (value: unknown): void => {
+        if (candidates.length < 97) candidates.push(value);
+    };
+    for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        if (!entry || !isSuccessfulEntry(entry)) continue;
+        if (index === producerReceiptIndex) {
+            const receipt = readRuntimeDeliveryReceipt(entry.result);
+            for (const artifact of receipt?.artifacts || []) addCandidate(artifact.path);
+        }
+        const callId = normalizeRef(entry.callId);
+        if (callId && finalResultRefs.has(callId)) {
+            const candidateCountBeforeResult = candidates.length;
+            collectReferencedResultPathCandidates(entry.result, addCandidate);
+            if (candidates.length === candidateCountBeforeResult && candidates.length < 97) {
+                addCandidate(undefined);
+            }
+        }
+    }
+    return candidates;
+}
+
+/**
+ * 从 E2 精确 resultRef 和一次已结算的复合生产者收据中收集最终文件事实。
+ *
+ * producerReceiptCallRefs 必须由调用方根据注册 Skill 身份显式签发；即使签发，单文档
+ * 收据仍须匹配最终 revision，多文档收据仍须绑定最后一次 mutation 与 E2 精确 save/export；
+ * 复合 Skill 的内部 resultRef 只能由 Agent 在 E2 验证通过后映射回同一个外层 call。
+ * 旧收据或其后又发生 mutation 的收据都会失效。函数不递归扫描业务对象、不读取目录，
+ * 也不把这些路径写入生产结果或完成/质量判断。
+ */
+export function collectRuntimeFinalArtifactPaths(
+    input: RuntimeFinalArtifactCollectionInput
+): string[] {
+    const { entries, finalResultRefs, producerReceiptIndex } = prepareFinalArtifactCollection(input);
     const paths: string[] = [];
     const addPath = (value: unknown): void => {
         const normalized = typeof value === 'string' ? value.trim() : '';

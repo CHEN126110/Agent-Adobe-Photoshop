@@ -177,10 +177,12 @@ const {
   'agent.ts'
 ));
 const {
+  buildTerminalClosureQualityCache,
   decideTerminalClosureContinuation,
   evaluateNaturalFinalTerminalClosureCheckpoint,
   projectRecoverableTerminalClosureGap,
   projectTerminalClosureRuntimeBoundary,
+  reuseTerminalClosureQualityIfCurrent,
   resolveAgentExecutionStatus
 } = require(path.resolve(
   __dirname,
@@ -4928,8 +4930,8 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
   await agenticTurn.recordResult(declaration, { success: true });
   assert.strictEqual(
     agenticTurn.shouldDefer(write),
-    false,
-    'agentic declaration incorrectly became a write ticket and discarded a still-visible model action'
+    true,
+    'agentic sibling write executed despite being authored before the bound professional context was visible'
   );
 
   const stagedTurn = createRuntimeDeclarationSiblingTurn([declaration, write], {
@@ -5021,7 +5023,7 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
   assert(duplicateIdTurn.orderedCalls.every((call) => duplicateIdTurn.shouldDefer(call)));
 }
 
-async function assertAgenticDeclarationPreservesModelAuthoredSiblingCalls() {
+async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
   const identity = createPlanNeutralIdentity('same-turn-compatible-reads');
   const declarationTool = requireAgentTool('declareDesignIntent');
   const recommendTool = requireAgentTool('recommendAssets');
@@ -5030,19 +5032,26 @@ async function assertAgenticDeclarationPreservesModelAuthoredSiblingCalls() {
   const writeTool = requireAgentTool('createRectangle');
   const tools = [declarationTool, recommendTool, eagleTool, documentTool, writeTool];
   const executedToolNames = [];
+  const modelPromptSnapshots = [];
   let modelCallCount = 0;
   let agent;
   agent = new Agent(
     buildAgentTestConfig({
       tools,
-      maxIterations: 2,
+      maxIterations: 3,
       runtimeSessionIdentity: identity,
       openingCanvasObservationMode: 'none'
     }),
-    async () => {
+    async (_modelId, messages) => {
       modelCallCount += 1;
+      modelPromptSnapshots.push(messages.map((message) => (
+        typeof message.content === 'string'
+          ? message.content
+          : JSON.stringify(message.content || '')
+      )).join('\n'));
       if (modelCallCount === 1) {
-        // 复刻 r18 Provider 顺序：模型把声明放在最后，但同轮已经自行选择了必要读取与后续写入。
+        // 复刻真实 Provider 顺序：模型把声明放在最后，并在尚未看到绑定后方法知识时
+        // 同轮生成了必要读取与后续写入。读取可以保留，写入必须等下一轮由 Agent 重发。
         return {
           stopReason: 'tool_use',
           toolCalls: [
@@ -5062,6 +5071,16 @@ async function assertAgenticDeclarationPreservesModelAuthoredSiblingCalls() {
           ]
         };
       }
+      if (modelCallCount === 2) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'bound-context-write',
+            name: 'createRectangle',
+            arguments: { x: 0, y: 0, width: 100, height: 100, fillColorHex: '#FFFFFF' }
+          }]
+        };
+      }
       return { content: '已读取当前素材与参考事实。', stopReason: 'end_turn' };
     },
     async (toolName, arguments_) => {
@@ -5070,7 +5089,7 @@ async function assertAgenticDeclarationPreservesModelAuthoredSiblingCalls() {
         return activateMainImageAgenticRuntime({
           agent,
           arguments: arguments_,
-          maxIterations: 2
+          maxIterations: 3
         });
       }
       if (toolName === 'recommendAssets') {
@@ -5108,7 +5127,11 @@ async function assertAgenticDeclarationPreservesModelAuthoredSiblingCalls() {
   );
 
   const runResult = await agent.run('整理主图设计所需的素材与参考事实');
-  assert.strictEqual(modelCallCount, 2, 'compatible reads still forced an extra model turn');
+  assert.strictEqual(modelCallCount, 3, 'bound-context write was not regenerated in a fresh Agent turn');
+  assert(!modelPromptSnapshots[0].includes('先区分点击图与转化图'),
+    'main-image method knowledge leaked into the pre-declaration model turn');
+  assert(modelPromptSnapshots[1].includes('先区分点击图与转化图'),
+    'regenerated Agent write did not actually consume the post-binding main-image method context');
   assert.deepStrictEqual(
     executedToolNames.slice(0, 4),
     ['declareDesignIntent', 'recommendAssets', 'searchEagleReferences', 'getDocumentInfo'],
@@ -5117,17 +5140,19 @@ async function assertAgenticDeclarationPreservesModelAuthoredSiblingCalls() {
   const recommendEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-recommend');
   const eagleEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-eagle');
   const writeEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-write');
+  const reboundWriteEntry = agent.toolCallLog.find((entry) => entry.callId === 'bound-context-write');
   assert(
     executedToolNames.includes('createRectangle'),
-    `agentic sibling write passed declaration handling but did not reach its normal executor: ${JSON.stringify({ executedToolNames, writeResult: writeEntry?.result, runResult })}`
+    `Agent did not regenerate the write after bound context became visible: ${JSON.stringify({ executedToolNames, writeResult: reboundWriteEntry?.result, runResult })}`
   );
   assert.strictEqual(recommendEntry?.result?.success, true);
   assert.strictEqual(eagleEntry?.result?.success, true);
   assert.notStrictEqual(recommendEntry?.failureDisposition, 'control_turn_deferred');
   assert.notStrictEqual(eagleEntry?.failureDisposition, 'control_turn_deferred');
-  assert.notStrictEqual(writeEntry?.result?.code, 'tool_deferred_after_runtime_declaration');
-  assert.notStrictEqual(writeEntry?.failureDisposition, 'control_turn_deferred');
-  assert.strictEqual(writeEntry?.result?.success, true, 'agentic sibling write did not preserve its real execution result');
+  assert.strictEqual(writeEntry?.result?.code, 'tool_deferred_after_runtime_declaration');
+  assert.strictEqual(writeEntry?.failureDisposition, 'control_turn_deferred');
+  assert.strictEqual(writeEntry?.result?.changesModelVisibleSchemasOnly, undefined);
+  assert.strictEqual(reboundWriteEntry?.result?.success, true, 'bound-context Agent write did not reach its real executor');
   const historyAssistant = agent.messages.find((message) => (
     message.role === 'assistant'
     && message.toolCalls?.some((call) => call.id === 'same-turn-declare')
@@ -9830,6 +9855,85 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
     '缺失逐图回执不得取得最终成品观察信用'
   );
 
+  let noProgressHostCalls = 0;
+  let noProgressModelCalls = 0;
+  const noProgressAgent = new Agent(
+    noReceiptConfig,
+    async () => {
+      noProgressModelCalls += 1;
+      return { content: judgeResponse };
+    },
+    async () => {
+      noProgressHostCalls += 1;
+      return { success: true };
+    }
+  );
+  noProgressAgent.currentTask = '帮我做一张商品主图';
+  await noProgressAgent.prepareAgentTerminalClosure({
+    success: true,
+    message: '候选终稿',
+    iterations: 1,
+    stopReason: 'final_response'
+  });
+  assert.strictEqual(noProgressHostCalls, 0,
+    'zero task progress must not trigger a Final Quality Photoshop read');
+  assert.strictEqual(noProgressModelCalls, 0,
+    'zero task progress must not trigger a Final Quality model call');
+  assert.strictEqual(noProgressAgent.finalQualityModelProtocolDigest, undefined,
+    'absence of a produced design must not be misreported as an Evaluation runtime failure');
+
+  let evaluationRuntimeModelCalls = 0;
+  const evaluationRuntimeFailureAgent = new Agent(
+    {
+      ...noReceiptConfig,
+      modelId: codexJudgeModelId
+    },
+    async () => {
+      evaluationRuntimeModelCalls += 1;
+      return { content: judgeResponse };
+    },
+    async () => {
+      throw new Error('fixture_pre_judge_host_failure');
+    }
+  );
+  evaluationRuntimeFailureAgent.currentTask = '帮我做一张商品主图';
+  evaluationRuntimeFailureAgent.toolCallLog = baseLog;
+  evaluationRuntimeFailureAgent.performanceLedger.visionCandidateCount = 5;
+  evaluationRuntimeFailureAgent.latestDesignVisualJudgeSingleReviewSet =
+    agent.latestDesignVisualJudgeSingleReviewSet;
+  const evaluationRuntimeFailureClosure = await evaluationRuntimeFailureAgent.prepareAgentTerminalClosure({
+    success: true,
+    message: '候选终稿',
+    iterations: 1,
+    stopReason: 'final_response'
+  });
+  assert.strictEqual(evaluationRuntimeModelCalls, 0,
+    'pre-Judge Host failure must not be converted into another ordinary model turn');
+  assert.deepStrictEqual(
+    evaluationRuntimeFailureAgent.finalQualityModelProtocolDigest,
+    {
+      judgeStatus: 'unavailable',
+      judgeFailureKind: 'evaluation_runtime_failed',
+      diagnosisRepairStatus: 'not_run',
+      diagnosisRepairTargetCount: 0,
+      actionableDiagnosisCount: 0,
+      evidenceScope: {
+        finalArtifactObserved: false,
+        selectedSourceCompared: false,
+        declaredReferenceCompared: false,
+        candidateSetCompared: false
+      }
+    },
+    'Evaluation runtime failure must use the existing bounded Final Quality protocol digest'
+  );
+  assert.strictEqual(
+    evaluationRuntimeFailureAgent.buildRecoverableTerminalClosureGap(
+      evaluationRuntimeFailureClosure
+    ),
+    undefined,
+    'explicit Evaluation runtime failure must not wake the primary Agent as missing visual evidence'
+  );
+
   const summaryHostToolNames = [];
   const summaryAgent = new Agent(
     buildAgentTestConfig({
@@ -11337,6 +11441,131 @@ function buildPreparedTerminalClosure(status) {
   };
 }
 
+async function assertTerminalClosureQualityCacheRequiresCurrentRevision() {
+  const reviewedRevision = { documentId: 91, historyStateId: 17 };
+  const completedProtocolDigest = {
+    judgeStatus: 'completed',
+    diagnosisRepairStatus: 'satisfied',
+    diagnosisRepairTargetCount: 0,
+    actionableDiagnosisCount: 0,
+    evidenceScope: {
+      finalArtifactObserved: true,
+      selectedSourceCompared: true,
+      declaredReferenceCompared: false,
+      candidateSetCompared: false
+    }
+  };
+  const preparedClosure = buildPreparedTerminalClosure('completed');
+  preparedClosure.executionSummary.designVerdict = {
+    status: 'passed',
+    source: 'contract',
+    designKinds: ['skill_evaluation_profile'],
+    blockers: [],
+    warnings: [],
+    summary: '当前版本质量已通过。'
+  };
+  preparedClosure.executionSummary.finalQualityModelProtocolDigest = completedProtocolDigest;
+  const cache = buildTerminalClosureQualityCache({
+    historyStateRef: reviewedRevision,
+    latestMutationIndex: -1,
+    preparedClosure
+  });
+  assert(cache, 'a passed exact-revision closure must produce a delivery-only quality cache');
+  assert.notStrictEqual(cache.protocolDigest, completedProtocolDigest,
+    'terminal quality cache must not retain the mutable source digest object');
+  assert.notStrictEqual(cache.protocolDigest?.evidenceScope, completedProtocolDigest.evidenceScope,
+    'terminal quality cache must clone nested evidence scope');
+
+  const exactReuse = await reuseTerminalClosureQualityIfCurrent({
+    cache,
+    stopReason: 'final_response',
+    latestMutationIndex: -1,
+    readCurrentHistoryStateRef: async () => reviewedRevision,
+    readReviewHistoryStateRef: () => reviewedRevision
+  });
+  assert.strictEqual(exactReuse.reuse.status, 'reused');
+  assert.deepStrictEqual(exactReuse.reuse.protocolDigest, completedProtocolDigest,
+    'completed digest may be restored only after a fresh exact-revision Host read');
+
+  const changedRevision = await reuseTerminalClosureQualityIfCurrent({
+    cache,
+    stopReason: 'final_response',
+    latestMutationIndex: -1,
+    readCurrentHistoryStateRef: async () => ({ ...reviewedRevision, historyStateId: 18 }),
+    readReviewHistoryStateRef: () => reviewedRevision
+  });
+  assert.strictEqual(changedRevision.reuse.status, 'stale',
+    'a known revision mismatch must remain distinct from Host unavailability');
+
+  const unavailableRevision = await reuseTerminalClosureQualityIfCurrent({
+    cache,
+    stopReason: 'final_response',
+    latestMutationIndex: -1,
+    readCurrentHistoryStateRef: async () => { throw new Error('fixture_host_read_failed'); },
+    readReviewHistoryStateRef: () => reviewedRevision
+  });
+  assert.strictEqual(unavailableRevision.reuse.status, 'unavailable',
+    'a failed Host read must not be flattened into revision stale');
+
+  let modelCallCount = 0;
+  const buildReuseAgent = (readCurrentHistoryStateRef) => {
+    const agent = new Agent(
+      buildAgentTestConfig({ tools: [], maxIterations: 2, openingCanvasObservationMode: 'none' }),
+      async () => {
+        modelCallCount += 1;
+        return { content: '不应调用模型。', stopReason: 'end_turn' };
+      },
+      async () => ({ success: true })
+    );
+    agent.currentTask = '完成当前设计的交付收尾';
+    agent.terminalClosureQualityCache = cache;
+    agent.finalQualityModelProtocolDigest = completedProtocolDigest;
+    agent.readCurrentPhotoshopHistoryStateRefForQualityVerification = readCurrentHistoryStateRef;
+    agent.findLatestDesignVisualJudgeReviewSet = () => ({ historyStateRef: reviewedRevision });
+    agent.shouldCloseDesignQualityHistoryState = () => false;
+    agent.evaluateDesignQualityVlmAssertions = async () => {
+      modelCallCount += 1;
+      return null;
+    };
+    return agent;
+  };
+
+  const exactAgent = buildReuseAgent(async () => reviewedRevision);
+  const exactClosure = await exactAgent.prepareAgentTerminalClosure({
+    success: true, message: '交付完成', iterations: 1, stopReason: 'final_response'
+  });
+  assert.strictEqual(exactClosure.executionSummary.finalQualityModelProtocolDigest?.judgeStatus,
+    'completed');
+
+  const staleAgent = buildReuseAgent(async () => ({ ...reviewedRevision, historyStateId: 18 }));
+  const staleClosure = await staleAgent.prepareAgentTerminalClosure({
+    success: true, message: '交付完成', iterations: 1, stopReason: 'final_response'
+  });
+  assert.strictEqual(staleClosure.executionSummary.finalQualityModelProtocolDigest?.judgeStatus,
+    'stale', 'known revision drift must replace, not retain, the previous completed digest');
+
+  const unavailableAgent = buildReuseAgent(async () => { throw new Error('fixture_host_read_failed'); });
+  const unavailableClosure = await unavailableAgent.prepareAgentTerminalClosure({
+    success: true, message: '交付完成', iterations: 1, stopReason: 'final_response'
+  });
+  assert.strictEqual(unavailableClosure.executionSummary.finalQualityModelProtocolDigest?.judgeStatus,
+    'unavailable');
+  assert.strictEqual(
+    unavailableClosure.executionSummary.finalQualityModelProtocolDigest?.judgeFailureKind,
+    'evaluation_runtime_failed',
+    'Host read failure must stay owned by Evaluation rather than inherit a completed verdict'
+  );
+  assert.strictEqual(modelCallCount, 0,
+    'cache reentry failure must not wake either Final Judge or the ordinary Agent');
+
+  const cancelledAgent = buildReuseAgent(async () => reviewedRevision);
+  const cancelledClosure = await cancelledAgent.prepareAgentTerminalClosure({
+    success: false, message: '已取消', iterations: 1, stopReason: 'cancelled', cancelled: true
+  });
+  assert.strictEqual(cancelledClosure.executionSummary.finalQualityModelProtocolDigest, undefined,
+    'a cancelled closure must not inherit the previous completed digest without a current read');
+}
+
 function buildPlanNeutralTerminalClosureGap(options = {}) {
   const evaluationProfile = getDesignEvaluationProfileById(
     GENERAL_DESIGN_EVALUATION_PROFILE_ID
@@ -11427,6 +11656,24 @@ async function assertNaturalFinalResponseContinuesInSameAgentInstance() {
   });
   assert.strictEqual(explicitUnavailableJudgeGap, undefined,
     'an explicit Final Judge protocol failure belongs to Evaluation and must not wake the primary Agent as a missing-visual recovery');
+  const explicitStaleJudgeGap = buildPlanNeutralTerminalClosureGap({
+    reviewHistoryStateRef: { documentId: 71, historyStateId: 10 },
+    expectNoGap: true,
+    finalQualityModelProtocolDigest: {
+      judgeStatus: 'stale',
+      diagnosisRepairStatus: 'stale',
+      diagnosisRepairTargetCount: 0,
+      actionableDiagnosisCount: 0,
+      evidenceScope: {
+        finalArtifactObserved: false,
+        selectedSourceCompared: false,
+        declaredReferenceCompared: false,
+        candidateSetCompared: false
+      }
+    }
+  });
+  assert.strictEqual(explicitStaleJudgeGap, undefined,
+    'known revision drift belongs to Evaluation and must not wake the primary Agent');
   assert.strictEqual(projectTerminalClosureRuntimeBoundary({
     gap,
     signalAborted: false,
@@ -11860,7 +12107,7 @@ async function runBehaviorAssertions() {
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();
   await assertRuntimeDeclarationSiblingPolicyFailsClosed();
-  await assertAgenticDeclarationPreservesModelAuthoredSiblingCalls();
+  await assertAgenticDeclarationPreservesReadsAndReplansWrites();
   await assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed();
   await assertStagedDeclarationUsesTruePostBindingToolSurface();
   await assertStagedDeclarationDefersVisibleSiblingWrite();
@@ -11887,6 +12134,7 @@ async function runBehaviorAssertions() {
   await assertBareCompletionClaimsCannotBypassTextExits();
   await assertNaturalFinalResponseContinuesInSameAgentInstance();
   await assertRepeatedTerminalClosureGapStopsWithoutReentryLoop();
+  await assertTerminalClosureQualityCacheRequiresCurrentRevision();
   await assertDeliveryTerminalClosureAdvancesWithoutFinalizingWriter();
   await assertTerminalRecoveryEarlyExitCannotEscapeOuterHandoff();
   console.log(

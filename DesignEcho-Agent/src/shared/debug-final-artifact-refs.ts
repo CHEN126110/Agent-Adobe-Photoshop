@@ -5,37 +5,67 @@
  * 这里仅把位于本次 fixture 项目内的路径机械转换为相对引用。它不扫描目录、不挑成稿，
  * 也不会把项目外绝对路径或目录穿越写进 Debug Bridge 收据。
  */
+export type DebugFinalArtifactRefsInvalidReason = 'malformed' | 'overflow' | 'unsafe';
+
+export type DebugFinalArtifactRefsState =
+    | { status: 'absent' }
+    | { status: 'valid' }
+    | { status: 'invalid'; reason: DebugFinalArtifactRefsInvalidReason };
+
+export interface DebugFinalArtifactRefsProjection {
+    refs: string[];
+    state: DebugFinalArtifactRefsState;
+}
+
+function invalidFinalArtifactRefs(
+    reason: DebugFinalArtifactRefsInvalidReason
+): DebugFinalArtifactRefsProjection {
+    return { refs: [], state: { status: 'invalid', reason } };
+}
+
 export function normalizeDebugFinalArtifactRefs(
     values: unknown,
     expectedProjectPath: unknown
-): string[] {
-    if (!Array.isArray(values)) return [];
+): DebugFinalArtifactRefsProjection {
+    if (values === undefined || (Array.isArray(values) && values.length === 0)) {
+        return { refs: [], state: { status: 'absent' } };
+    }
+    if (!Array.isArray(values)) return invalidFinalArtifactRefs('malformed');
+    if (values.length > 96) return invalidFinalArtifactRefs('overflow');
     const projectRoot = String(expectedProjectPath || '')
         .trim()
         .replace(/\\/g, '/')
         .replace(/\/+$/, '');
     const projectRootIdentity = projectRoot.toLowerCase();
     const refs: string[] = [];
+    const refIdentities = new Set<string>();
     for (const value of values) {
-        const candidate = String(value || '').trim().replace(/\\/g, '/');
-        if (!candidate) continue;
+        if (typeof value !== 'string') return invalidFinalArtifactRefs('malformed');
+        const candidate = value.trim().replace(/\\/g, '/');
+        if (!candidate) return invalidFinalArtifactRefs('malformed');
         const candidateIdentity = candidate.toLowerCase();
         let relativeRef = candidate;
         if (projectRootIdentity && candidateIdentity.startsWith(`${projectRootIdentity}/`)) {
             relativeRef = candidate.slice(projectRoot.length + 1);
         } else if (/^[a-z][a-z0-9+.-]*:/i.test(candidate) || candidate.startsWith('/')) {
-            continue;
+            return invalidFinalArtifactRefs('unsafe');
         }
         relativeRef = relativeRef.replace(/^\.\//, '').replace(/\/+/g, '/');
+        const relativeSegments = relativeRef.split('/');
         if (!relativeRef
-            || relativeRef.split('/').includes('..')
+            || relativeSegments.includes('.')
+            || relativeSegments.includes('..')
             || relativeRef.includes('\0')
+            || relativeRef.includes(':')
             || !/\.(?:psd|psb|jpe?g|png|webp)$/i.test(relativeRef)) {
-            continue;
+            return invalidFinalArtifactRefs('unsafe');
         }
-        if (!refs.includes(relativeRef)) refs.push(relativeRef);
+        const relativeIdentity = relativeRef.toLowerCase();
+        if (refIdentities.has(relativeIdentity)) return invalidFinalArtifactRefs('malformed');
+        refIdentities.add(relativeIdentity);
+        refs.push(relativeRef);
     }
-    return refs.slice(0, 96);
+    return { refs, state: { status: 'valid' } };
 }
 
 export interface DebugSkuDeliveryEvidence {
@@ -137,8 +167,10 @@ function normalizeExactArtifactRefs(
     limit: number
 ): string[] | undefined {
     if (!Array.isArray(value) || value.length === 0 || value.length > limit) return undefined;
-    const refs = normalizeDebugFinalArtifactRefs(value, expectedProjectPath);
-    return refs.length === value.length ? refs : undefined;
+    const projection = normalizeDebugFinalArtifactRefs(value, expectedProjectPath);
+    return projection.state.status === 'valid' && projection.refs.length === value.length
+        ? projection.refs
+        : undefined;
 }
 
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {

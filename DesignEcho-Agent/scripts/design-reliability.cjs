@@ -105,7 +105,7 @@ const LIVE_RUN_ACTOR_CAPABILITIES = new Map([
   ["autonomous_zero_correction", Object.freeze({
     capabilityId: "guarded-natural-chat-submit/v1",
     protocolKind: "autonomous_zero_correction",
-    receiptVersion: "debug-bridge-chat-submit-receipt/v4",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v5",
     dispatchProtocol: dispatchAutonomousZeroCorrectionProtocol
   })]
 ]);
@@ -1536,6 +1536,7 @@ function normalizeDeclaredFinalArtifactRefs(value) {
 
 function buildAgentFinalArtifactManifest(declaredRefsInput, evidenceRefs) {
   const declaredRefs = normalizeDeclaredFinalArtifactRefs(declaredRefsInput);
+  if (declaredRefs.length === 0) return undefined;
   const evidenceByRef = new Map(evidenceRefs.map((evidence) => [
     normalizeRelativePath(evidence.ref),
     evidence
@@ -4078,11 +4079,66 @@ function validateUniqueDocumentRevisionRefs(value, expectedCount) {
   return true;
 }
 
+function validateDebugFinalArtifactRefs(receipt, errors) {
+  const refs = receipt.finalArtifactRefs;
+  const state = receipt.finalArtifactRefsState;
+  if (!isRecord(state)) {
+    errors.push("运行窗口没有保留 finalArtifactRefs 的 absent/valid/invalid 状态。 ");
+    return;
+  }
+  const stateKeys = Object.keys(state).sort();
+  if (state.status === "absent") {
+    if (stableStringify(stateKeys) !== stableStringify(["status"])
+      || !Array.isArray(refs)
+      || refs.length !== 0) {
+      errors.push("finalArtifactRefs 只有在确实未声明时才允许可信空集合。 ");
+    }
+    return;
+  }
+  if (state.status === "invalid") {
+    const invalidReasons = new Set(["malformed", "overflow", "unsafe"]);
+    if (stableStringify(stateKeys) !== stableStringify(["reason", "status"])
+      || !invalidReasons.has(state.reason)) {
+      errors.push("运行窗口返回了无法识别的 finalArtifactRefs 非法状态。 ");
+    } else {
+      errors.push(`运行窗口明确报告 finalArtifactRefs 非法（${state.reason}）。 `);
+    }
+    return;
+  }
+  if (state.status !== "valid"
+    || stableStringify(stateKeys) !== stableStringify(["status"])) {
+    errors.push("运行窗口返回了无法识别的 finalArtifactRefs 状态。 ");
+    return;
+  }
+  if (!Array.isArray(refs) || refs.length === 0 || refs.length > 96) {
+    errors.push("finalArtifactRefs 的 valid 状态必须绑定非空且有界的交付引用集合。 ");
+    return;
+  }
+  const identities = new Set();
+  for (const ref of refs) {
+    const normalized = typeof ref === "string"
+      ? normalizeRelativePath(ref).trim().replace(/\/+/g, "/")
+      : "";
+    const segments = normalized.split("/");
+    const identity = normalized.toLowerCase();
+    if (typeof ref !== "string"
+      || ref !== normalized
+      || isUnsafeProjectRelativeRef(normalized)
+      || segments.includes(".")
+      || !/\.(?:psd|psb|jpe?g|png|webp)$/i.test(normalized)
+      || identities.has(identity)) {
+      errors.push("运行窗口返回的 valid finalArtifactRefs 包含非法、重复或非规范项目引用。 ");
+      return;
+    }
+    identities.add(identity);
+  }
+}
+
 function validateDebugBridgeReceipt(response, input) {
   const receipt = response?.result?.receipt;
   const errors = [];
-  if (!isRecord(receipt) || receipt.version !== "debug-bridge-chat-submit-receipt/v4") {
-    return { ok: false, errors: ["运行窗口没有返回 debug-bridge-chat-submit-receipt/v4。"] };
+  if (!isRecord(receipt) || receipt.version !== "debug-bridge-chat-submit-receipt/v5") {
+    return { ok: false, errors: ["运行窗口没有返回 debug-bridge-chat-submit-receipt/v5。"] };
   }
   const interactionReceipt = receipt.interactionReceipt;
   const expectedInteractionReceiptKeys = [
@@ -4388,14 +4444,7 @@ function validateDebugBridgeReceipt(response, input) {
   }
   if (!cleanString(receipt.requestId)) errors.push("运行窗口没有返回请求身份。");
   if (!cleanString(receipt.conversationId)) errors.push("运行窗口没有返回对话身份。");
-  if (!Array.isArray(receipt.finalArtifactRefs)
-    || receipt.finalArtifactRefs.length === 0
-    || receipt.finalArtifactRefs.some((ref) => {
-      const normalized = normalizeRelativePath(ref);
-      return isUnsafeProjectRelativeRef(normalized);
-    })) {
-    errors.push("运行窗口没有返回 Agent 交付声明绑定的安全 finalArtifactRefs。 ");
-  }
+  validateDebugFinalArtifactRefs(receipt, errors);
   return { ok: errors.length === 0, errors, receipt };
 }
 
@@ -4409,7 +4458,7 @@ async function dispatchAutonomousZeroCorrectionProtocol(input) {
     version: "design-reliability-live-actor-dispatch/v1",
     protocolKind: "autonomous_zero_correction",
     capabilityId: "guarded-natural-chat-submit/v1",
-    receiptVersion: "debug-bridge-chat-submit-receipt/v4",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v5",
     response,
     receiptValidation
   };
@@ -5616,6 +5665,7 @@ async function main() {
 
 module.exports = {
   artifactGeometryMatchesCase,
+  buildAgentFinalArtifactManifest,
   buildAttemptEventIdentityKey,
   buildAttemptCohortReportContext,
   buildCanonicalAttemptSafetyLedger,

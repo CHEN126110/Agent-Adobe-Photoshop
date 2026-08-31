@@ -1056,7 +1056,8 @@ export type FinalQualityJudgeStatus =
 export type FinalQualityJudgeFailureKind =
     | 'provider_call_failed'
     | 'visual_presentation_unverified'
-    | 'score_batch_invalid';
+    | 'score_batch_invalid'
+    | 'evaluation_runtime_failed';
 
 export type FinalQualityDiagnosisRepairDigestStatus =
     | 'not_run'
@@ -1106,7 +1107,8 @@ const FINAL_QUALITY_JUDGE_STATUSES = new Set<FinalQualityJudgeStatus>([
 const FINAL_QUALITY_JUDGE_FAILURE_KINDS = new Set<FinalQualityJudgeFailureKind>([
     'provider_call_failed',
     'visual_presentation_unverified',
-    'score_batch_invalid'
+    'score_batch_invalid',
+    'evaluation_runtime_failed'
 ]);
 const FINAL_QUALITY_DIAGNOSIS_REPAIR_DIGEST_STATUSES = new Set<FinalQualityDiagnosisRepairDigestStatus>([
     'not_run',

@@ -410,6 +410,8 @@ import {
 import { ContextManager } from './context-manager';
 import {
     isFinalQualityReviewStopReason,
+    projectFinalQualityEvaluationRuntimeFailureOutcome,
+    projectFinalQualityRevisionStaleOutcome,
     projectFinalQualityReviewOutcome,
     resolveFinalQualityJudgeModelId,
     runFinalQualityReviewRuntime,
@@ -5146,7 +5148,8 @@ export class Agent {
                 });
                 const candidateHistoryStateRef = readPhotoshopHistoryStateRef(previewEntry.result);
                 const finalJudgeReviewed = isFinalQualityReviewedVisualSource({
-                    binding: this.finalQualityReviewedVisualBinding,
+                    binding: this.finalQualityModelProtocolDigest?.judgeStatus === 'completed'
+                        ? this.finalQualityReviewedVisualBinding : undefined,
                     sourceOutput: previewEntry.result,
                     historyStateRef: candidateHistoryStateRef
                 });
@@ -6740,10 +6743,9 @@ export class Agent {
                         output = {
                             success: false,
                             code: 'tool_deferred_after_runtime_declaration',
-                            error: '任务执行约束刚刚发生变化，这项操作尚未执行。请根据当前可用能力重新判断下一步，不要把它当成已经完成。',
+                            error: '任务类型及其专业上下文刚刚完成绑定；这项有副作用的操作是在绑定前生成的，因此尚未执行。请结合现在可见的方法、事实和只读结果重新判断，并由你重新发起真正需要的动作；不要把原调用当成已经完成。',
                             deferredByRuntimeDeclaration: true,
                             policyGate: true,
-                            changesModelVisibleSchemasOnly: true,
                             executesPhotoshop: false,
                             grantsPermission: false,
                             countsAsObservation: false,
@@ -6752,8 +6754,7 @@ export class Agent {
                         };
                     }
                     // Runtime 绑定后的第二重能力面检查：staged Profile 可能原地收紧 activeTools，
-                    // 此时旧 schema 里已不可见的 sibling call 必须重新规划；agentic 声明不改变
-                    // Capability 面，绑定后仍可见的原调用继续走正常 Tool Decision 与执行预检。
+                    // 绑定后不可见调用须重规划；agentic 新增方法 /评价上下文时，绑定前写同样延后，只承接只读观察 /知识检索。
                     // Harness 控制工具（含 declareDesignIntent）恒可用。
                     if (output === undefined
                         && !isAgentHarnessControlTool(call.name)
@@ -8002,7 +8003,8 @@ export class Agent {
                 this.finalQualityModelProtocolDigest?.evidenceScope.selectedSourceCompared === true
             )
         });
-        if (!coreArtifactWritten || !this.pendingTrustedFinalComparisonWrite) return;
+        if (!coreArtifactWritten || this.finalQualityModelProtocolDigest?.judgeStatus !== 'completed'
+            || !this.pendingTrustedFinalComparisonWrite) return;
         writeTrustedFinalComparisonEvidenceAfterJudge({
             targetOwner: owner,
             ...this.pendingTrustedFinalComparisonWrite
@@ -11696,26 +11698,17 @@ export class Agent {
         // 所有提前返回都汇聚到这里；用单调快照补记本轮，避免 no-progress、预检阻断
         // 等终态少算最后一次迭代，下一 generation 又重新获得这笔额度。
         this.advancePerformanceIteration(input.iterations);
-        // 视觉判官断言（真主观维度）须异步评出后并入裁决：先跑这一步（无截图/无视觉能力/失败则 null，
-        // 退回纯确定性裁决，不伪造），再用合并结果建执行摘要——保证设计质量裁决是单一口径、且能驱动 reflexion。
-        // 取消的运行不做昂贵视觉判定（尊重取消、不浪费模型调用）；其余失败态由方法内 stopReason 闸把关。
-        // try/catch 兜底：buildRunResult 在 run() 多处以未 await 的 return 调用，必须保证它自身永不 reject，
-        // 否则视觉判定的异步异常会绕过 run() 迭代级 catch 的错误恢复（兜底 stopReason:'error'）。
+        // 每次 closure 先撤销上一轮摘要；只有本轮新评审或 exact revision 复验才能恢复它。
+        this.finalQualityModelProtocolDigest = undefined;
         let vlmAssertions: DesignAssertionResult[] | null = null;
         if (!input.cancelled) {
             const qualityReuseResult = await reuseCachedTerminalClosureQuality({
                 cache: this.terminalClosureQualityCache,
                 stopReason: input.stopReason,
                 latestMutationIndex: findLatestObservedPhotoshopMutationIndex(this.toolCallLog),
-                readCurrentHistoryStateRef: async () => {
-                    try {
-                        return await this.readCurrentPhotoshopHistoryStateRefForQualityVerification(
-                            'final_summary'
-                        );
-                    } catch {
-                        return undefined;
-                    }
-                },
+                readCurrentHistoryStateRef: () => (
+                    this.readCurrentPhotoshopHistoryStateRefForQualityVerification('final_summary')
+                ),
                 readReviewHistoryStateRef: () => {
                     const profile = this.resolveRuntimeEvaluationProfile();
                     return this.findLatestDesignVisualJudgeReviewSet(
@@ -11728,13 +11721,19 @@ export class Agent {
             if (qualityReuse.status === 'not_available') {
                 try {
                     vlmAssertions = await this.evaluateDesignQualityVlmAssertions(input.stopReason);
-                } catch {
-                    vlmAssertions = null;
+                } catch (error) {
+                    this.recordFinalQualityEvaluationInterruption(error instanceof Error ? error.message : String(error));
                 }
-            } else {
+            } else if (qualityReuse.status === 'reused') {
                 vlmAssertions = qualityReuse.vlmAssertions;
+                this.finalQualityModelProtocolDigest = qualityReuse.protocolDigest;
+            } else if (qualityReuse.status === 'stale') {
+                this.recordFinalQualityEvaluationInterruption('交付复入期间 Photoshop 当前版本与已评价版本不一致。', true);
+            } else {
+                this.recordFinalQualityEvaluationInterruption('交付复入期间无法读取 Photoshop 当前版本。');
             }
             if (this.shouldCloseDesignQualityHistoryState(input.stopReason)
+                && qualityReuse.status !== 'unavailable'
                 && !this.readLatestClosedQualityHistoryStateRef()) {
                 try {
                     await this.readCurrentPhotoshopHistoryStateRefForQualityVerification('final_summary');
@@ -12165,17 +12164,26 @@ export class Agent {
         });
     }
 
+    private recordFinalQualityEvaluationInterruption(detail: string, stale = false): void {
+        const { protocolDigest, step } = stale ? projectFinalQualityRevisionStaleOutcome(detail)
+            : projectFinalQualityEvaluationRuntimeFailureOutcome(detail);
+        this.finalQualityModelProtocolDigest = protocolDigest;
+        this.emitStep({ ...step, iteration: this.iteration + 1, maxIterations: this.config.maxIterations, source: 'agent_runtime', audience: 'debug' });
+    }
     private async evaluateDesignQualityVlmAssertions(
         stopReason: AgentStopReason
     ): Promise<DesignAssertionResult[] | null> {
         if (this.config.signal?.aborted) return null;
         // 用户明确禁用全部工具，或本轮根本没有真实业务动作时，不得为了“设计质量收尾”
         // 额外读取 Photoshop。任务文本像设计请求不等于已经产生了可评价的设计结果。
-        if (!this.canRunDesignQualityVerification()) return null;
         // 仅在「产出了可判画面」的收尾态做昂贵视觉判定：完成/到预算/超限/无进展（后两者也利于 reflexion）；
         // 阻断/出错/取消/未成形/待用户确认等态不判（无可判产物或不应耗费模型调用）。
         if (!isFinalQualityReviewStopReason(stopReason)) return null;
         const evaluationProfile = this.resolveRuntimeEvaluationProfile();
+        if (!this.canRunDesignQualityVerification()) {
+            if (evaluationProfile && this.hasTaskProgressToolCalls()) this.recordFinalQualityEvaluationInterruption('最终视觉评价缺少可执行的同目标 Host 事实读取能力。');
+            return null;
+        }
         // 有 manifest-selected Evaluation Profile 时由 Skill 自己定义是否需要视觉断言；
         // 未迁移任务才回退旧 creative_design 完成契约。这里不再从任务文本重判已选 Skill。
         if (!evaluationProfile) {
@@ -12203,7 +12211,10 @@ export class Agent {
         const preJudgeHistoryStateRef = await this.readCurrentPhotoshopHistoryStateRefForQualityVerification(
             'pre_judge'
         );
-        if (!preJudgeHistoryStateRef) return null;
+        if (!preJudgeHistoryStateRef) {
+            this.recordFinalQualityEvaluationInterruption('最终视觉评价没有取得同一 Photoshop 文档版本的写后事实。');
+            return null;
+        }
         const finalReviewRequirements = this.resolveFinalReviewSetRequirements(evaluationProfile);
         const readReviewSet = () => this.findLatestDesignVisualJudgeReviewSet(
             finalReviewRequirements.requireMultiSurface
@@ -12227,6 +12238,7 @@ export class Agent {
             this.emitStaleDesignQualityObservation(
                 '终审画面集合不完整或与 Photoshop 当前版本不一致，已停止本次判定。'
             );
+            this.recordFinalQualityEvaluationInterruption('最终视觉评价没有取得与当前 Photoshop 版本一致的完整画面集合。');
             return null;
         }
         // 与 buildExecutionSummary 同口径：没有"新鲜"的结构化产物（最后一次写操作之后的
@@ -12304,7 +12316,7 @@ export class Agent {
         });
         if (reviewOutcome.protocolDigest) {
             this.finalQualityModelProtocolDigest = reviewOutcome.protocolDigest;
-        }
+        } else if (reviewOutcome.results === null) this.recordFinalQualityEvaluationInterruption(reviewOutcome.staleDetail || '最终视觉评价在 Judge 调度前没有形成可消费的完整证据。');
         if (reviewOutcome.protocolDigest?.judgeStatus === 'completed'
             && reviewOutcome.protocolDigest.evidenceScope.finalArtifactObserved) {
             this.finalQualityReviewedVisualBinding = {

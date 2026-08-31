@@ -5415,7 +5415,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         throw new Error('Agent 实际消费的项目语义快照未与评测冻结摘要绑定，本轮不能形成可信完成收据。');
                     }
                     executionStage = 'completion';
-                    const finalArtifactRefs = normalizeDebugFinalArtifactRefs(
+                    const finalArtifactRefsProjection = normalizeDebugFinalArtifactRefs(
                         readDebugFinalArtifactPaths(debugRequestId),
                         request.expectedProjectPath
                     );
@@ -5557,7 +5557,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             ),
                             conversationId: String(completedState.currentConversationId || '').trim(),
                             interactionReceipt,
-                            finalArtifactRefs,
+                            finalArtifactRefs: finalArtifactRefsProjection.refs,
+                            finalArtifactRefsState: finalArtifactRefsProjection.state,
                             ...(skuDeliveryEvidence ? { skuDeliveryEvidence } : {}),
                             completedAt: new Date().toISOString()
                         }

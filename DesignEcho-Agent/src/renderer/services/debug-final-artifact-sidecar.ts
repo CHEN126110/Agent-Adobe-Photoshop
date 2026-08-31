@@ -3,10 +3,10 @@ import type {
     AgentFinalDeliveryDebugProjection
 } from './agent-runtime/final-delivery-artifact-collector';
 
-const MAX_DEBUG_FINAL_ARTIFACT_PATHS = 96;
+const MAX_DEBUG_FINAL_ARTIFACT_PATH_CANDIDATES = 97;
 
 interface DebugFinalArtifactCaptureState {
-    paths: string[];
+    pathCandidates?: unknown;
     skuDeliverySource?: AgentDebugSkuDeliverySource;
 }
 
@@ -16,11 +16,12 @@ function normalizeRequestId(value: unknown): string {
     return String(value || '').trim();
 }
 
-function normalizePaths(values: readonly unknown[]): string[] {
-    return Array.from(new Set(values
-        .map((value) => String(value || '').trim())
-        .filter(Boolean)))
-        .slice(0, MAX_DEBUG_FINAL_ARTIFACT_PATHS);
+function capturePathCandidates(values: unknown): unknown {
+    if (!Array.isArray(values)) return null;
+    if (values.length === 0) return undefined;
+    // 第 97 项只用于保留 overflow 事实；真正的上限仍由收据投影校验为 96。
+    // 这里不能先过滤、去重或截成 96，否则非法输入会被压扁成可信集合。
+    return values.slice(0, MAX_DEBUG_FINAL_ARTIFACT_PATH_CANDIDATES);
 }
 
 /**
@@ -30,7 +31,7 @@ function normalizePaths(values: readonly unknown[]): string[] {
 export function beginDebugFinalArtifactCapture(requestId: unknown): void {
     const normalizedRequestId = normalizeRequestId(requestId);
     if (!normalizedRequestId) return;
-    debugFinalArtifactCaptureByRequest.set(normalizedRequestId, { paths: [] });
+    debugFinalArtifactCaptureByRequest.set(normalizedRequestId, {});
 }
 
 /**
@@ -38,11 +39,13 @@ export function beginDebugFinalArtifactCapture(requestId: unknown): void {
  */
 export function publishDebugFinalArtifactPaths(
     requestId: unknown,
-    paths: readonly unknown[]
+    paths: unknown
 ): void {
     const normalizedRequestId = normalizeRequestId(requestId);
     if (!normalizedRequestId || !debugFinalArtifactCaptureByRequest.has(normalizedRequestId)) return;
-    debugFinalArtifactCaptureByRequest.set(normalizedRequestId, { paths: normalizePaths(paths) });
+    debugFinalArtifactCaptureByRequest.set(normalizedRequestId, {
+        pathCandidates: capturePathCandidates(paths)
+    });
 }
 
 export function publishDebugFinalDeliveryProjection(
@@ -52,17 +55,18 @@ export function publishDebugFinalDeliveryProjection(
     const normalizedRequestId = normalizeRequestId(requestId);
     if (!normalizedRequestId || !debugFinalArtifactCaptureByRequest.has(normalizedRequestId)) return;
     debugFinalArtifactCaptureByRequest.set(normalizedRequestId, {
-        paths: normalizePaths(projection.paths),
+        pathCandidates: capturePathCandidates(projection.pathCandidates),
         ...(projection.skuDeliverySource
             ? { skuDeliverySource: projection.skuDeliverySource }
             : {})
     });
 }
 
-export function readDebugFinalArtifactPaths(requestId: unknown): string[] {
+export function readDebugFinalArtifactPaths(requestId: unknown): unknown {
     const normalizedRequestId = normalizeRequestId(requestId);
-    if (!normalizedRequestId) return [];
-    return [...(debugFinalArtifactCaptureByRequest.get(normalizedRequestId)?.paths || [])];
+    if (!normalizedRequestId) return undefined;
+    const candidates = debugFinalArtifactCaptureByRequest.get(normalizedRequestId)?.pathCandidates;
+    return Array.isArray(candidates) ? [...candidates] : candidates;
 }
 
 export function readDebugSkuDeliverySource(

@@ -9539,6 +9539,10 @@ async function run() {
     ?.getText(agentRuntimeSource) || '';
   const prepareTerminalClosureMethodText = findMethod(agentRuntimeSource, 'prepareAgentTerminalClosure')
     ?.getText(agentRuntimeSource) || '';
+  const evaluateDesignQualityMethod = findMethod(
+    agentRuntimeSource,
+    'evaluateDesignQualityVlmAssertions'
+  );
   const buildRunResultMethodText = findMethod(agentRuntimeSource, 'buildRunResult')
     ?.getText(agentRuntimeSource) || '';
   if (!emitSnapshotMethodText.includes('isAgentReadResultCacheHit(item.output)')
@@ -9576,8 +9580,32 @@ async function run() {
     || !agentRuntimeText.includes('buildUnfinishedContinuationKey({')) {
     observationLivenessViolations.push('task-run-progress:production-wiring-missing');
   }
+  const qualityVerificationGuard = evaluateDesignQualityMethod?.body?.statements.find((statement) => (
+    ts.isIfStatement(statement)
+    && statement.expression.getText(agentRuntimeSource) === '!this.canRunDesignQualityVerification()'
+  ));
+  const qualityVerificationGuardStatements = qualityVerificationGuard
+    && ts.isBlock(qualityVerificationGuard.thenStatement)
+    ? qualityVerificationGuard.thenStatement.statements
+    : [];
+  const qualityVerificationGuardTerminal = qualityVerificationGuardStatements.at(-1);
+  const firstQualityVerificationHostRead = collectNodes(
+    evaluateDesignQualityMethod?.body,
+    (node) => (
+      ts.isCallExpression(node)
+      && node.expression.getText(agentRuntimeSource)
+        === 'this.readCurrentPhotoshopHistoryStateRefForQualityVerification'
+    )
+  )[0];
+  const qualityVerificationGuardReturnsWithoutHostRead = Boolean(
+    qualityVerificationGuard
+    && ts.isReturnStatement(qualityVerificationGuardTerminal)
+    && qualityVerificationGuardTerminal.expression?.kind === ts.SyntaxKind.NullKeyword
+    && firstQualityVerificationHostRead
+    && qualityVerificationGuard.end <= firstQualityVerificationHostRead.getStart(agentRuntimeSource)
+  );
   if (!agentRuntimeText.includes('if (!this.canRunDesignQualityVerification()) return false;')
-    || !agentRuntimeText.includes('if (!this.canRunDesignQualityVerification()) return null;')) {
+    || !qualityVerificationGuardReturnsWithoutHostRead) {
     observationLivenessViolations.push('quality-verification:explicit-no-tool-or-zero-progress-can-trigger-host-read');
   }
   if (!finishAgentTextResponseMethodText.includes('isBareAgentCompletionClaim(finalMessage)')

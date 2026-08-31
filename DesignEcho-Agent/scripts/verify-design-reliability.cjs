@@ -56,6 +56,7 @@ const {
 const {
   buildCanonicalAttemptSafetyLedger,
   buildAttemptCohortReportContext,
+  buildAgentFinalArtifactManifest,
   buildFirstMutationBaselineProof,
   buildLiveEnvironmentPhotoshopReadBatch,
   classifyUntrustedDebugBridgeFailure,
@@ -752,17 +753,179 @@ async function main() {
     "shared",
     "debug-final-artifact-refs.ts"
   ));
-  assert.deepStrictEqual(
-    debugFinalArtifactRefsModule.normalizeDebugFinalArtifactRefs([
+  const debugFinalArtifactSidecarModule = loadSelfContainedTypeScriptModule(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "debug-final-artifact-sidecar.ts"
+  ));
+  const collectThroughDebugFinalArtifactReceiptProducer = (
+    requestId,
+    exportedFiles,
+    declaresResultRef = true
+  ) => {
+    const callId = `${requestId}:export`;
+    const sourceProjection = collectAgentFinalDeliveryDebugProjection({
+      entries: declaresResultRef ? [{
+        callId,
+        name: "batchExport",
+        result: { success: true, exportedFiles }
+      }] : [],
+      resultRefs: declaresResultRef ? [callId] : [],
+      includeProducerReceipts: false
+    });
+    debugFinalArtifactSidecarModule.beginDebugFinalArtifactCapture(requestId);
+    debugFinalArtifactSidecarModule.publishDebugFinalDeliveryProjection(
+      requestId,
+      sourceProjection
+    );
+    const projection = debugFinalArtifactRefsModule.normalizeDebugFinalArtifactRefs(
+      debugFinalArtifactSidecarModule.readDebugFinalArtifactPaths(requestId),
+      "C:\\fixture\\project"
+    );
+    debugFinalArtifactSidecarModule.clearDebugFinalArtifactCapture(requestId);
+    return { sourceProjection, projection };
+  };
+  const validFinalArtifactRefsCollection =
+    collectThroughDebugFinalArtifactReceiptProducer("valid-final-artifacts", [
       "C:\\fixture\\project\\主图\\成稿.psd",
-      "C:\\fixture\\project\\主图\\成稿.jpg",
-      "C:\\fixture\\project-other\\secret.jpg",
-      "../escape.png",
-      "file:C:/escape.png",
-      "主图/成稿.jpg"
-    ], "C:\\fixture\\project"),
-    ["主图/成稿.psd", "主图/成稿.jpg"],
+      "C:\\fixture\\project\\主图\\成稿.jpg"
+    ]);
+  const validFinalArtifactRefsProjection = validFinalArtifactRefsCollection.projection;
+  assert.deepStrictEqual(
+    validFinalArtifactRefsCollection.sourceProjection.pathCandidates,
+    [
+      "C:\\fixture\\project\\主图\\成稿.psd",
+      "C:\\fixture\\project\\主图\\成稿.jpg"
+    ],
+    "真实 final delivery collector 必须把 resultRef 绑定候选原样交给 sidecar"
+  );
+  assert.deepStrictEqual(
+    validFinalArtifactRefsProjection,
+    {
+      refs: ["主图/成稿.psd", "主图/成稿.jpg"],
+      state: { status: "valid" }
+    },
     "Debug 最终交付收据只能保留当前 fixture 内由 Runtime 验证的相对文件引用"
+  );
+  const quickExportAliasProjection = collectAgentFinalDeliveryDebugProjection({
+    entries: [{
+      callId: "quick-export-alias",
+      name: "quickExport",
+      result: {
+        success: true,
+        exportedFiles: ["C:\\fixture\\project\\主图\\成稿.jpg"],
+        filePath: "C:\\fixture\\project\\主图\\成稿.jpg",
+        outputPath: "C:\\fixture\\project\\主图"
+      }
+    }],
+    resultRefs: ["quick-export-alias"],
+    includeProducerReceipts: false
+  });
+  assert.deepStrictEqual(
+    quickExportAliasProjection.pathCandidates,
+    ["C:\\fixture\\project\\主图\\成稿.jpg"],
+    "quickExport 的 exportedFiles/filePath 同值和请求 outputPath 不是三份最终交付声明"
+  );
+  const editableSaveAliasProjection = collectAgentFinalDeliveryDebugProjection({
+    entries: [{
+      callId: "editable-save-alias",
+      name: "saveDocument",
+      result: {
+        success: true,
+        savedPath: "C:\\fixture\\project\\主图\\成稿.psd",
+        editableDocumentArtifact: {
+          path: "C:\\fixture\\project\\主图\\成稿.psd"
+        }
+      }
+    }],
+    resultRefs: ["editable-save-alias"],
+    includeProducerReceipts: false
+  });
+  assert.deepStrictEqual(
+    editableSaveAliasProjection.pathCandidates,
+    ["C:\\fixture\\project\\主图\\成稿.psd"],
+    "同一 saveDocument 的 editable proof 与 savedPath 精确同值时只表示一个逻辑 artifact"
+  );
+  const absentFinalArtifactRefsProjection =
+    collectThroughDebugFinalArtifactReceiptProducer(
+      "absent-final-artifacts",
+      [],
+      false
+    ).projection;
+  assert.deepStrictEqual(
+    absentFinalArtifactRefsProjection,
+    { refs: [], state: { status: "absent" } },
+    "只有 Runtime 没有声明最终交付时，Debug 投影才允许形成可信空集合"
+  );
+  const unresolvedDeclaredFinalArtifactRefsCollection =
+    collectThroughDebugFinalArtifactReceiptProducer("unresolved-final-artifacts", []);
+  assert.deepStrictEqual(
+    unresolvedDeclaredFinalArtifactRefsCollection.sourceProjection.pathCandidates,
+    [undefined],
+    "已有 final resultRef 但结果没有任何路径字段时必须保留未解析声明事实"
+  );
+  assert.deepStrictEqual(
+    unresolvedDeclaredFinalArtifactRefsCollection.projection,
+    { refs: [], state: { status: "invalid", reason: "malformed" } },
+    "未解析的 final resultRef 不是 absent，不能取得可信空交付集合"
+  );
+  const unsafeFinalArtifactRefsProjection =
+    collectThroughDebugFinalArtifactReceiptProducer("unsafe-final-artifacts", [
+      "C:\\fixture\\project\\主图\\成稿.jpg",
+      "../escape.png"
+    ]).projection;
+  assert.deepStrictEqual(
+    unsafeFinalArtifactRefsProjection,
+    { refs: [], state: { status: "invalid", reason: "unsafe" } },
+    "单个不安全引用必须使整组投影非法，不能过滤后伪装为 valid 或 absent"
+  );
+  const overflowFinalArtifactRefsCollection =
+    collectThroughDebugFinalArtifactReceiptProducer(
+      "overflow-final-artifacts",
+      Array.from({ length: 120 }, (_value, index) => `主图/候选-${index}.jpg`)
+    );
+  const overflowFinalArtifactRefsProjection = overflowFinalArtifactRefsCollection.projection;
+  assert.strictEqual(
+    overflowFinalArtifactRefsCollection.sourceProjection.pathCandidates.length,
+    97,
+    "collector 必须保留第 97 项 overflow 哨兵，不能先截成可信的 96 项"
+  );
+  assert.deepStrictEqual(
+    overflowFinalArtifactRefsProjection,
+    { refs: [], state: { status: "invalid", reason: "overflow" } },
+    "超过边界的引用集合必须保留 overflow 事实，不能截断成可信集合"
+  );
+  const malformedFinalArtifactRefsCollection =
+    collectThroughDebugFinalArtifactReceiptProducer("malformed-final-artifacts", [
+      "C:\\fixture\\project\\主图\\成稿.jpg",
+      ""
+    ]);
+  assert.strictEqual(
+    malformedFinalArtifactRefsCollection.sourceProjection.pathCandidates[1],
+    "",
+    "collector 不得丢掉已经声明但为空的 malformed 候选"
+  );
+  assert.deepStrictEqual(
+    malformedFinalArtifactRefsCollection.projection,
+    { refs: [], state: { status: "invalid", reason: "malformed" } },
+    "malformed 候选必须贯穿 collector、sidecar 与唯一 normalizer"
+  );
+  const duplicateFinalArtifactRefsCollection =
+    collectThroughDebugFinalArtifactReceiptProducer("duplicate-final-artifacts", [
+      "主图/成稿.jpg",
+      "主图/成稿.JPG"
+    ]);
+  assert.deepStrictEqual(
+    duplicateFinalArtifactRefsCollection.sourceProjection.pathCandidates,
+    ["主图/成稿.jpg", "主图/成稿.JPG"],
+    "collector 不得把 Windows 大小写等价候选静默去重"
+  );
+  assert.deepStrictEqual(
+    duplicateFinalArtifactRefsCollection.projection,
+    { refs: [], state: { status: "invalid", reason: "malformed" } },
+    "Windows 大小写等价重复必须贯穿真实 producer 链并使整组非法"
   );
   const skuDebugProjectRoot = "C:\\fixture\\project";
   const skuRasterRefs = ["SKU/2双装/1白色+黑色.jpg", "SKU/2双装/2浅肤+深肤.jpg"];
@@ -1735,14 +1898,15 @@ async function main() {
     && designReliabilityCliSource.includes("inspectPhotoshopRuntimeBinding(args)"),
   "受控 Debug bridge 必须在提交、完成与 recorder 独立复验三处按完整身份 fail closed");
   assert(chatPanelSource.includes("readDebugFinalArtifactPaths(debugRequestId)")
-    && chatPanelSource.includes("finalArtifactRefs,")
+    && chatPanelSource.includes("finalArtifactRefs: finalArtifactRefsProjection.refs")
+    && chatPanelSource.includes("finalArtifactRefsState: finalArtifactRefsProjection.state")
     && chatPanelSource.includes("normalizeDebugFinalArtifactRefs("),
   "正式收据必须消费 Runtime 已验证交付结果，而不是扫描目录或把全部导出猜成最终稿");
   assert(agentRuntimeSource.includes("delete data.finalDeliveryArtifactRequestId;")
     && agentRuntimeSource.includes("delete data.finalDeliveryArtifactPaths;")
     && agentRuntimeSource.includes("executionSummary.runtimeDeliveryResultRefs = Array.from(new Set(")
     && !agentRuntimeTypesSource.includes("captureFinalDeliveryArtifactPaths")
-    && agentFinalArtifactCollectorSource.includes("collectRuntimeFinalArtifactPaths({")
+    && agentFinalArtifactCollectorSource.includes("collectRuntimeFinalArtifactPathCandidates({")
     && agentFinalArtifactCollectorSource.includes("producerReceiptCallRefs,")
     && agentFinalArtifactCollectorSource.includes("producerReceiptE2CallRefs,")
     && finalArtifactPathsSource.includes("readRuntimeDeliveryReceipt(entry.result)")
@@ -1762,6 +1926,8 @@ async function main() {
     && !autonomousExecutorSource.includes("finalDeliveryArtifactRequestId:")
     && !autonomousExecutorSource.includes("finalDeliveryArtifactPaths:")
     && debugFinalArtifactSidecarSource.includes("debugFinalArtifactCaptureByRequest.has(normalizedRequestId)")
+    && debugFinalArtifactSidecarSource.includes("MAX_DEBUG_FINAL_ARTIFACT_PATH_CANDIDATES = 97")
+    && debugFinalArtifactSidecarSource.includes("pathCandidates: capturePathCandidates(")
     && debugFinalArtifactSidecarSource.includes("export function publishDebugFinalDeliveryProjection(")
     && debugFinalArtifactSidecarSource.includes("skuDeliverySource: projection.skuDeliverySource")
     && debugFinalArtifactSidecarSource.includes("export function readDebugSkuDeliverySource(")
@@ -2638,7 +2804,7 @@ async function main() {
   "不得再用错误文案猜测写入安全性");
 
   const validDebugReceipt = {
-    version: "debug-bridge-chat-submit-receipt/v4",
+    version: "debug-bridge-chat-submit-receipt/v5",
     requestId: "debug-request-1",
     conversationId: "conversation-1",
     submittedProjectPath: "C:/fixture/project",
@@ -2706,7 +2872,8 @@ async function main() {
       source: "renderer_ui_event_ledger"
     },
     interactionReceiptVerifiedByMain: true,
-    finalArtifactRefs: ["主图/候选.psd", "主图/候选.jpg"]
+    finalArtifactRefs: validFinalArtifactRefsProjection.refs,
+    finalArtifactRefsState: validFinalArtifactRefsProjection.state
   };
   const validDebugReceiptInput = {
     fixtureRoot: "C:/fixture/project",
@@ -2722,6 +2889,126 @@ async function main() {
     { result: { receipt: validDebugReceipt } },
     validDebugReceiptInput
   ).ok, true, "提交前、首次写与完成后协议字段完整时 receipt 必须可信");
+  const trustedIncompleteDeliveryReceipt = {
+    ...validDebugReceipt,
+    finalArtifactRefs: absentFinalArtifactRefsProjection.refs,
+    finalArtifactRefsState: absentFinalArtifactRefsProjection.state
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: trustedIncompleteDeliveryReceipt } },
+    validDebugReceiptInput
+  ).ok, true,
+  "显式空 finalArtifactRefs 表示 Agent 没有形成最终交付，不得把可信失败误报为 Debug Bridge 收据不可信");
+  const unsafeFinalArtifactReceipt = {
+    ...validDebugReceipt,
+    finalArtifactRefs: unsafeFinalArtifactRefsProjection.refs,
+    finalArtifactRefsState: unsafeFinalArtifactRefsProjection.state
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: unsafeFinalArtifactReceipt } },
+    validDebugReceiptInput
+  ).ok, false, "空交付集合可以可信，但目录穿越 finalArtifactRefs 必须继续失败关闭");
+  const overflowFinalArtifactReceipt = {
+    ...validDebugReceipt,
+    finalArtifactRefs: overflowFinalArtifactRefsProjection.refs,
+    finalArtifactRefsState: overflowFinalArtifactRefsProjection.state
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: overflowFinalArtifactReceipt } },
+    validDebugReceiptInput
+  ).ok, false, "producer 报告 overflow 时，空数组不能把越界事实压扁成可信未交付");
+  const malformedFinalArtifactReceipt = {
+    ...validDebugReceipt,
+    finalArtifactRefs: malformedFinalArtifactRefsCollection.projection.refs,
+    finalArtifactRefsState: malformedFinalArtifactRefsCollection.projection.state
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: malformedFinalArtifactReceipt } },
+    validDebugReceiptInput
+  ).ok, false, "producer 报告 malformed 时，consumer 必须拒绝整张 receipt");
+  const duplicateFinalArtifactReceipt = {
+    ...validDebugReceipt,
+    finalArtifactRefs: duplicateFinalArtifactRefsCollection.projection.refs,
+    finalArtifactRefsState: duplicateFinalArtifactRefsCollection.projection.state
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: duplicateFinalArtifactReceipt } },
+    validDebugReceiptInput
+  ).ok, false, "producer 报告 duplicate/malformed 时，consumer 必须拒绝整张 receipt");
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: { ...validDebugReceipt, finalArtifactRefsState: undefined } } },
+    validDebugReceiptInput
+  ).ok, false, "v5 receipt 缺少三态事实时必须失败关闭");
+  assert.strictEqual(validateDebugBridgeReceipt(
+    {
+      result: {
+        receipt: {
+          ...validDebugReceipt,
+          finalArtifactRefs: ["主图/候选.jpg", "主图/候选.JPG"]
+        }
+      }
+    },
+    validDebugReceiptInput
+  ).ok, false, "consumer 不得接受大小写等价的重复 finalArtifactRefs");
+
+  const providerFailureAfterDeliveryRecord = runRecord({
+    runId: "run-provider-failed-after-delivery",
+    generation: 1,
+    issuedAt: "2026-08-26T00:00:00.000Z",
+    endedAt: "2026-08-26T00:00:10.000Z",
+    success: false,
+    stopReason: "error",
+    taskRunStatus: "failed",
+    toolCalls: [
+      mutationCall(1, 1000, 41),
+      observationCall(2, "getAcceptanceSnapshot", 2000),
+      observationCall(3, "getCanvasSnapshot", 3000),
+      saveCall(4, 4000),
+      {
+        seq: 5,
+        name: "exportMainImageDocuments",
+        riskClass: "write",
+        activityClass: "mutation",
+        success: true,
+        elapsedMs: 5000,
+        summary: "exported",
+        argsKeys: ["format"]
+      }
+    ]
+  });
+  providerFailureAfterDeliveryRecord.providerFailure = {
+    kind: "capacity",
+    providerCode: "codex_subscription_turn_error"
+  };
+  const providerFailureAfterDeliveryObservation = deriveDesignReliabilityRunObservation({
+    caseSpec,
+    runRecords: [providerFailureAfterDeliveryRecord],
+    cohortId: "candidate",
+    repeatIndex: 1,
+    userInterventionCount: 0,
+    fixtureDigest: `sha256:${"e".repeat(64)}`,
+    environment: {
+      gitCommit: "abc123",
+      dirty: false,
+      provider: "provider-a",
+      modelId: "model-a"
+    },
+    evidenceRefs: evidenceRefs(),
+    finalArtifactManifest: buildAgentFinalArtifactManifest([], evidenceRefs())
+  });
+  assert.strictEqual(providerFailureAfterDeliveryObservation.observed.saveToolReceipt, true);
+  assert.strictEqual(providerFailureAfterDeliveryObservation.observed.exportToolReceipt, true);
+  assert.strictEqual(providerFailureAfterDeliveryObservation.observed.technicalDeliveryPassed, false,
+    "已有 save/export 但 Agent 没有声明最终 artifact 时，技术交付仍必须失败");
+  assert(providerFailureAfterDeliveryObservation.missingEvidence.includes("final_artifact_manifest"),
+    "合法空交付集合必须落到交付证据不完整，而不是伪造最终 manifest");
+  assert.strictEqual(providerFailureAfterDeliveryObservation.finalArtifactManifest, undefined,
+    "没有 Agent 最终交付声明时不得构造零 artifact 的伪 manifest");
+  assert.strictEqual(validateDesignReliabilityRun(providerFailureAfterDeliveryObservation).ok, true,
+    "Provider 失败与交付证据不完整必须形成合法 Run observation，而不是再次升级成协议错误");
+  assert(providerFailureAfterDeliveryObservation.observed.symptoms.some((symptom) => (
+    symptom.code === "model_provider_failure"
+  )), "save/export 后 Provider 失败必须保留真实 Provider 症状供 RunRecord 归因");
   const producerBackedBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
     requestId: "debug-request-1",
     expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
@@ -6821,8 +7108,11 @@ async function main() {
     includeProducerReceipts: true
   });
   assert.deepStrictEqual(
-    normalizeDebugFinalArtifactRefs(r38DebugProjection.paths, "C:\\fixture"),
-    ["主图/主图.psd", "主图/主图.jpg"],
+    normalizeDebugFinalArtifactRefs(r38DebugProjection.pathCandidates, "C:\\fixture"),
+    {
+      refs: ["主图/主图.psd", "主图/主图.jpg"],
+      state: { status: "valid" }
+    },
     "r38 producer refs 必须机械贯穿 Debug relative finalArtifactRefs"
   );
   const staleR38ToolLog = JSON.parse(JSON.stringify(r38ToolLog));

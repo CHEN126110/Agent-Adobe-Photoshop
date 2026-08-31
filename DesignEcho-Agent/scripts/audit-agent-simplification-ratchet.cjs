@@ -153,8 +153,8 @@ const METRICS = [
         // Agent 只在统一执行边界消费结构化结果。
         // 12855→12845（2026-08-27）：质量历史闭合与最终结果信号投影迁至独立纯函数，
         // 历史失败、等待状态和最终完成不再由主循环内的重复计数逻辑混合判定。
-        // 12836→12826：用户结果事实推导迁到 projection，Agent 核心只消费原子 ledger 投影。
-        baseline: 12826,
+        // 12836→12825：用户结果投影与终局质量事实下沉，Agent 核心只消费原子投影。
+        baseline: 12825,
         reduceHint: '把 Stage / 声明 / 读回 / 恢复等子系统从 agent.ts 迁出到独立模块或数据层；新增能力走注册表，不在主循环里长分支。',
         files: ['src/renderer/services/agent-runtime/agent.ts'],
         count: (text) => text.split('\n').length

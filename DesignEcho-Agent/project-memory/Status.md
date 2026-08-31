@@ -26,6 +26,9 @@
 - 模型调用计时与脱敏投影已从 `agent.ts` 抽到品类中立适配模块；Agent 核心行数保持简化棘轮原基线，所有调用用途仍由调用方显式声明，适配模块不决定用途或路线。
 - Provider 输出恢复现在遵守视觉事实：带图响应截断且可恢复时会在恢复请求中重发同一像素；只有完整响应可消费 pending observation。恢复完整、blocked、异常或额度耗尽都会退休像素并清理状态；普通任务模型 /视觉预算只扣一次，Runtime Accounting 仍记录全部物理请求。
 - 聊天上传图片当前能以 `DesignImageInput` 像素进入主模型，但通用 Agent 没有可供 `placeImage` 消费的请求级附件来源句柄；`fileToken` 是 UXP session token，不能由 Renderer 或模型伪造。该缺口已归属 Input Asset / Attachment Provider，而不是项目搜索或模型能力。
+- agentic Task Profile 绑定现在遵守上下文因果一致性：同一响应中的只读观察与知识检索可保留，Photoshop 写入、保存导出、外部生成、状态写入和未知副作用调用必须由绑定后模型轮重新生成。Harness 不改参数、不强制参考，也不把 Brief / Strategy / Plan 变成写入门票。
+- Final Quality 在 Host 事实、ReviewSet 或 Judge 调度形成协议前失败时，现通过既有有界协议摘要记录 `unavailable / evaluation_runtime_failed`；交付复入只有 fresh exact revision 才恢复缓存的 `completed`，已知漂移投影 `stale`，两类失败都不会继承旧信用或唤醒普通 Agent。
+- Design Reliability 已把 Debug 最终交付来源升级为贯穿 E2/resultRef collector、Sidecar、ChatPanel 与 consumer 的 v5 三态：只有确实未声明时 `absent + []` 才是可信但不完整；非空合法集合为 `valid`；项目外路径、目录穿越、畸形、超量、重复或状态矛盾为 `invalid` 并使收据不可信。canonical 生产完成路径保持原 `string[]` owner；空集合不能构造 Artifact manifest，技术交付仍失败。
 
 ## 已核实（构建与自动检查）
 
@@ -34,6 +37,7 @@
 - 本轮文档改动后的 `maintenance:planning-check`、入口文档审计、编码、仓库卫生、变更边界、Skill /门禁专项及完整 `maintenance:validate` 均通过；核心回归为 65 项，并包含 Agent 类型检查、UXP 测试与 production build。
 - S1 交付 /评审根因代码纵切新增后，再次完成一轮 65 阶段 `maintenance:validate`；专项覆盖真实 DeepSeek `chatWithTools(..., tools=[])` 图片出站、OpenAI-compatible receipt、全画布 Final Judge binding、r38 形态 PSD/JPG E2 refs、Evaluation 非法输出和 advisory authority。
 - INTAKE-090 性能归因纵切已通过一轮 fresh 65 阶段完整 `maintenance:validate`，其中包含 Runtime ledger、ContextManager、设计作者权与业务边界、Agent 简化棘轮、Renderer/Main 类型检查、Agent/UXP 测试和 UXP production build；尚无 fixed Case 新样本，因此不能把工程绿色表述为已经提速。
+- revision 5 实机后的最终整合树已通过 65 阶段 `maintenance:validate`；包含 Debug v5 producer→receipt→consumer 三态、Runtime declaration、TypeScript 控制流业务边界、零任务进展时零 Host /零模型调用、exact / stale / unavailable 终审缓存复入、Design Reliability、设计作者权、Renderer/Main 类型检查、Agent/UXP 测试和 UXP production build。Agent 核心简化棘轮由 12826 下调并锁定到 12825 行。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -46,6 +50,8 @@
 - r35 / r38 性能账本显示模型调用耗时分别约占墙钟 92.0% / 93.2%，普通 Agent 模型调用 35 / 29 次；11 次快照本身合计不足 1 秒，Final Judge 约 7–8 秒。当前优先归因高轮次、长输出与低增量视觉往返，不先删终审或降低 reasoning。
 - 历史 run 602 的补充只读剖析显示 22 次模型调用约 604 秒、19 次 Tool 约 67 秒，历史消息从 16 字增长到约 15.9 万字；这是旧版本单例线索，不是当前固定 Case 基线，也不能单独证明应删除哪类上下文。
 - `main-image-pink-coffee-unseen-v1` revision 4 曾有一轮 19 次模型调用、约 539 秒的技术交付样本；其源目录随后缺少 4 张冻结的已处理平铺图且旧 fixture 不在，因此当前已将 64 张现存输入冻结为 revision 5。旧样本不能冒充新 revision 基线。
+- `main-image-pink-coffee-unseen-v1` revision 5 已完成一轮无人工纠正真实运行：Runtime 约 319 秒，12 次模型请求约占 93%，18 次 Tool 约占 7%；PSD/JPG 真实生成但 canonical 运行以 `error / artifact_incomplete / 0 of 16` 结束。首个绑定前 `composeDesign` 没有消费主图方法；最终质量链没有发起 `final_quality_judge`，而是错误启动普通恢复回合后遭遇 Provider capacity。
+- revision 5 成品经真实像素对照只达到“主体完整、色调协调、结构可编辑”的制作底线；最终画面只保留四色平铺图并关闭模特场景，更像 SKU /目录展示，明显弱于用户 C-1256 主图与 Eagle 点击图参考。当前没有证据证明固定模板，较准确归因是 Agent 设计策略塌缩与 Evaluation 未闭合。
 
 ## 当前未核实
 
@@ -59,8 +65,8 @@
 
 ## 当前主要风险
 
-1. `finalArtifactRefs` 的代码级首个偏差已修复，但尚无当前提交的 fresh 真实 sidecar Attempt，运行态闭环仍未核实。
-2. `evaluateDesign` 的协议与 authority 已修复；自动高分漏检错字、标题重量和商业完成度的校准仍未解决。
+1. 当前三项 revision 5 根因补丁尚无 fresh 真实 sidecar Attempt，运行态闭环和设计效果改善仍未核实。
+2. Evaluation authority 已修复且故障不再转嫁主 Agent；自动高分漏检错字、标题重量、点击目标和商业完成度的校准仍未解决。
 3. 图片内容被压缩成单主体 bbox、矩形目标区和粗锚点，不能完整表达负空间、保护部位、多主体和视觉重量。
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
 5. 历史 Markdown、旧命令和旧模型配置可能再次进入上下文并误导开发。
@@ -68,7 +74,7 @@
 
 ## 当前下一步
 
-1. 当前 `S1-DELIVERY-REVIEW-ROOT-CAUSE-001` 的代码根因与核心验证已闭合，先提交可回滚基线；fresh Photoshop Attempt 仍是退出条件。
-2. INTAKE-090 observation-only 归因与视觉恢复修复已通过完整核心验证；提交该可回滚基线后固定同一 Case 跑一次。只有取得新样本后才选择一个可逆优化变量，不用删必要观察、降 reasoning 或缩短到无法完成的预算换取表面速度。
-3. 新提交与 Agent / UXP 构建身份一致、一次性 fixture 和写授权都就绪后，运行首轮隔离实机 Case；只有同时取得真实交付引用和外部文档零变化，才启动 S1 固定 5 Case × 2 次正式队列。
+1. 提交并推送已经通过完整核心验证的收据分层、上下文因果和 Evaluation 归属补丁，形成可回滚基线。
+2. 用新一次性 fixture 重跑同一 revision 5 Case；验证绑定前零写、绑定后方法真实消费、独立 Final Judge、诚实交付分类与外部文档零变化，并重新做人工作品对照。
+3. 只有取得新样本后才选择一个设计质量变量；若仍退化为安全平铺图，优先证伪参考上下文供给或 Evaluation 检出，而不是继续堆缩放规则、固定 Eagle 步骤或品类 Prompt。
 4. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。

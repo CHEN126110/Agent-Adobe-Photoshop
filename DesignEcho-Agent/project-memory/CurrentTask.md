@@ -23,8 +23,12 @@
 - `diagnose-runs` 已能按 call kind 汇总模型耗时与 token、列最慢五次请求，并从既有 AgentRunRecord 读取 Tool name/origin/activity。现有 Tool 档案没有单次 duration，报告必须显示 instrumentation unavailable，不能用累计 elapsed 时间相减猜测。
 - INTAKE-090 当前工作树已通过一轮 fresh 65 阶段 `maintenance:validate`，覆盖 Agent / UXP 测试、Main / Renderer 类型检查与 UXP production build；这证明归因和视觉恢复改动未破坏现有核心边界，但尚不能证明真实任务已经提速。
 - 固定性能 Case `main-image-pink-coffee-unseen-v1` 的源目录已比 revision 4 少 4 张已处理平铺图；旧 fixture 已不存在，不能重放旧摘要。当前已将仍真实存在且摘要匹配的 64 张摄影输入冻结为 revision 5，并生成新的 path-bound 一次性 fixture；revision 4 的 19 次模型调用 /约 539 秒成功样本只保留为历史参考，不进入新 revision 的配对结论。
+- revision 5 已完成一轮无人工纠正真实运行：Runtime 墙钟约 319 秒，12 次物理模型请求约占 93%，18 次 Tool 约占 7%；真实 Photoshop 制作、PSD 保存和 JPG 导出发生，但第 11 次候选终稿进入终态闭合后没有启动 Final Judge，第 12 次普通 Agent 恢复遭遇订阅模型 capacity，运行以 `error / artifact_incomplete / 0 of 16` 结束。该样本不进入成功率分子。
+- 视觉盲评确认当前成品只把四色平铺摄影放大裁成方图，画面干净且主体完整，但更像 SKU /目录展示，没有建立点击主张、穿着关系或商业信息层级；它显著弱于 `D:\A1 neveralone旗舰店\C-1256\主图` 与 Eagle 点击图参考。Agent 曾选中模特图，却在复核后关闭它；本轮没有调用 Eagle。当前证据说明“看过图”不等于形成成熟设计判断。
+- 本轮定位并修复了三个通用首偏差：Debug 收据过去无法区分“未声明交付”和“不安全 /畸形 /超量交付引用”，更上游的文件 collector 还会提前过滤、去重和截断；agentic 同轮写参数可以在 Task Profile 方法知识尚未进入上下文时生成并执行；Final Quality 异常和缓存复入失败会被压成 `null / stale`，再把旧 Judge 结果或缺口错误转嫁给普通 Agent。当前实现从 E2/resultRef 绑定处保留原始逻辑候选并采用 v5 `absent / valid / invalid` 交付状态，同时建立绑定后上下文因果栅栏，以及 exact revision 才允许复用的 Evaluation 协议摘要。
+- 最终整合工作树在独立架构审查补齐 Debug v5 三态、Final Quality cache / reentry 与变更边界分类后，再次通过 65 阶段 `maintenance:validate`；覆盖 TypeScript 控制流、零任务进展时零 Host /零模型调用、exact / stale / unavailable 终审复入、Design Reliability、作者权、Main / Renderer 类型检查、Agent / UXP 测试与 UXP production build。fresh Photoshop 复测仍待完成。正式 Attempt 后同一 fixture 又收到一次“继续”并覆盖同名 PSD/JPG，因此该目录已污染，下一次必须新建一次性 fixture。
 - 新附件故障已归属为 `INTAKE-091`：聊天上传会给主模型文件名和像素，但当前通用执行链没有可由模型引用、由 Tool 解析的请求级附件句柄；项目搜索和任意 CLI 都不能证明同名文件就是上传字节。P0 方案是 `attachmentRef` Input Asset Provider，通用 CLI 独立归属 `INTAKE-088`。
-- 只读 Design Reliability preflight 曾可连接 Debug Bridge、Photoshop MCP 和真实 UXP Runtime；新的代码提交、匹配构建、一次性 fixture、Debug 写授权和打开文档 ownership 仍需重新核对后才可开始正式写入。
+- revision 5 正式运行前的 Debug Bridge、Photoshop MCP、UXP Runtime、模型、fixture、写授权和外部文档 ownership 均通过只读 preflight；下一轮仍必须在新提交和新 fixture 上重新核对，旧收据不能复用。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
 
 ### 实施边界
@@ -37,10 +41,10 @@
 
 ### 下一步
 
-1. 保留已经提交为 `03a2a6a7` 的 S1 代码根因纵切，取得干净、可回滚的 Runtime 构建身份。
-2. 提交已经通过专项测试、类型检查、业务边界、简化棘轮和 fresh 65 阶段完整核心验证的 INTAKE-090 归因与视觉恢复事实修复。
-3. 用同一个固定 fresh Case 运行一次无人工纠正的 profiling，识别最慢 5 个调用、上下文增长来源和同 revision 重复视觉 presentation；随后一次只改一个可逆变量。
-4. 重建与提交一致的 Agent / UXP 调试运行，准备新的隔离 fixture 和授权，完成一轮真实写入、读回、保存、导出和诚实终态。
+1. 提交并推送已经通过完整核心验证的交付分类、上下文因果栅栏与 Evaluation owner 修复，形成干净可回滚基线。
+2. 重建与提交一致的 Agent / UXP 调试运行，创建新的 path-bound 一次性 fixture；旧 revision 5 运行目录只保留诊断，不再写入或作为完成证据。
+3. 用同一冻结 Case 再运行一次自然短提示，验证绑定前 sibling 写为零、绑定后模型真实消费主图方法、Final Judge 有独立 `callKind`、失败不再转成普通 Agent recovery，并重新做用户成稿 /Eagle 盲评。
+4. 若作品仍退化为安全平铺图，保持 Agent /Evaluation owner 归因，按 GMR 选择一个可证伪变量：参考研究上下文供给或 Evaluation 对“点击目标 /安全方案塌缩”的检出，不再继续增加缩放规则或品类提示。
 5. fresh Attempt 同时证明 `finalArtifactObserved=true`、PSD/JPG 精确 `runtimeDeliveryResultRefs`、非空 Debug `finalArtifactRefs` 与外部文档零变化后，再冻结剩余 5 Case × 2 队列。
 6. 在 S1 正式队列扩大前完成一个上传附件的通用 `attachmentRef → placeImage → removeBackground → 同目标读回` E2E；随后再按 INTAKE-088 分阶段建设受控外部文件与 CLI Provider。
 
@@ -51,9 +55,9 @@
 - 已自动验证：Evaluation 输出非法时保持协议失败且不污染 Agent、TaskCompletion、任务卡或学习；合法结果只能消费当前 ReviewSet，不得伪造人工裁决或默认高分。
 - 已自动验证：r38 形态的同 revision PSD/JPG 能机械投影 E2 refs 与 Debug 相对路径，任一 revision 不一致时整组失败。
 - 已自动验证：模型调用用途、上下文桶守恒、压缩计数、输出形态、多 transport attempt、run-scoped 视觉摘要、深拷贝和旧 v0 兼容；这些字段保持 observation-only，不获得预算、权限、任务结果或审美裁决权。
-- 当前未知：新生产构建的完整真实 sidecar 链尚未运行，不能据此宣称 r38 实机已修好；自动 85–90 分漏检错字、标题重量和商业完成度的校准问题也仍未解决。
-- 当前未知：新归因尚未在修复后固定 fresh Case 上产生样本，因此不能据历史个案直接选择上下文、reasoning、Tool schema 或视觉预算优化，也不能宣称已经提速。
-- 当前未知：真实 Debug 写授权与一次性 fixture 尚未准备；在提交、构建和环境身份一致前不得启动 Photoshop 写入。
+- 当前未知：本轮新补丁尚未在 fresh production build 上证明 `final_quality_judge` 可真实启动，也未证明上下文因果栅栏会改善选图、参考取舍或成品质量。
+- 当前未知：合法空交付收据修复能否在真实失败 Attempt 中稳定落为 `evidence_incomplete`，仍需新 fixture 验证；不能用已被后续“继续”覆盖的文件反补旧 Attempt。
+- 当前未知：自动 Evaluation 对错字、标题重量、点击目标、视觉主次和商业完成度的校准问题仍未解决；当前设计质量仍不达标。
 
 ### 状态
 

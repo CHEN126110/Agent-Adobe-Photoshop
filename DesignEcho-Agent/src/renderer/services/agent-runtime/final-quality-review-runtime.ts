@@ -48,6 +48,8 @@ import {
     selectFinalSupportingSourcePlacements
 } from './design-final-review-evidence';
 import {
+    projectFinalQualityEvaluationRuntimeFailure,
+    projectFinalQualityRevisionStale,
     projectFinalQualityDiagnosisRepairStep,
     projectFinalQualityModelProtocolDigest,
     runFinalQualityModelProtocol,
@@ -181,6 +183,44 @@ export interface FinalQualityReviewOutcomeProjection {
     pendingTrustedComparisonWrite?: PendingTrustedFinalComparisonWrite;
     staleDetail?: string;
     steps: FinalQualityReviewStepProjection[];
+}
+
+export function projectFinalQualityEvaluationRuntimeFailureOutcome(
+    detail: string
+): {
+    protocolDigest: FinalQualityModelProtocolDigest;
+    step: FinalQualityReviewStepProjection;
+} {
+    return {
+        protocolDigest: projectFinalQualityEvaluationRuntimeFailure(),
+        step: {
+            kind: 'warning',
+            title: '最终视觉评价未能运行',
+            detail: sanitizeUserVisibleDiagnosticText(detail)
+                || '最终视觉评价运行时发生异常。',
+            status: 'error',
+            issue: 'design_quality_evaluation_runtime_failed'
+        }
+    };
+}
+
+export function projectFinalQualityRevisionStaleOutcome(
+    detail: string
+): {
+    protocolDigest: FinalQualityModelProtocolDigest;
+    step: FinalQualityReviewStepProjection;
+} {
+    return {
+        protocolDigest: projectFinalQualityRevisionStale(),
+        step: {
+            kind: 'warning',
+            title: '最终视觉评价版本已变化',
+            detail: sanitizeUserVisibleDiagnosticText(detail)
+                || '当前 Photoshop 版本与已评价版本不一致。',
+            status: 'error',
+            issue: 'design_quality_evaluation_revision_stale'
+        }
+    };
 }
 
 export function resolveFinalQualityJudgeModelId(modelId: string): string {

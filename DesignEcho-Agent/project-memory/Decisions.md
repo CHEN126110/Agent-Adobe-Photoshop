@@ -2,6 +2,30 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-120 Debug 最终交付引用必须保留来源三态，清洗不能销毁非法事实
+
+- 状态：active；Debug receipt v5、生产投影、consumer 与回归已完成，fresh sidecar Attempt 待验证。
+- Runtime 没有声明最终交付、声明了合法交付、声明内容非法是三种不同事实，必须分别投影为 `absent / valid / invalid`。只有 `absent + []` 可以作为可信但交付不完整的收据；`invalid`、缺状态、状态 /集合矛盾、项目外路径、目录穿越、畸形值、超量或大小写等价重复都使整张收据不可信。
+- Runtime Debug collector 必须从 E2/resultRef 精确绑定处保留 own-property 原始逻辑候选，Sidecar 再有界传递到唯一 normalizer；任何一层都不得先过滤、去重或截成合法上限后让下游猜原因。canonical `collectRuntimeFinalArtifactPaths` 继续拥有生产完成所需的规范 `string[]`，Debug raw projection 不取得完成权。consumer 不扫描目录、不用文件存在补造 Manifest；合法空集合仍不能取得技术交付信用。
+- 依据：独立审查证明旧 normalizer 会把 unsafe、overflow 与未声明都压成 `[]`，导致下游即使严格校验也无法恢复真实来源状态。
+
+## D-119 Final Quality 运行故障归 Evaluation，不得伪装成主 Agent 缺少一次看图
+
+- 状态：active；代码与专项回归完成，fresh Photoshop 实机待验证。
+- Final Quality 的 Host 事实取得、ReviewSet 装配、Judge 调度和 Provider 协议属于现有 Evaluation owner。任一步骤在模型协议形成前失败时，必须在同一个有界 `finalQualityModelProtocolDigest` 中记录 `unavailable / evaluation_runtime_failed`；不得吞成 `null` 后再推断“主 Agent 还没看图”。
+- 显式 Evaluation 故障不能触发普通 `agent_turn`、重复截图或设计写入。当前稿件、Photoshop revision、save/export 与失败事实继续保留；没有可靠视觉断言时只能诚实保持质量未通过，不能签发最终交付引用。
+- 交付复入缓存不是环境真相：每次 terminal closure 必须先撤销 ambient Judge 摘要；只有重新读取 Host 并证明当前 revision 与 ReviewSet 精确相同，才能恢复缓存的 `completed`。已知版本变化记录 `stale`，Host 不可读记录 `unavailable / evaluation_runtime_failed`，二者都不能继承旧完成信用或唤醒普通 Agent。
+- Harness 只在确有“必须由 Agent 产生新设计事实”的缺口上恢复主循环；Evaluation 自己的证据或协议故障由 Evaluation 内部有界处理或终止。该裁决不新增第二评价器、第二状态机或主图专属恢复分支。
+- 依据：`main-image-pink-coffee-unseen-v1` revision 5 的真实运行已有同 revision 画面和保存导出，却没有任何 `final_quality_judge` 调用；原裸 catch 将异常压成 0/16，terminal closure 又启动无图普通 Agent 回合并遭遇 Provider capacity，属于错误 owner 转嫁。
+
+## D-118 具有副作用的调用必须由当前有效模型上下文生成
+
+- 状态：active；代码与专项回归完成，fresh Photoshop 实机待验证。
+- 结构化 Task Profile 声明会改变模型可见的任务语义、Skill 方法、评价标准或 Capability 面。同一模型响应中在声明前上下文下生成的 Photoshop 写入、保存导出、外部生成、状态写入或未知副作用调用，不得在声明执行后被事后追认为“已消费绑定后上下文”。
+- 声明同轮的只读观察与知识检索可以继续，其真实结果与新绑定的专业上下文一起进入下一模型轮；Agent 随后自行决定重发、改写、先找参考、换方向或放弃原动作。Harness 不修改原参数、不选择素材、不强制 Eagle，也不把 Brief / Strategy / Plan 变成 agentic 写入门票。
+- 这是一条上下文因果一致性约束，不是固定设计 Workflow。专项回归必须证明：绑定前系统提示不含品类方法，绑定后提示真实包含对应方法，只有绑定后模型轮生成的写参数进入执行器，延后调用不计任务进展或普通失败。
+- 依据：revision 5 真实运行的第 2 次模型响应在约 10k system chars 下同时生成 `declareDesignIntent + composeDesign`，第 3 次才在约 20k system chars 下取得主图方法；旧 sibling policy 会直接执行前一轮作者化参数。
+
 ## D-117 上传附件先取得请求级可执行来源句柄；通用 CLI 是受控 Provider，不是附件断链补丁
 
 - 状态：active；根因与 owner 已完成代码审计，进入 `INTAKE-091` 规划，尚未实现或实机验证。

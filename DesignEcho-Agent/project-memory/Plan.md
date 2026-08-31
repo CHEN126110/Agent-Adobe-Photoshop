@@ -23,7 +23,7 @@
 4. `[已完成]` 建立 Evaluation 缺陷注入，移除 advisory 完成信用、无效输出副作用和错误的主 Agent terminal recovery；审美校准保持独立待验证项。
 5. `[已完成]` 通过专项测试、Agent Renderer 类型检查、UXP 测试与一次完整 65 阶段 `maintenance:validate`。
 6. `[已完成]` 提交 S1 代码基线；完成 INTAKE-090 现有 Runtime Accounting 的用途、上下文、输出体量与视觉 revision 归因；同时修复“截断后未重发像素却可取得已观察信用”的事实错误。设计判断与普通任务预算 owner 不变，物理 recovery 成本如实记录。
-7. `[进行中]` INTAKE-090 已通过 fresh 65 阶段完整核心验证，当前提交可回滚基线；随后在同一固定 fresh Case 上完成一次 profiling，再在新一次性 fixture 上运行受控真实 Case；记录 canonical Attempt、Artifact、Review、性能归因与外部文档保护事实。
+7. `[进行中]` INTAKE-090 已在固定 revision 5 Case 取得首轮真实 profiling：模型约占墙钟 93%，设计效果与技术终态均未通过。由该样本及独立架构审查证明的 Debug v5 交付三态、Task Profile 上下文因果、Evaluation 故障归属与 exact-revision 缓存复入已经关闭并通过最终 65 阶段完整核心验证；当前提交可回滚基线，随后只用新一次性 fixture 复跑同一 Case，旧目录不再作为正式证据。
 8. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 
 ### 退出条件

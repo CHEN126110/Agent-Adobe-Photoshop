@@ -5,7 +5,10 @@
  * 生成稳定 gap 与有界继续决策；不读取 Host、不执行 Tool、不推进 Session，也不选择修法。
  */
 
-import type { DesignAssertionResult } from '../../../shared/design-quality-assertion';
+import type {
+    DesignAssertionResult,
+    FinalQualityModelProtocolDigest
+} from '../../../shared/design-quality-assertion';
 import type { PhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
 import { computeFastFingerprint } from '../../../shared/agent-runtime-v5/content-hash';
 import type { DesignEvaluationProfile } from '../../../shared/agent-runtime-v5/design-evaluation-profiles';
@@ -52,12 +55,18 @@ export interface AgentTerminalClosureQualityCache {
     historyStateRef: PhotoshopHistoryStateRef;
     latestMutationIndex: number;
     vlmAssertions: DesignAssertionResult[] | null;
+    protocolDigest?: FinalQualityModelProtocolDigest;
 }
 
 export type AgentTerminalClosureQualityReuse =
     | { status: 'not_available' }
-    | { status: 'reused'; vlmAssertions: DesignAssertionResult[] | null }
-    | { status: 'stale'; vlmAssertions: null };
+    | {
+        status: 'reused';
+        vlmAssertions: DesignAssertionResult[] | null;
+        protocolDigest?: FinalQualityModelProtocolDigest;
+    }
+    | { status: 'stale'; vlmAssertions: null }
+    | { status: 'unavailable'; vlmAssertions: null };
 
 export interface AgentTerminalClosureGap {
     kind: 'post_write_evidence' | 'delivery_evidence';
@@ -624,7 +633,14 @@ export function buildTerminalClosureQualityCache(input: {
     return {
         historyStateRef: { ...input.historyStateRef },
         latestMutationIndex: input.latestMutationIndex,
-        vlmAssertions: cloneAssertions(input.preparedClosure.vlmAssertions)
+        vlmAssertions: cloneAssertions(input.preparedClosure.vlmAssertions),
+        ...(input.preparedClosure.executionSummary.finalQualityModelProtocolDigest
+            ? {
+                protocolDigest: cloneFinalQualityModelProtocolDigest(
+                    input.preparedClosure.executionSummary.finalQualityModelProtocolDigest
+                )
+            }
+            : {})
     };
 }
 
@@ -645,8 +661,16 @@ export async function reuseTerminalClosureQualityIfCurrent(input: {
     if (input.latestMutationIndex !== cache.latestMutationIndex) {
         return { reuse: { status: 'stale', vlmAssertions: null } };
     }
-    const currentHistoryStateRef = await input.readCurrentHistoryStateRef();
-    if (!currentHistoryStateRef || !sameHistory(currentHistoryStateRef, cache.historyStateRef)) {
+    let currentHistoryStateRef: PhotoshopHistoryStateRef | undefined;
+    try {
+        currentHistoryStateRef = await input.readCurrentHistoryStateRef();
+    } catch {
+        return { reuse: { status: 'unavailable', vlmAssertions: null } };
+    }
+    if (!currentHistoryStateRef) {
+        return { reuse: { status: 'unavailable', vlmAssertions: null } };
+    }
+    if (!sameHistory(currentHistoryStateRef, cache.historyStateRef)) {
         return { reuse: { status: 'stale', vlmAssertions: null } };
     }
     const reviewHistoryStateRef = input.readReviewHistoryStateRef();
@@ -657,7 +681,10 @@ export async function reuseTerminalClosureQualityIfCurrent(input: {
     return {
         reuse: {
             status: 'reused',
-            vlmAssertions: cloneAssertions(cache.vlmAssertions)
+            vlmAssertions: cloneAssertions(cache.vlmAssertions),
+            ...(cache.protocolDigest
+                ? { protocolDigest: cloneFinalQualityModelProtocolDigest(cache.protocolDigest) }
+                : {})
         },
         cache
     };
@@ -684,6 +711,15 @@ function cloneAssertions(
     assertions: DesignAssertionResult[] | null
 ): DesignAssertionResult[] | null {
     return assertions ? assertions.map((assertion) => ({ ...assertion })) : null;
+}
+
+function cloneFinalQualityModelProtocolDigest(
+    digest: FinalQualityModelProtocolDigest
+): FinalQualityModelProtocolDigest {
+    return {
+        ...digest,
+        evidenceScope: { ...digest.evidenceScope }
+    };
 }
 
 function buildTerminalClosureOutcome(

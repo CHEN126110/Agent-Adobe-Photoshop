@@ -1,9 +1,9 @@
 /**
  * Runtime 声明同轮 sibling call 的承接策略。
  *
- * 声明是运行语义绑定点，不是权限票据。Harness 只能承接模型已经请求、声明成功后仍可见
- * 且通过正常 Tool Decision / 执行预检的原调用；它不能新增调用、改参数或绕过权限检查。
- * staged 声明仍形成真实执行边界，仅兼容的只读观察与知识检索可以同轮继续。
+ * 声明是运行语义绑定点，不是权限票据。Harness 不能新增调用、改参数或绕过权限检查。
+ * staged 会形成真实能力边界；agentic 虽不收紧能力面，却会改变模型可见的方法与评价上下文。
+ * 两者都只承接兼容的只读观察与知识检索；副作用调用须由绑定后的模型轮重新生成。
  */
 
 import {
@@ -38,7 +38,8 @@ export interface RuntimeDeclarationSiblingPolicyResult {
         | 'runtime_declaration_not_committed'
         | 'control_call_requires_replan'
         | 'tool_not_visible_after_binding'
-        | 'agentic_visible_call'
+        | 'agentic_compatible_read_only_call'
+        | 'agentic_side_effect_requires_bound_context'
         | 'compatible_read_only_call'
         | 'side_effect_requires_replan';
 }
@@ -76,11 +77,22 @@ export function resolveRuntimeDeclarationSiblingPolicy(
     if (!input.visibleAfterBinding) {
         return { disposition: 'defer', reason: 'tool_not_visible_after_binding' };
     }
-    // Agentic 声明只绑定任务语义、方法、评价与预算，不切换 Capability 面，也不授予权限。
-    // 模型已经在同一响应里选中、绑定后仍可见的调用继续走正常 Tool Decision /执行预检；
-    // Harness 不因一个不改变权限的声明强制模型丢掉自己的动作再思考一轮。
+    // Agentic 声明不授予写权限，也不建立 Stage 门票，但会把 Skill 方法、评价标准和
+    // 任务语义加入下一轮模型上下文。同一响应里的写调用是在这些专业上下文尚不可见时
+    // 生成的，不能因为声明先执行就追认成“已消费绑定后知识”的设计决定。只读观察与
+    // 知识检索仍可同轮继续；其结果会与绑定后上下文一起交给 Agent 重新决定写入。
     if (input.declarationExecutionModel === 'agentic') {
-        return { disposition: 'execute_after_binding', reason: 'agentic_visible_call' };
+        if (input.executionKind === 'read_only_observation'
+            || input.executionKind === 'knowledge_search') {
+            return {
+                disposition: 'execute_after_binding',
+                reason: 'agentic_compatible_read_only_call'
+            };
+        }
+        return {
+            disposition: 'defer',
+            reason: 'agentic_side_effect_requires_bound_context'
+        };
     }
     if (input.executionKind === 'read_only_observation'
         || input.executionKind === 'knowledge_search') {
