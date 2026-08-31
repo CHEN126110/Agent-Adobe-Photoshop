@@ -26,6 +26,7 @@ export interface MainImageDesignReadinessReportInput {
 export interface MainImageDesignReadinessStrategyContext {
     status: string;
     skeletonOnly?: boolean;
+    productionSubmission?: boolean;
     missingInputs: string[];
     blockers: string[];
     warnings: string[];
@@ -93,6 +94,20 @@ function makeCheck(
     };
 }
 
+function buildDesignStandardsCheckSummary(
+    strategy: MainImageDesignReadinessStrategyContext | null | undefined,
+    designStandards: MainImageDesignStandards | undefined
+): string {
+    if (strategy?.skeletonOnly === true) {
+        return '空骨架任务不包含素材、构图、文案或审美判断，不需要设计规范取得写入资格。';
+    }
+    if (strategy?.productionSubmission === true) {
+        return '逐槽生产提交只消费 Agent 已声明的素材与几何；旧的全局设计策略不再取得第二次写入裁决权。';
+    }
+    if (!designStandards) return '没有主图设计规范。';
+    return `status=${designStandards.status}; rules=${designStandards.rules.length}; recipes=${designStandards.recipeCandidates.length}`;
+}
+
 function buildChecks(input: MainImageDesignReadinessReportInput): MainImageDesignReadinessCheck[] {
     const strategy = input.strategyInputContext;
     const designStandards = strategy?.designStandards;
@@ -113,16 +128,12 @@ function buildChecks(input: MainImageDesignReadinessReportInput): MainImageDesig
         makeCheck(
             'design-standards',
             '设计规范与知识来源',
-            strategy?.skeletonOnly === true
+            strategy?.skeletonOnly === true || strategy?.productionSubmission === true
                 ? 'not_run'
                 : designStandards
                 ? designStandards.status === 'ready_for_design_strategy' ? 'passed' : 'needs_review'
                 : 'not_run',
-            strategy?.skeletonOnly === true
-                ? '空骨架任务不包含素材、构图、文案或审美判断，不需要设计规范取得写入资格。'
-                : designStandards
-                ? `status=${designStandards.status}; rules=${designStandards.rules.length}; recipes=${designStandards.recipeCandidates.length}`
-                : '没有主图设计规范。'
+            buildDesignStandardsCheckSummary(strategy, designStandards)
         ),
         makeCheck(
             'executor-dry-run',
@@ -136,11 +147,11 @@ function buildChecks(input: MainImageDesignReadinessReportInput): MainImageDesig
         ),
         makeCheck(
             'user-checkpoint',
-            '用户 checkpoint',
+            'Runtime 执行授权',
             input.userCheckpointApproved === true ? 'passed' : 'needs_review',
             input.userCheckpointApproved === true
-                ? '用户已允许进入会改变 Photoshop 输出的真实 executor。'
-                : '真实 Photoshop executor 会改变实际 PSD/PSB 输出，进入前必须明确 checkpoint。'
+                ? '当前任务已取得 Harness 签发的受保护原子执行通道。'
+                : '当前任务没有受保护的 Photoshop 原子执行通道，不能进入真实 executor。'
         ),
         makeCheck(
             'result-qa',
@@ -159,7 +170,9 @@ function inferStatus(input: MainImageDesignReadinessReportInput): MainImageDesig
     const strategy = input.strategyInputContext;
     if (!strategy) return 'blocked_missing_strategy_inputs';
     if (strategy.status !== 'ready_for_strategy_contract') return 'blocked_strategy_inputs_not_ready';
-    if (strategy.skeletonOnly !== true && strategy.designStandards.status !== 'ready_for_design_strategy') {
+    if (strategy.skeletonOnly !== true
+        && strategy.productionSubmission !== true
+        && strategy.designStandards.status !== 'ready_for_design_strategy') {
         return 'blocked_design_standards_not_ready';
     }
     if (strategy.productionExecutorDryRunPreview.status !== 'completed_dry_run') {
@@ -184,7 +197,9 @@ function collectBlockers(
     const strategy = input.strategyInputContext;
     const blockers = [
         ...(strategy?.blockers || []),
-        ...(strategy?.skeletonOnly === true ? [] : strategy?.designStandards.blockers || []),
+        ...(strategy?.skeletonOnly === true || strategy?.productionSubmission === true
+            ? []
+            : strategy?.designStandards.blockers || []),
         ...(strategy?.productionExecutorDryRunPreview.blockers || []),
         ...(input.qaReport?.blockers || [])
     ];
@@ -193,7 +208,7 @@ function collectBlockers(
     if (status === 'blocked_strategy_inputs_not_ready') blockers.push('main_image_strategy_inputs_not_ready');
     if (status === 'blocked_design_standards_not_ready') blockers.push('main_image_design_standards_not_ready');
     if (status === 'blocked_executor_dry_run_not_ready') blockers.push('main_image_executor_dry_run_not_ready');
-    if (status === 'waiting_for_user_checkpoint') blockers.push('user_checkpoint_required_before_live_executor');
+    if (status === 'waiting_for_user_checkpoint') blockers.push('guarded_runtime_execution_required_before_live_executor');
     if (status === 'waiting_for_result_qa') blockers.push('main_image_result_qa_not_ready');
 
     return cleanStrings(blockers);
@@ -223,10 +238,10 @@ function buildNextActions(status: MainImageDesignReadinessStatus): string[] {
         return ['先完成 production executor dispatch plan 与 dry-run operation preview。'];
     }
     if (status === 'waiting_for_user_checkpoint') {
-        return ['进入真实 Photoshop executor 前，请确认允许修改实际 PSD/PSB 输出。'];
+        return ['等待 Harness 为当前任务签发受保护的 Photoshop 原子执行通道。'];
     }
     if (status === 'ready_for_live_executor') {
-        return ['可以在用户明确授权后接入真实 Photoshop executor，并必须执行读回 QA。'];
+        return ['可以通过当前受保护执行通道进入真实 Photoshop executor，并必须执行读回 QA。'];
     }
     if (status === 'waiting_for_result_qa') {
         return ['补齐结果图、Photoshop 读回、截图 / pixel probe 和人工验收。'];
@@ -247,7 +262,7 @@ export function buildMainImageDesignReadinessReport(
     const requiresUserCheckpoint = input.userCheckpointApproved !== true && status !== 'quality_claim_ready';
     const limitations = [
         'mainImageDesignReadinessReport 只汇总已有主图状态，不执行 Photoshop、不调用 provider、不搜索网页。',
-        'ready_for_live_executor 只表示可以在明确授权后进入真实执行器，不代表已经执行或输出合格。',
+        'ready_for_live_executor 只表示当前任务具备受保护执行通道，不代表已经执行或输出合格。',
         'quality_claim_ready 只来自 QA report 的检查结果，不等于完整电商项目设计完成。',
         '所有 Photoshop actualBounds、截图、导出和人工验收都必须来自后续真实读回，不能由 dry-run 伪造。'
     ];

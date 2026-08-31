@@ -2,15 +2,18 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
-## D-125 主图固定生产骨架与 Agent 逐槽设计作者权分离
+## D-125 主图固定生产骨架、Agent 设计作者权与整组交付事务分离
 
-- 状态：active；代码、持久行为测试与 fresh 65 阶段 `maintenance:validate` 已通过，覆盖 Main /Renderer 类型检查、作者权边界、Agent /UXP 测试及 UXP production build；最终独立审查确认此前层级测试假绿风险已关闭且当前无 P0/P1，fresh 正常程序 Photoshop Attempt 待验证。
+- 状态：active；基础生产骨架已随 `3cb1594e` 提交并推送。当前增量已通过 Renderer 类型检查、Runtime 声明、Skill Package、Capability、作者权和业务边界专项验证，以及一轮 fresh 65 阶段 `maintenance:validate`；fresh 正常程序 Photoshop Attempt 待完成。
 - 用户的 800 /750 /1200 空骨架与 `4.0主图导出所有主图文档.jsx` 只证明当前店铺的生产容器与批量导出惯例：三份工作画布分别为 1500×1500、1500×2000、1440×2160，均为 72 ppi RGB/8；每份含点击图 5 槽、转化图 2～5 四槽；结构非空子组按子组名导出到 `主图/{规格}`，且工作画布不缩放。它们不能证明哪些槽必须填、平台最终上传尺寸、子组内部版式、素材、文案或审美答案。
 - Main Image Skill 拥有唯一生产事实源、文档 /槽位 /路径 /命名、空槽容量、交付配对和导出隔离。Agent /用户通过一等 `slotAssignments` 逐槽拥有 `sizeKey / imageType / slotName / variantId / objective / asset / subjectBounds / targetBox / safeBox / scaling preset / decisionReason`；同素材跨槽或跨规格复用也必须逐条明示。Harness 只能验证来源、几何、安全边界、事务、预算与读回，不得用 variant 数组下标、全局 selectedAsset、项目首图、关键词或默认构图替 Agent 入槽。
 - 空骨架是可执行的 editable-only 任务：3 份文档 ×（建档 +11 组 +保存）=39 步；没有 place /transform /raster。满 27 槽是 120 步冻结计划，默认预算按真实计划提升，用户显式更低预算则失败关闭；不能用历史 80 步常量误杀合法任务，也不能静默扩大用户上限。
 - Photoshop 层级不能只验证 Tool 返回 success。父组创建后必须归文档根级，子组归对应父组；读回精确绑定当前 documentId、createDocument 返回的 Background id /role /locked、父子路径以及 production spec 的独立面板顺序。导出必须隔离同父组兄弟内容并保留完整工作画布；文件存在、可解码、尺寸和 hash 仍由独立文件探针验证。
 - 正面经验：把“固定空容器”和“Agent 本轮填充决定”分开后，Skill 可以稳定交付用户习惯，同时保留模型的选图、构图和审美作者权。JSX 可作为生产证据，但应逐条提取可证事实，并修正其中的兄弟可见性污染和 JPEG 最低质量注释错误，而不是忠实复制缺陷。
 - 负面教训：历史测试把 1440×1440 /1440×1920 /1440×2560、固定 2+2、1200 禁转化和同一素材扇出固化成 Runtime 答案；随后即使强模型有不同判断，也只能反复产出相似方案。测试必须验证不变量与负向边界，不能把 fixture 的具体答案、旧 Project State、固定 DSL /文案 /recipe 送回生产 Agent。
+- agentic Runtime 无论在进入 Agent 前已绑定，还是由 Agent 循环内显式声明，都必须用同一个绑定投影提供 Manifest 输入来源、交付义务和唯一 workflow owner；它保留 broad atomic Tool，不执行 Skill、不授予写权限，也不把 `user_goal`、随消息图片或当前 Photoshop 文档误报为缺失。
+- 生产提交只展开 `slotAssignments` 实际涉及的工作文档；一张 800 槽位不能顺带创建 750 /1200 文档。写入必须同时持有同一 guarded executor 与由其签发的 Runtime delivery authority；保存 /导出先写绑定冻结计划的 staging，精确文件集合、大小和摘要全部对账后再整组提交。调用参数只表示请求路径，实际 Tool result /文件探针才是写入路径证据。
+- 当前 `slotAssignments` 是生产交接格式，不是完整 DesignIR：它只能表达每槽单素材与几何，尚不能承载文字、形状、蒙版、多图和层内排版。后续采用 `prepare 标准文档 /槽位并返回 TaskRun + document /group /revision 收据 → Agent 使用现有通用 Tool 在准确槽位内完成分层设计 → finalize 对账同一收据并整组保存导出`；不得在 Main Image Skill 内复制第二套完整设计 DSL。
 - 后续边界：自定义尺寸需要自己的第一等 document /slot schema，不能恢复全局素材兜底；每个 assignment 还需绑定逐素材视觉观察收据，不能用路径存在和图片尺寸冒充“模型已经看过”。
 
 ## D-124 测试与 Benchmark 必须处在生产 Runtime 之外的物理隔离信封

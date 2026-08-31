@@ -31,6 +31,10 @@
 - 该 Attempt 的第 2 个 Tool 是旧 `recommendAssets`，并在后续采用 A01 /A02；项目状态还会自动展开旧选图、版式、文案与评审。结合默认 MCP 调试命令曾硬编码用户真实项目，已确认重复选图不能单纯归因模型：检索诱导、旧项目状态与测试环境复用共同污染了模型上下文。
 - 提交前攻击审计发现的三个真实调用链旁路已经根修并复审：`browseAssetCandidates` 现在由工具身份保证 Task Profile 绑定前后都走 calling-Agent 中性路径；旧模型时代的 `published/promoted` 与伪 publisher 全部降为 `candidate + publicationReview`，生产 Evaluation 消费为 0；Main 通过纯 `chat-test-environment` 行为校验项目 /userData realpath、旧 `.designecho`、打包 /无 Bridge、目录重叠和单独 CDP。候选完整身份是 `candidateSetId + G + path`，集合指纹同时绑定 scope、size、mtime、alpha 和尺寸。限定复审已无 P0/P1；新增完成态审美复入资格已下沉到纯逻辑策略，并要求当前 ReviewSet、可靠 Judge 与必需 E2 交付证据同时成立。当前整合树已通过 fresh 65 阶段 `maintenance:validate`，含 Agent 简化棘轮、作者权 /业务边界、Main /Renderer 类型检查、Agent /UXP 测试与 UXP production build。
 - `INTAKE-092` 的代码治理已落地并通过专项行为测试与一轮 fresh 65 阶段 `maintenance:validate`，覆盖 Main /Renderer 类型检查、作者权边界、Agent /UXP 测试及 UXP production build：唯一生产事实源固定 1500×1500、1500×2000、1440×2160 三份 72 ppi RGB/8 工作文档，每份保留 5 个点击槽与 4 个转化槽；空骨架为 39 步 editable-only 任务，满 27 槽为 120 步冻结计划。槽位内容必须由 Agent /用户通过 `slotAssignments` 逐槽声明素材、主体 bounds、target /safe box、缩放 preset 与理由；旧 `variants[index]`、全局素材扇出、固定 DSL /文案 /recipe 和 1200 禁转化均已移除。UXP 导出会隔离兄弟子组并保留完整工作画布；顶层 /子组归位由真实 documentId、Background id、父子路径和规格面板顺序读回验证。最终独立只读审查确认此前层级测试假绿风险已关闭且当前无 P0/P1；仍缺 fresh 正常程序 Photoshop Host Attempt，不能把自动验证写成实机通过或视觉质量改善。
+- 当前增量统一了两种 agentic Runtime 入口：进入 Agent 前已绑定和 Agent 循环内显式声明都会得到同一个 Manifest 输入 /交付责任投影、相同方法上下文和唯一主图 production owner；`user_goal`、随消息图片、项目素材和当前 Photoshop 文档只作为来源事实，workflow entry 不裁掉 broad atomic Tool，也不授予写权限。
+- 主图生产执行现在要求同一 TaskRun 的 branded guarded executor 与由它签发的 delivery authority；无效 assignment、跨 executor authority、artifact /staged path /lease digest /完整提交集合漂移都在 Host 前失败。显式 assignment 只创建实际涉及的规格文档；保存和导出写 staging，只有实际 Tool result、文件大小 /hash、同版本和 external commit 全部闭合后才提交正式目录。真实 `mainImageExecutor` 正向行为夹具已证明一份 800 文档、11 组、一张结果图与一份可编辑稿整组提交；这仍不是 Photoshop Host E2E。
+- 提交前审查确认当前 `slotAssignments` 只表达一素材一几何，不能承载成熟主图所需的文字、形状、蒙版、多图和槽内图层关系。下一纵切必须采用 prepare → 同一 Agent 通用 Tool 分层设计 → finalize，而不是把完整设计答案继续塞进 Skill executor 或再造一套 DesignIR。
+- 当前增量已经通过一轮 fresh 65 阶段 `maintenance:validate`，覆盖规划 /卫生 /编码、工具与 Skill 审计、Runtime /Prompt /作者权 /交付行为、Main /Renderer 类型检查、Agent /UXP 测试和 UXP production build；它不证明真实 Photoshop Host 或视觉质量通过。
 - 新附件故障已归属为 `INTAKE-091`：聊天上传会给主模型文件名和像素，但当前通用执行链没有可由模型引用、由 Tool 解析的请求级附件句柄；项目搜索和任意 CLI 都不能证明同名文件就是上传字节。P0 方案是 `attachmentRef` Input Asset Provider，通用 CLI 独立归属 `INTAKE-088`。
 - revision 5 正式运行前的 Debug Bridge、Photoshop MCP、UXP Runtime、模型、fixture、写授权和外部文档 ownership 均通过只读 preflight；下一轮仍必须在新提交和新 fixture 上重新核对，旧收据不能复用。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
@@ -45,9 +49,9 @@
 
 ### 下一步
 
-1. 防污染切片已以 `217368bd` 独立提交并推送；继续排除用户未提交的 5 个 UI 文件，不混入主图生产规范提交。
-2. 将 `INTAKE-092` 独立提交并推送；继续排除用户 5 个 UI 文件。最终独立审查与 fresh 65 阶段核心闸门均已完成，不能因提交整理改写断言或省略验证事实。
-3. 重建与提交一致的正常 Agent / UXP，在新的普通项目中运行自然短提示；不使用 Debug fixture、fake 变量或用户真实参考项目作为 active test project。验证 Agent 是否产生真实逐槽声明、模型选图说明、是否按需看 Eagle、Photoshop 5+4 层级、保画布导出、Final Judge 与外部文档零变化。
+1. 当前 Runtime owner /主图整组文件事务增量的完整核心闸门已通过；完成只读审查、独立提交与推送，继续排除用户未提交的 3 个 UI 文件。
+2. 实现 `prepare 标准文档 /槽位 → Agent 在精确 document /group /revision 内用通用 Tool 分层设计 → finalize 非空槽整组交付`，并用正向和身份漂移夹具证明 Skill 没有取得第二设计 owner。
+3. 重建与提交一致的正常 Agent / UXP，在新的普通项目中运行自然短提示；不使用 Debug fixture、fake 变量或用户真实参考项目作为 active test project。验证 Agent 的对象理解、选图依据、按需参考、文字 /形状 /蒙版 /多图分层、真实 5+4 Photoshop 层级、保画布导出、Final Judge 与外部文档零变化。
 4. 若作品仍退化为相同安全构图，保持 Agent /Evaluation owner 归因，按 GMR 只改变一个可证伪变量；不得恢复 recommendation、旧状态注入、固定版式或测试答案。
 5. fresh Attempt 同时证明 `finalArtifactObserved=true`、PSD/JPG 精确 `runtimeDeliveryResultRefs`、非空 Debug `finalArtifactRefs` 与外部文档零变化后，再冻结剩余 5 Case × 2 队列。
 6. 在 S1 正式队列扩大前完成一个上传附件的通用 `attachmentRef → placeImage → removeBackground → 同目标读回` E2E；随后再按 INTAKE-088 分阶段建设受控外部文件与 CLI Provider。
@@ -63,6 +67,7 @@
 - 当前未知：用户主图骨架只证明 5+4 容器，尚不能证明 1200 四个转化槽是否必须填满、点击图五个非空候选是否全部交付，以及最终平台上传尺寸；当前实现因此默认全部为空，只执行 Agent /用户显式 assignment，这些业务取舍不能由 Harness 猜测。
 - 当前未知：合法空交付收据修复能否在真实失败 Attempt 中稳定落为 `evidence_incomplete`，仍需新 fixture 验证；不能用已被后续“继续”覆盖的文件反补旧 Attempt。
 - 当前未知：自动 Evaluation 对错字、标题重量、点击目标、视觉主次和商业完成度的校准问题仍未解决；当前设计质量仍不达标。
+- 当前未知：prepare / finalize 尚未实现，当前 production entry 只能机械置入单素材并交付，不能据此宣称 Agent 已能在标准槽位中完成专业分层设计。
 
 ### 状态
 

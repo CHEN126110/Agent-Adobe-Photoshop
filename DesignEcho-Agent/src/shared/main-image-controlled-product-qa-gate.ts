@@ -185,6 +185,25 @@ function collectPathValues(value: unknown, source: string, output: Array<{ path:
     }
 }
 
+function collectOperationResultPathValues(
+    value: unknown,
+    source: string,
+    output: Array<{ path: string; source: string }>
+): void {
+    const record = isRecord(value) ? value : undefined;
+    const toolCalls = Array.isArray(record?.toolCalls) ? record.toolCalls : [];
+    if (toolCalls.length === 0) {
+        collectPathValues(value, source, output);
+        return;
+    }
+    for (const call of toolCalls) {
+        if (!isRecord(call)) continue;
+        // Adapter params describe the requested target before a Runtime-owned staging
+        // redirect. Only the actual Tool result can prove where bytes were written.
+        collectPathValues(call.result, `${source}.toolResult`, output);
+    }
+}
+
 function operationToolName(operation: MainImageLiveExecutorOperationRunResult): string {
     return cleanString(operation.tool).toLowerCase();
 }
@@ -269,7 +288,11 @@ function extractPathEntries(
     const pathEntries: Array<{ path: string; source: string }> = [];
 
     for (const operation of successfulExportOperations) {
-        collectPathValues(operation.actualResult, `${operation.tool}.actualResult`, pathEntries);
+        collectOperationResultPathValues(
+            operation.actualResult,
+            `${operation.tool}.actualResult`,
+            pathEntries
+        );
         for (const readback of operation.readbackResults || []) {
             if (readback.success === true) {
                 collectPathValues(readback.data, readbackSource(readback, `${operation.tool}.readback`), pathEntries);
@@ -304,7 +327,11 @@ function buildResultImageSummary(
         ? Math.max(0, successfulExportOperations.length - pathEntries.length)
         : successfulExportOperations.filter((operation) => {
         const paths: Array<{ path: string; source: string }> = [];
-        collectPathValues(operation.actualResult, `${operation.tool}.actualResult`, paths);
+        collectOperationResultPathValues(
+            operation.actualResult,
+            `${operation.tool}.actualResult`,
+            paths
+        );
         for (const readback of operation.readbackResults || []) {
             if (readback.success === true) {
                 collectPathValues(readback.data, readbackSource(readback, `${operation.tool}.readback`), paths);

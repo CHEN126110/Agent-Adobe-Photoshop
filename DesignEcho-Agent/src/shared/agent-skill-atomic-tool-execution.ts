@@ -244,12 +244,46 @@ const GUARDED_ATOMIC_TOOL_LEDGER_STATES =
 const RUNTIME_OWNED_SKILL_TOOL_LEDGER_SCOPES =
     new WeakMap<object, RuntimeOwnedSkillToolLedgerScopeState>();
 const RUNTIME_OWNED_SKILL_TOOL_LEDGERS = new WeakSet<object>();
+const RUNTIME_OWNED_SKILL_DELIVERY_PLAN_AUTHORITIES = new WeakSet<object>();
+const RUNTIME_OWNED_SKILL_DELIVERY_PLAN_AUTHORITY_EXECUTORS =
+    new WeakMap<object, GuardedAtomicToolExecutor>();
 const RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDINGS = new WeakSet<object>();
 const RUNTIME_OWNED_SKILL_EXTERNAL_DELIVERY_COMMIT_RECEIPTS = new WeakSet<object>();
 const RUNTIME_OWNED_SKILL_STAGING_LEASES = new WeakSet<object>();
 const RUNTIME_OWNED_SKILL_DELIVERY_PLAN_RESULT_BINDINGS =
     new WeakMap<object, RuntimeOwnedSkillDeliveryPlanBinding>();
 let runtimeOwnedSkillToolLedgerScopeSequence = 0;
+
+/** 只有本模块创建并登记的原子 executor 才能作为 Harness 写入边界。 */
+export function isGuardedAtomicToolExecutor(
+    value: unknown
+): value is GuardedAtomicToolExecutor {
+    return typeof value === 'function'
+        && GUARDED_ATOMIC_TOOL_LEDGER_STATES.has(value as GuardedAtomicToolExecutor);
+}
+
+/** JSON、模型参数或普通对象不能伪造 Runtime-owned delivery authority。 */
+export function isRuntimeOwnedSkillDeliveryPlanAuthority(
+    value: unknown
+): value is RuntimeOwnedSkillDeliveryPlanAuthority {
+    return Boolean(value)
+        && typeof value === 'object'
+        && RUNTIME_OWNED_SKILL_DELIVERY_PLAN_AUTHORITIES.has(value as object);
+}
+
+/**
+ * Delivery authority 与 guarded executor 必须来自同一个 Runtime ledger owner。
+ * 两者各自“是真的”仍不够：跨 TaskRun /跨 scope 拼接会破坏交付账本的完整性。
+ */
+export function isRuntimeOwnedSkillDeliveryPlanAuthorityForExecutor(
+    authority: unknown,
+    executor: unknown
+): authority is RuntimeOwnedSkillDeliveryPlanAuthority {
+    return isRuntimeOwnedSkillDeliveryPlanAuthority(authority)
+        && isGuardedAtomicToolExecutor(executor)
+        && RUNTIME_OWNED_SKILL_DELIVERY_PLAN_AUTHORITY_EXECUTORS.get(authority as object)
+            === executor;
+}
 
 function isRecord(value: unknown): value is Record<string, any> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -945,6 +979,8 @@ export function createRuntimeOwnedSkillDeliveryPlanAuthority(input: {
             grantsPermission: false
         })
     });
+    RUNTIME_OWNED_SKILL_DELIVERY_PLAN_AUTHORITIES.add(authority);
+    RUNTIME_OWNED_SKILL_DELIVERY_PLAN_AUTHORITY_EXECUTORS.set(authority, input.executor);
     return authority;
 }
 

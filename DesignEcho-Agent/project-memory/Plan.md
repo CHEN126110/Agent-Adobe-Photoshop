@@ -23,9 +23,12 @@
 4. `[已完成]` 建立 Evaluation 缺陷注入，移除 advisory 完成信用、无效输出副作用和错误的主 Agent terminal recovery；审美校准保持独立待验证项。
 5. `[已完成]` 通过专项测试、Agent Renderer 类型检查、UXP 测试与一次完整 65 阶段 `maintenance:validate`。
 6. `[已完成]` 提交 S1 代码基线；完成 INTAKE-090 现有 Runtime Accounting 的用途、上下文、输出体量与视觉 revision 归因；同时修复“截断后未重发像素却可取得已观察信用”的事实错误。设计判断与普通任务预算 owner 不变，物理 recovery 成本如实记录。
-7. `[进行中]` 正常程序 Attempt 已在新项目取得真实 PSD/JPG、Final Judge 和同版本证据，但成品质量为 `needs_review`，且旧 requirement 推荐、项目历史摘要、默认调试项目与学习发布边界存在检索 /测试污染。提交前攻击审计发现的三个真实旁路已根修：Task Profile 绑定前后由工具身份强制中性浏览；旧 `published/promoted` 全部隔离为待审候选；Main 使用纯信封行为校验真实项目、旧状态、打包 /无 Bridge 和单独 CDP。`candidateSetId + G` 还绑定 scope 与文件版本；完成态审美复入要求当前 ReviewSet、可靠 Judge 和本次必需 E2 证据。限定复审已无 P0/P1，fresh 65 阶段 `maintenance:validate` 已通过；待提交推送和 fresh 正常程序复跑。
-8. `[代码与自动验证已完成，fresh Host 待验证]` INTAKE-092 已收口三个真实工作画布、每文档 5 个点击槽 +4 个转化槽、子组名即导出名、空骨架 editable-only、逐槽 assignment、满槽动态预算、UXP 兄弟组隔离与保画布导出；固定容器与 Agent 的素材 /主体 bounds /几何 /文案决定已分离，fresh 65 阶段核心闸门与最终无 P0/P1 只读审查均已通过。独立提交推送后，用正常程序和新普通项目验证真实 Photoshop 层级、导出像素及零外部文档副作用。
-9. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
+7. `[已完成]` 防污染旁路已根修并以 `217368bd` 提交推送；Task Profile 绑定前后保持中性浏览，旧伪发布被隔离，测试项目 /userData /CDP 使用独立信封，完成态审美复入绑定当前 ReviewSet 与必需 E2 证据。
+8. `[已完成]` INTAKE-092 基础生产骨架已以 `3cb1594e` 提交推送：三个真实工作画布、每文档 5 个点击槽 +4 个转化槽、空骨架、逐槽 assignment、动态预算、兄弟组隔离、保画布导出和精确层级读回均有持久回归。
+9. `[代码与完整验证已完成，待审查提交]` 闭合 agentic Runtime owner 与主图整组文件事务：pre-bound / loop-bound 复用同一输入和交付责任投影；唯一 workflow entry 不裁掉 broad atomic Tool；模型参数不能伪造执行批准；guarded executor 与 delivery authority 必须同源；显式 assignment 只展开实际规格；保存 /导出经 staging、实际结果路径、文件身份和 external commit 整组闭合。专项验证与 fresh 65 阶段 `maintenance:validate` 已通过，待最终差异审查、提交和推送。
+10. `[待开始]` 把当前“一素材一几何”的生产提交扩成 `prepare → Agent 分层设计 → finalize`：prepare 只建立标准文档 /槽位并返回 TaskRun-bound document /group /revision 收据；Agent 使用现有通用 Tool 完成文字、形状、蒙版、多图和排版；finalize 只对账同一收据、保存非空槽并整组交付，不复制第二套 DesignIR。
+11. `[待开始]` 重建与提交一致的正常 Agent / UXP，在新普通项目中运行自然短提示，验证模型选图说明、按需参考、分层设计、真实 5+4 Photoshop 层级、保画布导出、Final Judge 与外部文档零变化。
+12. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 
 ### 退出条件
 

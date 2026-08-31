@@ -1792,14 +1792,15 @@ export const MainImageSkill: SkillDeclaration = {
     kind: 'workflow',
     visibility: 'user-facing',
     visualSamplingScenario: 'main-image',
-    // 该声明拥有主图交付物的 Runtime 身份，但不等同旧 executor 工具。创意主图绑定
-    // ecommerce.main_image Manifest 后仍由 Agent 自主循环和原子能力制作；规格化白底图、
-    // 点击图与转化图也复用同一主图 owner，不在 Harness 建第二套路由。
+    // 该声明拥有主图交付物的 Runtime 身份。Agent 在自主循环中完成看图、选图、创意、
+    // 构图和逐槽决定；显式绑定 ecommerce.main_image Manifest 后，这个唯一 workflow
+    // entry 只把 Agent 已提交的 slotAssignments 编译为标准文档、保存与导出。
     controlledRouteEntry: 'autonomous-react-loop',
     routeClass: 'business-workflow',
-    // 模型路由不得直执：主图生产必须经 Agent 自主 ReAct 循环（看素材/看文档/逐步推进）。
+    // legacy/deterministic 路由不得跳过 Agent 循环直执；Manifest 绑定后的同一 Agent
+    // 可以把自己的逐槽决定提交给这个受控 production entry。
     modelDirectExecution: 'forbidden',
-    description: '开工先用 readSkillPlaybook("main-image-design") 读取主图用途、店铺规格分文档体系和交付边界。手册不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. Open creative main-image work stays in the autonomous design loop with Manifest-scoped atomic capabilities; specification work also covers white-background images, click/conversion documents, and multi-size (800/750/1200) export. The legacy id is not an executable workflow entry.',
+    description: '开工先用 readSkillPlaybook("main-image-design") 读取主图用途、店铺规格分文档体系和交付边界。手册不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. After the Agent explicitly binds the ecommerce.main_image Manifest, this is the single Skill-owned production submission entry: it consumes Agent-authored slotAssignments, creates the standard editable documents, and exports only assigned non-empty groups. It does not choose assets, copy, layout, or aesthetic direction.',
     whenToUse: [
         'User explicitly delegates a main-image, cover, or first-image design deliverable',
         'User asks for a white background image (白底图)',
@@ -1825,7 +1826,7 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 店铺工作文档基线。三个标准文档都保留 5 个点击槽和 4 个转化槽；每个非空槽必须通过 slotAssignments 精确声明 sizeKey/imageType/slotName/variantId、该槽自己的 asset、subjectBounds 与 placement，跨规格或跨槽复用也要逐条明示。用户明确只要空骨架时才设置 createEmptySkeleton=true，此时不置入素材、不导出 raster。白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
+        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 店铺工作文档基线。三个标准文档都保留 5 个点击槽和 4 个转化槽；普通生产必须通过 slotAssignments 逐槽精确声明 sizeKey/imageType/slotName/variantId、objective、该槽自己的 asset、subjectBounds 与 placement，跨规格或跨槽复用也要逐条明示。没有 slotAssignments 时不得从候选第一项、selectedAsset、旧计划或文件名补位。用户明确只要空骨架时才设置 createEmptySkeleton=true，此时不置入素材、不导出 raster。调用是否可写由 Harness 签发的 guarded executor 与交付 authority 决定，模型参数不能自行批准执行。白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时可显式设置 strategy-only；提交 slotAssignments/createEmptySkeleton 时会进入受控生产；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
@@ -1833,7 +1834,7 @@ export const MainImageSkill: SkillDeclaration = {
             '普通“做主图”未给规格时，先让 Agent 从当前项目的同类成品与已确认 delivery 规则中选择交付规格；800/750/1200 是无更可靠项目证据时的 Skill 基线，不能由早期参数默认器抢先冻结。',
             '800/750/1200 都保留点击图和转化图容器；槽位是否填充由当前 Agent/用户决定，空槽不导出。白底图是 SKU 源文件导出，不从点击图或转化图裁切。',
             '先判断用户是在询问/规划还是明确要求生成文件；工具边界负责限制写入范围，不要用固定规则禁止模型根据任务选择工具。',
-            '普通创意主图请求默认先形成策略和设计计划；明确的 SKU 白底图导出请求属于确定性素材生产，可使用 product-disposable-live 白底图专用工具。'
+            '普通创意主图先由 Agent 自主形成设计判断；需要落入标准生产结构时，由 Agent 将逐槽决定提交给当前 Manifest 的唯一 production entry。明确的 SKU 白底图导出请求属于确定性素材生产，可使用同一受控入口。'
         ],
         routeStatusMessages: {
             deterministic: '判断主图任务类型、素材来源和执行边界，再选择规划或受控导出路径。',
@@ -1868,15 +1869,12 @@ export const MainImageSkill: SkillDeclaration = {
         strParam('whiteBackgroundOutputRelativePath', 'White background export relative path'),
         arrParam('sizes', 'Batch output sizes list'),
         strParam('mainImageExecutionMode', 'Controlled execution mode for the main-image executor', false, {
-            enum: ['strategy-only', 'product-disposable-live'],
-            default: 'strategy-only'
+            enum: ['strategy-only', 'product-disposable-live']
         }),
         strParam('executionScope', 'Controlled Photoshop execution scope', false, {
             enum: ['disposable-document', 'active-document', 'project-document'],
             default: 'disposable-document'
         }),
-        boolParam('approvedLiveExecution', 'Explicit approval to run the disposable live executor', false),
-        boolParam('approvedLiveAdapterRun', 'Explicit approval to connect the guarded Photoshop adapter', false),
         boolParam('enableVisionPreflight', 'Explicitly analyze the selected project image before main-image planning; default false to avoid hidden model cost', false),
         numParam('maxVisionCandidates', 'Maximum project-image candidates to analyze when enableVisionPreflight is true; capped by executor, default 1', false, { default: 1 }),
         strParam('backgroundPrompt', 'Optional AI background prompt'),
@@ -1884,7 +1882,7 @@ export const MainImageSkill: SkillDeclaration = {
     ],
     output: {
         type: 'files',
-        description: 'Main-image production plan and, after explicit live approval, exported main-image files.'
+        description: 'Main-image production plan and, when the Runtime supplies guarded execution authority, exact editable documents and assigned-group exports.'
     },
     requiredTools: ['getSubjectBounds', 'smartLayout', 'transformLayer', 'moveLayer', 'exportGroup', 'saveDocument'],
     examples: [
@@ -1913,9 +1911,7 @@ export const MainImageSkill: SkillDeclaration = {
                 outputDirPolicy: 'project-main-image-dir',
                 mainImageCapability: 'main-image.white-bg-from-sku-material',
                 mainImageExecutionMode: 'product-disposable-live',
-                executionScope: 'disposable-document',
-                approvedLiveExecution: true,
-                approvedLiveAdapterRun: true
+                executionScope: 'disposable-document'
             }
         }
     ],

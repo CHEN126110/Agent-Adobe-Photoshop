@@ -21,9 +21,7 @@ export type MainImagePlatformSizeProfileStatus =
 
 export type MainImageProductionDocumentStructureStatus =
     | 'blocked_missing_platform_size_profile'
-    | 'blocked_missing_project_style_strategy'
-    | 'blocked_missing_visual_context'
-    | 'blocked_missing_variant_plan'
+    | 'blocked_missing_slot_assignments'
     | 'blocked_invalid_slot_assignments'
     | 'ready_production_document_structure';
 
@@ -622,7 +620,10 @@ function makeBlockedProductionStructure(input: {
         documents: [],
         exportSpecs: [],
         verificationPolicy: {
-            requiredBeforePhotoshopExecution: ['platform_size_profile', 'asset_bound_visual_context', 'variant_plan'],
+            requiredBeforePhotoshopExecution: [
+                'platform_size_profile',
+                'agent_authored_slot_assignment_or_explicit_empty_skeleton'
+            ],
             requiredAfterPhotoshopExecution: ['document_exists', 'parent_groups_exist', 'child_groups_exist', 'export_files_exist'],
             qualityClaimBoundary: 'blocked production structure cannot support Photoshop writes or quality claims'
         },
@@ -658,22 +659,17 @@ export function buildMainImageProductionDocumentStructure(
         });
     }
     const createEmptySkeleton = input.createEmptySkeleton === true;
-    const styleStrategy = input.projectStyleStrategy;
-    if (!styleStrategy && !createEmptySkeleton) {
+    if (assignmentResolution.assignments.length === 0 && !createEmptySkeleton) {
         return makeBlockedProductionStructure({
-            status: 'blocked_missing_project_style_strategy',
+            status: 'blocked_missing_slot_assignments',
             platform,
-            blocker: 'main_image_project_style_strategy_required'
+            blocker: 'main_image_slot_assignments_required_for_production',
+            warning: '普通主图生产必须由 Agent 或用户逐槽声明素材、主体范围和目标构图；Harness 不会从候选素材或旧计划补位。'
         });
     }
-    if (styleStrategy && styleStrategy.status !== 'ready_visual_context' && !createEmptySkeleton) {
-        return makeBlockedProductionStructure({
-            status: 'blocked_missing_visual_context',
-            platform,
-            blocker: 'main_image_visual_context_required',
-            warning: '缺少与所选素材绑定的可用视觉上下文时，不能生成点击图/转化图生产结构。'
-        });
-    }
+    // 精确 slotAssignments 已经逐槽携带 asset、subjectBounds、target/safe box、
+    // 缩放 preset 与 Agent 决策理由。生产编译器只校验并消费这些提交事实，不能再用
+    // 旧的全局 selectedAsset/projectStyleStrategy 作为第二个设计 owner。
 
     const scopedProfiles = filterProfilesByRequestedScope(platformSizeProfile.sizeProfiles, input.requestedSizeKeys);
     if (scopedProfiles.length === 0) {
@@ -742,7 +738,6 @@ export function buildMainImageProductionDocumentStructure(
         verificationPolicy: {
             requiredBeforePhotoshopExecution: [
                 'platform_size_profile',
-                'asset_bound_visual_context',
                 'agent_authored_slot_assignments_for_content_operations',
                 'user_or_config_confirmation_for_pending_ratios'
             ],
@@ -766,7 +761,8 @@ export function buildMainImageProductionDocumentStructure(
             '生产文档结构只描述文档、父组、子组和导出规格，不执行 Photoshop。',
             '父级组固定为「点击图」和「转化图」，三个标准文档均保留 5 个点击槽与 4 个转化槽；空槽不会产生内容或导出。',
             '槽位名称与画布是生产结构；填哪些槽、每槽素材、目标、构图和文案仍由 Agent 或用户决定。',
-            '待确认比例必须保留来源状态，不能作为平台官方事实展示。'
+            '待确认比例必须保留来源状态，不能作为平台官方事实展示。',
+            '逐槽素材理解和构图决定由 Agent 负责；生产结构只校验提交内容，不重新推断设计。'
         ]
     };
 }

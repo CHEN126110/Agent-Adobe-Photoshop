@@ -317,8 +317,22 @@ function normalizeSizePlans(sizePlans: MainImageSizePlan[] | undefined): Normali
         .filter((plan): plan is NormalizedSizePlan => Boolean(plan));
 }
 
-function resolveProductionStructureSizeScope(sizePlans: NormalizedSizePlan[]): string[] | undefined {
-    const keys = Array.from(new Set(sizePlans.map((plan) => cleanString(plan.sizeKey)).filter(Boolean)));
+function resolveProductionStructureSizeScope(input: {
+    sizePlans: NormalizedSizePlan[];
+    slotAssignments?: unknown;
+}): string[] | undefined {
+    const assignmentKeys = Array.from(new Set(
+        (Array.isArray(input.slotAssignments) ? input.slotAssignments : [])
+            .map((assignment) => {
+                if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) return '';
+                return cleanString((assignment as Record<string, unknown>).sizeKey);
+            })
+            .filter(Boolean)
+    ));
+    if (assignmentKeys.length > 0) return assignmentKeys;
+    const keys = Array.from(new Set(
+        input.sizePlans.map((plan) => cleanString(plan.sizeKey)).filter(Boolean)
+    ));
     return keys.length > 0 ? keys : undefined;
 }
 
@@ -616,7 +630,10 @@ export function buildMainImageStrategyInputs(
     const productionDocumentStructure = buildMainImageProductionDocumentStructure({
         platformSizeProfile: mainImagePlatformProfile,
         projectStyleStrategy,
-        requestedSizeKeys: resolveProductionStructureSizeScope(sizePlans),
+        requestedSizeKeys: resolveProductionStructureSizeScope({
+            sizePlans,
+            slotAssignments: input.slotAssignments
+        }),
         requestedImageType: resolveProductionStructureImageTypeScope({
             imageType,
             slotAssignments: input.slotAssignments
@@ -637,6 +654,7 @@ export function buildMainImageStrategyInputs(
         slotAssignments: productionDocumentStructure.slotAssignments,
         createEmptySkeleton: input.createEmptySkeleton
     });
+    const hasExplicitProductionSubmission = productionDocumentStructure.slotAssignments.length > 0;
     const designConceptPlan = buildMainImageDesignConceptPlan({
         designCorePlan,
         projectStyleStrategy,
@@ -722,7 +740,7 @@ export function buildMainImageStrategyInputs(
     );
 
     const providedInputs = collectProvidedInputs(strategyInputs);
-    const missingInputs = input.createEmptySkeleton === true
+    const missingInputs = input.createEmptySkeleton === true || hasExplicitProductionSubmission
         ? []
         : REQUIRED_INPUTS.filter((key) => !providedInputs.includes(key));
     const status: MainImageStrategyInputBuilderStatus = missingInputs.length === 0
@@ -732,6 +750,7 @@ export function buildMainImageStrategyInputs(
         strategyInputContext: {
             status,
             skeletonOnly: input.createEmptySkeleton === true,
+            productionSubmission: hasExplicitProductionSubmission,
             missingInputs,
             blockers: missingInputs.length > 0 ? ['main_image_strategy_inputs_missing'] : [],
             warnings: [],
@@ -746,12 +765,13 @@ export function buildMainImageStrategyInputs(
         requestLabel: cleanString(input.userText) || 'main-image-live-executor-request'
     });
     const warnings = buildWarnings({
-        hasAsset: Boolean(assetSelectionPolicy),
+        hasAsset: Boolean(assetSelectionPolicy) || hasExplicitProductionSubmission,
         subjectBounds,
         sizePlans,
         copyCandidates,
         outputDir,
         visualContextReady: projectStyleStrategy.status === 'ready_visual_context'
+            || hasExplicitProductionSubmission
     });
 
     return {

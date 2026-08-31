@@ -1,4 +1,6 @@
 const fs = require('fs');
+const crypto = require('crypto');
+const os = require('os');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
@@ -38,6 +40,17 @@ const {
     readRuntimeDeliveryReceipt,
     verifyRuntimeDelivery
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-delivery-receipt.ts'));
+const {
+    beginRuntimeOwnedSkillToolLedgerScope,
+    completeRuntimeOwnedSkillToolLedgerScope,
+    createGuardedAtomicToolExecutor,
+    createRuntimeOwnedSkillDeliveryPlanAuthority,
+    issueRuntimeOwnedSkillExternalDeliveryCommitReceipt,
+    issueRuntimeOwnedSkillStagingLease
+} = require(path.join(root, 'src/shared/agent-skill-atomic-tool-execution.ts'));
+const {
+    buildAgentDesignExecutionPreflight
+} = require(path.join(root, 'src/shared/agent-design-execution-preflight.ts'));
 const {
     buildSkuExpectedExportInventory
 } = require(path.join(root, 'src/shared/sku-export-readback.ts'));
@@ -86,6 +99,13 @@ const {
 } = require(path.join(
     root,
     'src/renderer/services/skill-executors/main-image-live-photoshop-tool-adapter.ts'
+));
+const {
+    hasVerifiedMainImageWhiteBackgroundExport,
+    mainImageExecutor
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/main-image.executor.ts'
 ));
 const {
     selectDesignKnowledgeResultsForSkillUse
@@ -219,6 +239,473 @@ function check(name, condition, detail = '') {
     }
     failures.push(`${name}${detail ? `: ${detail}` : ''}`);
     console.error(`❌ ${failures[failures.length - 1]}`);
+}
+
+function isPathInside(basePath, targetPath) {
+    const relative = path.relative(path.resolve(basePath), path.resolve(targetPath));
+    return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function readTestFileIdentity(filePath) {
+    const stat = fs.statSync(filePath);
+    return {
+        path: filePath,
+        byteLength: stat.size,
+        modifiedAt: stat.mtimeMs,
+        sha256: crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+    };
+}
+
+function createMainImageStagedDeliveryTestEnvironment(projectRoot) {
+    const transactions = new Map();
+    const toolCalls = [];
+    const documents = new Map();
+    let activeDocument = null;
+    let transactionSequence = 0;
+    let documentSequence = 1100;
+    let layerSequence = 4000;
+
+    function activeDocumentOrThrow() {
+        if (!activeDocument) throw new Error('positive_main_image_fixture_missing_active_document');
+        return activeDocument;
+    }
+
+    function makeMutationCommit(document, nextActiveLayerId) {
+        const before = {
+            documentId: document.id,
+            historyStateId: document.historyStateId,
+            activeLayerId: document.activeLayerId
+        };
+        document.historyStateId += 1;
+        document.activeLayerId = nextActiveLayerId;
+        return {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before,
+            after: {
+                documentId: document.id,
+                historyStateId: document.historyStateId,
+                activeLayerId: document.activeLayerId
+            },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: false
+        };
+    }
+
+    function buildHierarchy(document) {
+        const groups = Array.from(document.layers.values()).filter((layer) => layer.kind === 'group');
+        const nodes = [];
+        document.rootGroupIds.forEach((groupId, index) => {
+            const group = document.layers.get(groupId);
+            if (!group) return;
+            nodes.push({
+                id: group.id,
+                name: group.name,
+                path: group.name,
+                kind: 'group',
+                parentId: null,
+                parentName: null,
+                depth: 0,
+                index,
+                locked: false,
+                isBackgroundLayer: false
+            });
+            group.childGroupIds.forEach((childId, childIndex) => {
+                const child = document.layers.get(childId);
+                if (!child) return;
+                nodes.push({
+                    id: child.id,
+                    name: child.name,
+                    path: `${group.name}/${child.name}`,
+                    kind: 'group',
+                    parentId: group.id,
+                    parentName: group.name,
+                    depth: 1,
+                    index: childIndex,
+                    locked: false,
+                    isBackgroundLayer: false
+                });
+            });
+        });
+        nodes.push({
+            id: document.backgroundLayerId,
+            name: 'Background',
+            path: 'Background',
+            kind: 'background',
+            parentId: null,
+            parentName: null,
+            depth: 0,
+            index: document.rootGroupIds.length,
+            locked: true,
+            isBackgroundLayer: true
+        });
+        return nodes;
+    }
+
+    async function executeTool(toolName, params) {
+        toolCalls.push({ toolName, params: { ...params } });
+        if (toolName === 'createDocument') {
+            documentSequence += 1;
+            layerSequence += 1;
+            const document = {
+                id: documentSequence,
+                name: String(params.name || ''),
+                width: Number(params.width),
+                height: Number(params.height),
+                resolution: Number(params.resolution),
+                colorMode: String(params.colorMode || 'RGB'),
+                bitDepth: Number(params.bitDepth || 8),
+                backgroundLayerId: layerSequence,
+                historyStateId: 1,
+                activeLayerId: layerSequence,
+                layers: new Map(),
+                rootGroupIds: []
+            };
+            const beforeOpenDocumentIds = Array.from(documents.keys()).sort((left, right) => left - right);
+            documents.set(document.id, document);
+            activeDocument = document;
+            const backgroundLayer = {
+                id: document.backgroundLayerId,
+                name: 'Background',
+                isBackgroundLayer: true,
+                locked: true
+            };
+            return {
+                success: true,
+                documentId: document.id,
+                name: document.name,
+                width: document.width,
+                height: document.height,
+                resolution: document.resolution,
+                backgroundLayer,
+                document: {
+                    id: document.id,
+                    name: document.name,
+                    width: document.width,
+                    height: document.height,
+                    resolution: document.resolution,
+                    colorMode: document.colorMode,
+                    bitDepth: document.bitDepth,
+                    backgroundLayer
+                },
+                photoshopMutationCommit: {
+                    version: 'photoshop-mutation-commit/v1',
+                    basis: 'same_execute_as_modal',
+                    bindingStrength: 'unguarded',
+                    changeKind: 'document_creation',
+                    beforeOpenDocumentIds,
+                    createdDocumentId: document.id,
+                    after: {
+                        documentId: document.id,
+                        historyStateId: document.historyStateId,
+                        activeLayerId: document.activeLayerId
+                    },
+                    toolActionCompleted: true,
+                    mutationObserved: true,
+                    documentChanged: true
+                }
+            };
+        }
+
+        const document = activeDocumentOrThrow();
+        if (toolName === 'getDocumentInfo') {
+            return {
+                success: true,
+                historyStateRef: {
+                    documentId: document.id,
+                    historyStateId: document.historyStateId
+                },
+                document: {
+                    id: document.id,
+                    name: document.name,
+                    width: document.width,
+                    height: document.height,
+                    resolution: document.resolution,
+                    colorMode: document.colorMode,
+                    bitDepth: document.bitDepth,
+                    layerCount: 1 + document.layers.size
+                }
+            };
+        }
+        if (toolName === 'createGroup') {
+            layerSequence += 1;
+            const layer = {
+                id: layerSequence,
+                name: String(params.groupName || ''),
+                kind: 'group',
+                parentId: undefined,
+                childGroupIds: []
+            };
+            document.layers.set(layer.id, layer);
+            return {
+                success: true,
+                layerId: layer.id,
+                groupName: layer.name,
+                photoshopMutationCommit: makeMutationCommit(document, layer.id)
+            };
+        }
+        if (toolName === 'moveLayerToGroup') {
+            const layerId = Number(params.layerId);
+            const targetGroupId = Number(params.targetGroupId);
+            const layer = document.layers.get(layerId);
+            if (!layer) return { success: false, error: 'fixture_layer_not_found' };
+            layer.parentId = targetGroupId;
+            if (layer.kind === 'group') {
+                if (targetGroupId === 0) {
+                    document.rootGroupIds.unshift(layer.id);
+                } else {
+                    const parent = document.layers.get(targetGroupId);
+                    if (!parent || parent.kind !== 'group') {
+                        return { success: false, error: 'fixture_parent_group_not_found' };
+                    }
+                    parent.childGroupIds.push(layer.id);
+                }
+            }
+            return {
+                success: true,
+                layerId,
+                targetGroupId,
+                photoshopMutationCommit: makeMutationCommit(document, layerId)
+            };
+        }
+        if (toolName === 'getLayerHierarchy') {
+            return {
+                success: true,
+                historyStateRef: {
+                    documentId: document.id,
+                    historyStateId: document.historyStateId
+                },
+                flatList: buildHierarchy(document)
+            };
+        }
+        if (toolName === 'placeImage') {
+            layerSequence += 1;
+            const layer = {
+                id: layerSequence,
+                name: path.basename(String(params.filePath || 'placed-image')),
+                kind: 'image',
+                parentId: undefined
+            };
+            document.layers.set(layer.id, layer);
+            return {
+                success: true,
+                layerId: layer.id,
+                layer: { id: layer.id, name: layer.name },
+                photoshopMutationCommit: makeMutationCommit(document, layer.id)
+            };
+        }
+        if (toolName === 'transformLayer') {
+            const layerId = Number(params.layerId || document.activeLayerId);
+            return {
+                success: true,
+                layerId,
+                photoshopMutationCommit: makeMutationCommit(document, layerId)
+            };
+        }
+        if (toolName === 'getLayerProperties') {
+            const layerId = Number(params.layerId || document.activeLayerId);
+            return {
+                success: true,
+                historyStateRef: {
+                    documentId: document.id,
+                    historyStateId: document.historyStateId
+                },
+                layer: { id: layerId, name: document.layers.get(layerId)?.name || 'layer' }
+            };
+        }
+        if (toolName === 'saveDocument') {
+            const targetPath = String(params.path || '');
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.writeFileSync(targetPath, Buffer.from(`editable:${document.name}:${document.historyStateId}`));
+            const identity = readTestFileIdentity(targetPath);
+            const format = path.extname(targetPath).slice(1).toLowerCase();
+            return {
+                success: true,
+                saved: true,
+                savedPath: targetPath,
+                format,
+                sourceHistoryStateRef: {
+                    documentId: document.id,
+                    historyStateId: document.historyStateId
+                },
+                editableDocumentArtifact: {
+                    version: 'runtime-editable-document-artifact/v1',
+                    basis: 'uxp_post_save_file_metadata',
+                    path: targetPath,
+                    format,
+                    byteLength: identity.byteLength,
+                    modifiedAt: identity.modifiedAt,
+                    documentId: document.id,
+                    canvas: { width: document.width, height: document.height }
+                }
+            };
+        }
+        if (toolName === 'exportGroup') {
+            const targetPath = String(params.outputPath || '');
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.writeFileSync(targetPath, Buffer.from(`raster:${document.name}:${document.historyStateId}`));
+            return {
+                success: true,
+                outputPath: targetPath,
+                sourceHistoryStateRef: {
+                    documentId: document.id,
+                    historyStateId: document.historyStateId
+                },
+                readback: {
+                    outputPath: targetPath,
+                    sourceHistoryStateRef: {
+                        documentId: document.id,
+                        historyStateId: document.historyStateId
+                    }
+                }
+            };
+        }
+        if (toolName === 'getAcceptanceSnapshot') {
+            return {
+                success: true,
+                historyStateRef: {
+                    documentId: document.id,
+                    historyStateId: document.historyStateId
+                },
+                documentId: document.id,
+                layerCount: 1 + document.layers.size
+            };
+        }
+        return { success: true };
+    }
+
+    const designEcho = {
+        async issueSkuStagingTransaction(input) {
+            transactionSequence += 1;
+            const stagingParent = path.join(input.outputDir, '.designecho-staging');
+            const transactionId = `main-image-positive-${transactionSequence}`;
+            const stagingRoot = path.join(stagingParent, transactionId);
+            const transactionToken = `main-image-positive-token-${transactionSequence}`;
+            fs.mkdirSync(stagingRoot, { recursive: true });
+            transactions.set(transactionToken, {
+                transactionId,
+                stagingRoot,
+                stagingParent,
+                outputDir: input.outputDir
+            });
+            return {
+                success: true,
+                transactionToken,
+                transactionId,
+                stagingRoot,
+                stagingParent,
+                outputDir: input.outputDir
+            };
+        },
+        async captureSkuStagingDestinationBaselines(transactionToken, destinationPaths) {
+            if (!transactions.has(transactionToken)) {
+                return { success: false, error: 'fixture_transaction_not_found' };
+            }
+            return {
+                success: true,
+                baselines: destinationPaths.map((destinationPath) => {
+                    if (!fs.existsSync(destinationPath)) return { path: destinationPath, exists: false };
+                    const identity = readTestFileIdentity(destinationPath);
+                    return {
+                        path: destinationPath,
+                        exists: true,
+                        modifiedTimeMs: identity.modifiedAt,
+                        byteLength: identity.byteLength,
+                        sha256: identity.sha256
+                    };
+                })
+            };
+        },
+        async promoteStagedFileSet(input) {
+            const transaction = transactions.get(input.transactionToken);
+            if (!transaction) return { success: false, error: 'fixture_transaction_not_found' };
+            const committedPaths = [];
+            const committedFiles = [];
+            for (const item of input.items) {
+                if (!isPathInside(transaction.stagingRoot, item.sourcePath)
+                    || !isPathInside(projectRoot, item.destinationPath)
+                    || !fs.existsSync(item.sourcePath)
+                    || fs.existsSync(item.destinationPath)
+                    || item.expectedDestinationBaseline?.exists !== false) {
+                    return { success: false, error: 'fixture_promotion_mapping_rejected', rollbackComplete: true };
+                }
+                fs.mkdirSync(path.dirname(item.destinationPath), { recursive: true });
+                fs.copyFileSync(item.sourcePath, item.destinationPath);
+                const identity = readTestFileIdentity(item.destinationPath);
+                committedPaths.push(item.destinationPath);
+                committedFiles.push({
+                    path: item.destinationPath,
+                    byteLength: identity.byteLength,
+                    sha256: identity.sha256
+                });
+            }
+            return {
+                success: true,
+                committedPaths,
+                committedFiles,
+                cleanupWarnings: []
+            };
+        },
+        async removeSkuStagingTransactionRoot(transactionToken) {
+            const transaction = transactions.get(transactionToken);
+            if (!transaction || !isPathInside(projectRoot, transaction.stagingRoot)) {
+                return { success: false, error: 'fixture_cleanup_scope_rejected' };
+            }
+            fs.rmSync(transaction.stagingRoot, { recursive: true, force: true });
+            return { success: true };
+        },
+        async removeSkuStagingParentIfEmpty(transactionToken) {
+            const transaction = transactions.get(transactionToken);
+            if (!transaction || !isPathInside(projectRoot, transaction.stagingParent)) {
+                return { success: false, error: 'fixture_parent_cleanup_scope_rejected' };
+            }
+            if (fs.existsSync(transaction.stagingParent)
+                && fs.readdirSync(transaction.stagingParent).length === 0) {
+                fs.rmdirSync(transaction.stagingParent);
+            }
+            return { success: true };
+        },
+        async probeImageFile(filePath) {
+            if (!fs.existsSync(filePath)) {
+                return {
+                    success: true,
+                    path: filePath,
+                    status: 'missing',
+                    exists: false,
+                    isFile: false,
+                    rawImagesRedacted: true
+                };
+            }
+            const identity = readTestFileIdentity(filePath);
+            const sizeKey = /[\\/]750[\\/]/.test(filePath)
+                ? '750'
+                : (/[\\/]1200[\\/]/.test(filePath) ? '1200' : '800');
+            const documentSpec = MAIN_IMAGE_DELIVERY_DOCUMENTS.find((document) => (
+                document.folderKey === sizeKey
+            ));
+            return {
+                success: true,
+                path: filePath,
+                status: 'ok',
+                exists: true,
+                isFile: true,
+                byteLength: identity.byteLength,
+                sha256: identity.sha256,
+                format: path.extname(filePath).slice(1).toLowerCase(),
+                dimensions: documentSpec?.canvasSize,
+                rawImagesRedacted: true
+            };
+        }
+    };
+
+    return {
+        designEcho,
+        executeTool,
+        toolCalls,
+        transactions
+    };
 }
 
 const toolExecutor = source('src/renderer/services/tool-executor.service.ts');
@@ -738,6 +1225,108 @@ function makeMainImageSlotAssignment(input) {
         }
     };
 }
+
+function getMainImageAssignmentKey(assignment) {
+    return [
+        assignment.sizeKey,
+        assignment.imageType,
+        assignment.slotName,
+        assignment.variantId
+    ].join('/');
+}
+
+function collectMainImagePlannedOperations(bundle) {
+    return bundle.productionExecutionPlan.documents
+        .flatMap((document) => document.operations);
+}
+
+/**
+ * “只读计划”字段本身不能证明零写入；必须沿 structure -> execution -> handoff ->
+ * dispatch -> dry-run -> live request 整条生产提交链确认没有任何可执行请求。
+ */
+function hasZeroMainImageProductionWritePlan(bundle) {
+    return bundle.productionDocumentStructure.slotAssignments.length === 0
+        && bundle.productionDocumentStructure.exportSpecs.length === 0
+        && bundle.productionDocumentStructure.documents.every((document) => (
+            document.parentGroups.flatMap((group) => group.childGroups)
+                .every((group) => group.populationStatus === 'unassigned')
+        ))
+        && bundle.deliveryPlan.artifacts.filter((artifact) => artifact.kind === 'raster_export').length === 0
+        && bundle.productionExecutionPlan.plannedOperationCount === 0
+        && bundle.productionExecutionPlan.documents.length === 0
+        && bundle.productionExecutorHandoff.toolRequests.length === 0
+        && bundle.productionExecutorDispatchPlan.executorQueue.length === 0
+        && bundle.productionExecutorDryRunPreview.operationCount === 0
+        && bundle.productionExecutorDryRunPreview.operationResults.length === 0
+        && bundle.liveExecutorRequestPackage.status !== 'ready_for_executor_dispatch'
+        && bundle.liveExecutorRequestPackage.canDispatchLiveExecutor === false
+        && bundle.liveExecutorRequestPackage.operationCount === 0
+        && bundle.liveExecutorRequestPackage.operationRequests.length === 0;
+}
+
+function summarizeMainImageAssignmentSemantics(bundle) {
+    return bundle.variantPlacementStrategy.variantPlacementPlans
+        .map((plan) => ({
+            assignmentKey: plan.assignmentKey,
+            asset: plan.asset,
+            subjectBox: plan.placementPlan.source.subjectBox,
+            targetBox: plan.targetSlot.box,
+            safeBox: plan.targetSlot.safeBox,
+            preset: plan.placementPlan.decision.preset
+        }))
+        .sort((left, right) => left.assignmentKey.localeCompare(right.assignmentKey));
+}
+
+function summarizeMainImageContentOperationMapping(bundle) {
+    const plansByAssignment = new Map(
+        bundle.variantPlacementStrategy.variantPlacementPlans
+            .map((plan) => [plan.assignmentKey, plan])
+    );
+    const operations = collectMainImagePlannedOperations(bundle);
+    const assignmentKeys = Array.from(plansByAssignment.keys()).sort();
+    return assignmentKeys.map((assignmentKey) => {
+        const plan = plansByAssignment.get(assignmentKey);
+        const places = operations.filter((operation) => (
+            operation.tool === 'placeImage' && operation.assignmentKey === assignmentKey
+        ));
+        const transforms = operations.filter((operation) => (
+            operation.tool === 'transformLayer' && operation.assignmentKey === assignmentKey
+        ));
+        const exports = operations.filter((operation) => (
+            operation.tool === 'exportGroup' && operation.assignmentKey === assignmentKey
+        ));
+        const liveRequests = bundle.liveExecutorRequestPackage.operationRequests.filter((request) => (
+            request.assignmentKey === assignmentKey
+        ));
+        const place = places[0];
+        const transform = transforms[0];
+        const exportOperation = exports[0];
+        return {
+            assignmentKey,
+            placeCount: places.length,
+            placeAssetPath: place?.asset?.path,
+            placeGroupPath: place?.groupPath,
+            placePlacementPlanId: place?.placementPlanId,
+            transformCount: transforms.length,
+            transformPlacementPlanId: transform?.placementPlanId,
+            transformMatchesAssignmentPlan: Boolean(
+                plan
+                && JSON.stringify(transform?.destinationBox)
+                    === JSON.stringify(plan.placementPlan.execution.destinationBox)
+                && JSON.stringify(transform?.subjectDestinationBox)
+                    === JSON.stringify(plan.placementPlan.execution.subjectDestinationBox)
+            ),
+            exportCount: exports.length,
+            exportGroupPath: exportOperation?.groupPath,
+            exportOutputPath: exportOperation?.outputPath,
+            exportCanvasPolicy: exportOperation?.canvasPolicy,
+            liveContentTools: liveRequests
+                .filter((request) => ['placeImage', 'transformLayer', 'exportGroup'].includes(request.tool))
+                .map((request) => request.tool)
+                .sort()
+        };
+    });
+}
 const standardMainImageToolNames = [
     'createDocument',
     'createGroup',
@@ -883,46 +1472,104 @@ const multiVariantMainImageInput = {
     userCheckpointApproved: true
 };
 const implicitFanoutMainImageBundle = buildMainImageStrategyInputs(multiVariantMainImageInput);
+const explicitMainImageSlotAssignments = [
+    makeMainImageSlotAssignment({
+        sizeKey: '800',
+        imageType: 'click',
+        slotName: '800-1',
+        variantId: 'click-1',
+        objective: '方向一',
+        visualHook: '方向一',
+        layoutFocus: '主体完整并保留 Agent 声明的留白关系',
+        asset: standardMainImageAsset,
+        subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+        targetBox: { x: 220, y: 160, width: 920, height: 1180 },
+        safeBox: { x: 100, y: 80, width: 1200, height: 1320 }
+    }),
+    makeMainImageSlotAssignment({
+        sizeKey: '800',
+        imageType: 'click',
+        slotName: '800-2',
+        variantId: 'click-2',
+        objective: '方向二',
+        visualHook: '方向二',
+        layoutFocus: '第二张素材使用自己的主体范围与构图决定',
+        asset: secondStandardMainImageAsset,
+        subjectBounds: { left: 120, top: 110, right: 1280, bottom: 1700, width: 1160, height: 1590 },
+        targetBox: { x: 160, y: 120, width: 1080, height: 1260 },
+        safeBox: { x: 80, y: 60, width: 1320, height: 1380 },
+        preset: {
+            targetFill: 0.8,
+            minFill: 0.6,
+            maxFill: 0.92,
+            anchor: 'top-center',
+            visualBiasY: 0.1
+        }
+    })
+];
 const explicitVariantAssetsMainImageBundle = buildMainImageStrategyInputs({
     ...multiVariantMainImageInput,
-    slotAssignments: [
-        makeMainImageSlotAssignment({
-            sizeKey: '800',
-            imageType: 'click',
-            slotName: '800-1',
-            variantId: 'click-1',
-            objective: '方向一',
-            visualHook: '方向一',
-            layoutFocus: '主体完整并保留 Agent 声明的留白关系',
-            asset: standardMainImageAsset,
-            subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
-            targetBox: { x: 220, y: 160, width: 920, height: 1180 }
-        }),
-        makeMainImageSlotAssignment({
-            sizeKey: '800',
-            imageType: 'click',
-            slotName: '800-2',
-            variantId: 'click-2',
-            objective: '方向二',
-            visualHook: '方向二',
-            layoutFocus: '第二张素材使用自己的主体范围与构图决定',
-            asset: secondStandardMainImageAsset,
-            subjectBounds: { left: 120, top: 110, right: 1280, bottom: 1700, width: 1160, height: 1590 },
-            targetBox: { x: 160, y: 120, width: 1080, height: 1260 },
-            preset: { targetFill: 0.8, minFill: 0.6, maxFill: 0.92 }
-        })
-    ]
+    slotAssignments: explicitMainImageSlotAssignments
 });
 const explicitVariantOperations = explicitVariantAssetsMainImageBundle.productionExecutionPlan.documents
     .flatMap((document) => document.operations);
+const expectedMainImageAssignmentSemantics = explicitMainImageSlotAssignments
+    .map((assignment) => ({
+        assignmentKey: getMainImageAssignmentKey(assignment),
+        asset: assignment.asset,
+        subjectBox: {
+            x: assignment.subjectBounds.left,
+            y: assignment.subjectBounds.top,
+            width: assignment.subjectBounds.width,
+            height: assignment.subjectBounds.height
+        },
+        targetBox: assignment.placement.targetBox,
+        safeBox: assignment.placement.safeBox,
+        preset: assignment.placement.preset
+    }))
+    .sort((left, right) => left.assignmentKey.localeCompare(right.assignmentKey));
+const actualMainImageAssignmentSemantics = summarizeMainImageAssignmentSemantics(
+    explicitVariantAssetsMainImageBundle
+);
+const actualMainImageContentOperationMapping = summarizeMainImageContentOperationMapping(
+    explicitVariantAssetsMainImageBundle
+);
+const expectedMainImageContentOperationMapping = explicitMainImageSlotAssignments
+    .map((assignment) => {
+        const assignmentKey = getMainImageAssignmentKey(assignment);
+        return {
+            assignmentKey,
+            placeCount: 1,
+            placeAssetPath: assignment.asset.path,
+            placeGroupPath: ['点击图', assignment.slotName],
+            placePlacementPlanId: assignmentKey,
+            transformCount: 1,
+            transformPlacementPlanId: assignmentKey,
+            transformMatchesAssignmentPlan: true,
+            exportCount: 1,
+            exportGroupPath: ['点击图', assignment.slotName],
+            exportOutputPath: `C:\\shop\\主图\\800\\${assignment.slotName}.jpg`,
+            exportCanvasPolicy: 'preserve_document_canvas',
+            liveContentTools: ['exportGroup', 'placeImage', 'transformLayer']
+        };
+    })
+    .sort((left, right) => left.assignmentKey.localeCompare(right.assignmentKey));
 check(
-    '主图空槽不执行内容操作，多个方向必须逐槽绑定素材与几何且导出保留完整画布',
-    implicitFanoutMainImageBundle.productionDocumentStructure.documents[0]
-        .parentGroups.flatMap((group) => group.childGroups)
-        .every((group) => group.populationStatus === 'unassigned')
-        && implicitFanoutMainImageBundle.productionDocumentStructure.exportSpecs.length === 0
-        && implicitFanoutMainImageBundle.productionExecutionPlan.documents.length === 0
-        && explicitVariantAssetsMainImageBundle.productionExecutionPlan.status === 'ready_execution_plan'
+    '普通主图没有逐槽 assignments 且未明确要求空骨架时，整条生产提交链保持零写计划',
+    hasZeroMainImageProductionWritePlan(implicitFanoutMainImageBundle),
+    JSON.stringify({
+        structure: implicitFanoutMainImageBundle.productionDocumentStructure,
+        deliveryPlan: implicitFanoutMainImageBundle.deliveryPlan,
+        executionPlan: implicitFanoutMainImageBundle.productionExecutionPlan,
+        handoff: implicitFanoutMainImageBundle.productionExecutorHandoff,
+        dispatch: implicitFanoutMainImageBundle.productionExecutorDispatchPlan,
+        dryRun: implicitFanoutMainImageBundle.productionExecutorDryRunPreview,
+        liveRequest: implicitFanoutMainImageBundle.liveExecutorRequestPackage
+    })
+);
+check(
+    '主图两个方向逐 assignmentKey 消费各自素材、主体 bounds、目标框、安全框、缩放预设和提交操作',
+    explicitVariantAssetsMainImageBundle.productionExecutionPlan.status === 'ready_execution_plan'
         && explicitVariantAssetsMainImageBundle.productionDocumentStructure.documents[0]
             .parentGroups.flatMap((group) => group.childGroups).length === 9
         && explicitVariantAssetsMainImageBundle.productionDocumentStructure.documents[0]
@@ -938,17 +1585,10 @@ check(
         && explicitVariantOperations.filter((operation) => operation.tool === 'placeImage').length === 2
         && explicitVariantOperations.filter((operation) => operation.tool === 'transformLayer').length === 2
         && explicitVariantOperations.filter((operation) => operation.tool === 'exportGroup').length === 2
-        && explicitVariantOperations.find((operation) => (
-            operation.tool === 'placeImage' && operation.variantId === 'click-1'
-        ))?.asset?.path === standardMainImageAsset.path
-        && explicitVariantOperations.find((operation) => (
-            operation.tool === 'placeImage' && operation.variantId === 'click-2'
-        ))?.asset?.path === secondStandardMainImageAsset.path
-        && explicitVariantOperations.find((operation) => (
-            operation.tool === 'transformLayer' && operation.variantId === 'click-1'
-        ))?.destinationBox?.width !== explicitVariantOperations.find((operation) => (
-            operation.tool === 'transformLayer' && operation.variantId === 'click-2'
-        ))?.destinationBox?.width
+        && JSON.stringify(actualMainImageAssignmentSemantics)
+            === JSON.stringify(expectedMainImageAssignmentSemantics)
+        && JSON.stringify(actualMainImageContentOperationMapping)
+            === JSON.stringify(expectedMainImageContentOperationMapping)
         && explicitVariantOperations.filter((operation) => operation.tool === 'exportGroup')
             .every((operation) => operation.canvasPolicy === 'preserve_document_canvas')
         && explicitVariantAssetsMainImageBundle.deliveryPlan.artifacts.some((artifact) => (
@@ -961,9 +1601,277 @@ check(
     JSON.stringify({
         implicitStatus: implicitFanoutMainImageBundle.productionExecutionPlan.status,
         explicitStatus: explicitVariantAssetsMainImageBundle.productionExecutionPlan.status,
+        expectedAssignmentSemantics: expectedMainImageAssignmentSemantics,
+        actualAssignmentSemantics: actualMainImageAssignmentSemantics,
+        expectedOperationMapping: expectedMainImageContentOperationMapping,
+        actualOperationMapping: actualMainImageContentOperationMapping,
         structure: explicitVariantAssetsMainImageBundle.productionDocumentStructure,
         artifacts: explicitVariantAssetsMainImageBundle.deliveryPlan.artifacts,
         operations: explicitVariantOperations
+    })
+);
+const firstExplicitMainImageAssignment = explicitMainImageSlotAssignments[0];
+const secondExplicitMainImageAssignment = explicitMainImageSlotAssignments[1];
+const { asset: _removedSecondMainImageAsset, ...secondMainImageAssignmentWithoutAsset } = (
+    secondExplicitMainImageAssignment
+);
+const { placement: _removedSecondMainImagePlacement, ...secondMainImageAssignmentWithoutPlacement } = (
+    secondExplicitMainImageAssignment
+);
+const missingSecondAssetMainImageBundle = buildMainImageStrategyInputs({
+    ...multiVariantMainImageInput,
+    slotAssignments: [firstExplicitMainImageAssignment, secondMainImageAssignmentWithoutAsset]
+});
+const missingSecondPlacementMainImageBundle = buildMainImageStrategyInputs({
+    ...multiVariantMainImageInput,
+    slotAssignments: [firstExplicitMainImageAssignment, secondMainImageAssignmentWithoutPlacement]
+});
+check(
+    '主图第二槽缺 asset 或 placement 时整体拒绝内容写入，不能用第一槽或候选第一项补位',
+    [missingSecondAssetMainImageBundle, missingSecondPlacementMainImageBundle].every((bundle) => (
+        bundle.productionDocumentStructure.status === 'blocked_invalid_slot_assignments'
+        && bundle.productionDocumentStructure.blockers.some((blocker) => (
+            blocker.includes('slot_assignment_2_')
+        ))
+        && hasZeroMainImageProductionWritePlan(bundle)
+        && collectMainImagePlannedOperations(bundle).length === 0
+    )),
+    JSON.stringify({
+        missingAsset: {
+            structure: missingSecondAssetMainImageBundle.productionDocumentStructure,
+            execution: missingSecondAssetMainImageBundle.productionExecutionPlan,
+            liveRequest: missingSecondAssetMainImageBundle.liveExecutorRequestPackage
+        },
+        missingPlacement: {
+            structure: missingSecondPlacementMainImageBundle.productionDocumentStructure,
+            execution: missingSecondPlacementMainImageBundle.productionExecutionPlan,
+            liveRequest: missingSecondPlacementMainImageBundle.liveExecutorRequestPackage
+        }
+    })
+);
+let forgedMainImageDeliveryDispatchCount = 0;
+const forgedMainImageDeliveryAuthority = {
+    freeze() {
+        forgedMainImageDeliveryDispatchCount += 1;
+        return { status: 'blocked', blockers: ['forged-authority-must-not-run'] };
+    },
+    executeStagedArtifacts() {
+        forgedMainImageDeliveryDispatchCount += 1;
+        return Promise.resolve({ success: false });
+    },
+    acceptExternalCommit() {
+        forgedMainImageDeliveryDispatchCount += 1;
+        return { status: 'blocked', blockers: ['forged-authority-must-not-run'] };
+    }
+};
+function createBrandedMainImageHarness(label) {
+    const hostCalls = [];
+    const executor = createGuardedAtomicToolExecutor({
+        userRequest: label,
+        async executeTool(toolName, params) {
+            hostCalls.push({ toolName, params: { ...params } });
+            return { success: true };
+        }
+    });
+    const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+    const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+    return { hostCalls, executor, scope, authority };
+}
+
+const invalidMixedMainImageHarness = createBrandedMainImageHarness(
+    '无效逐槽声明不能借白底图分支发生部分写入。'
+);
+const invalidMixedMainImageResult = await mainImageExecutor.execute({
+    params: {
+        mainImageExecutionMode: 'product-disposable-live',
+        imageType: 'white-bg',
+        sourceAssetKind: 'project-sku-material',
+        outputDirPolicy: 'project-main-image-dir',
+        mainImageCapability: 'main-image.white-bg-from-sku-material',
+        slotAssignments: [firstExplicitMainImageAssignment, secondMainImageAssignmentWithoutAsset]
+    },
+    context: {
+        userInput: '按逐槽声明生产主图，同时导出白底素材。',
+        projectContext: { projectPath: 'C:\\shop' }
+    },
+    guardedAtomicToolExecutor: invalidMixedMainImageHarness.executor,
+    runtimeDeliveryPlanAuthority: invalidMixedMainImageHarness.authority
+});
+const invalidMixedMainImageLedger = await completeRuntimeOwnedSkillToolLedgerScope(
+    invalidMixedMainImageHarness.scope
+);
+
+const firstMismatchedMainImageHarness = createBrandedMainImageHarness('主图 TaskRun A');
+const secondMismatchedMainImageHarness = createBrandedMainImageHarness('主图 TaskRun B');
+const mismatchedMainImageRuntimeResult = await mainImageExecutor.execute({
+    params: {
+        mainImageExecutionMode: 'product-disposable-live',
+        slotAssignments: [firstExplicitMainImageAssignment]
+    },
+    context: {
+        userInput: '按逐槽声明完成主图生产。',
+        projectContext: { projectPath: 'C:\\shop' }
+    },
+    guardedAtomicToolExecutor: firstMismatchedMainImageHarness.executor,
+    runtimeDeliveryPlanAuthority: secondMismatchedMainImageHarness.authority
+});
+const firstMismatchedMainImageLedger = await completeRuntimeOwnedSkillToolLedgerScope(
+    firstMismatchedMainImageHarness.scope
+);
+const secondMismatchedMainImageLedger = await completeRuntimeOwnedSkillToolLedgerScope(
+    secondMismatchedMainImageHarness.scope
+);
+const forgedApprovalWithoutGuardResult = await mainImageExecutor.execute({
+    params: {
+        mainImageExecutionMode: 'product-disposable-live',
+        approvedLiveExecution: true,
+        approvedLiveAdapterRun: true,
+        slotAssignments: [firstExplicitMainImageAssignment]
+    },
+    context: {
+        userInput: '按逐槽声明完成主图生产。',
+        projectContext: { projectPath: 'C:\\shop' }
+    },
+    runtimeDeliveryPlanAuthority: forgedMainImageDeliveryAuthority
+});
+let unboundMainImageGuardCallCount = 0;
+const brandedMainImageGuardWithoutAuthority = createGuardedAtomicToolExecutor({
+    userRequest: '按逐槽声明完成主图生产。',
+    async executeTool() {
+        unboundMainImageGuardCallCount += 1;
+        return { success: false, error: 'must-not-run' };
+    }
+});
+const productionWithoutDeliveryAuthorityResult = await mainImageExecutor.execute({
+    params: {
+        slotAssignments: [firstExplicitMainImageAssignment]
+    },
+    context: {
+        userInput: '按逐槽声明完成主图生产。',
+        projectContext: { projectPath: 'C:\\shop' }
+    },
+    guardedAtomicToolExecutor: brandedMainImageGuardWithoutAuthority,
+    runtimeDeliveryPlanAuthority: forgedMainImageDeliveryAuthority
+});
+let unbrandedWhiteBackgroundGuardCallCount = 0;
+const unbrandedWhiteBackgroundResult = await mainImageExecutor.execute({
+    params: {
+        imageType: 'white-bg',
+        sourceAssetKind: 'project-sku-material',
+        outputDirPolicy: 'project-main-image-dir',
+        mainImageCapability: 'main-image.white-bg-from-sku-material',
+        mainImageExecutionMode: 'product-disposable-live'
+    },
+    context: {
+        userInput: '使用 SKU 素材导出白底图。',
+        projectContext: { projectPath: 'C:\\shop' }
+    },
+    guardedAtomicToolExecutor: async () => {
+        unbrandedWhiteBackgroundGuardCallCount += 1;
+        return { success: true, data: { success: true, saved: true } };
+    }
+});
+const whiteBackgroundToolSuccessWithoutFile = {
+    success: true,
+    data: {
+        success: true,
+        readback: { saved: true }
+    }
+};
+const unavailableWhiteBackgroundProbe = [{
+    path: 'C:\\shop\\主图\\白底.jpg',
+    status: 'unavailable',
+    exists: undefined,
+    isFile: undefined,
+    rawImagesRedacted: true
+}];
+const verifiedWhiteBackgroundProbe = [{
+    path: 'C:\\shop\\主图\\白底.jpg',
+    status: 'ok',
+    exists: true,
+    isFile: true,
+    byteLength: 128,
+    rawImagesRedacted: true
+}];
+const mainImageProductionPreflightInput = {
+    userText: '按当前逐槽声明生产主图。',
+    route: 'skill_execution',
+    routeSource: 'model_router',
+    skillId: 'main-image-design',
+    params: {
+        slotAssignments: [firstExplicitMainImageAssignment]
+    },
+    projectContext: { projectPath: 'C:\\shop' }
+};
+const mainImageProductionPreflightWithoutLegacyApprovals = buildAgentDesignExecutionPreflight(
+    mainImageProductionPreflightInput
+);
+const mainImageProductionPreflightWithLegacyApprovals = buildAgentDesignExecutionPreflight({
+    ...mainImageProductionPreflightInput,
+    params: {
+        ...mainImageProductionPreflightInput.params,
+        approvedLiveExecution: true,
+        approvedLiveAdapterRun: true,
+        userCheckpointApproved: true
+    }
+});
+check(
+    '主图模型参数不能伪造执行授权，缺 guarded executor 或交付事务时必须在首个 Host 调用前停止',
+    forgedApprovalWithoutGuardResult.success === false
+        && forgedApprovalWithoutGuardResult.error === 'main_image_guarded_atomic_executor_required'
+        && forgedMainImageDeliveryDispatchCount === 0
+        && productionWithoutDeliveryAuthorityResult.success === false
+        && productionWithoutDeliveryAuthorityResult.error === 'main_image_runtime_delivery_authority_required'
+        && unboundMainImageGuardCallCount === 0
+        && unbrandedWhiteBackgroundResult.success === false
+        && unbrandedWhiteBackgroundResult.error === 'main_image_guarded_atomic_executor_required'
+        && unbrandedWhiteBackgroundGuardCallCount === 0
+        && hasVerifiedMainImageWhiteBackgroundExport(
+            whiteBackgroundToolSuccessWithoutFile,
+            unavailableWhiteBackgroundProbe
+        ) === false
+        && hasVerifiedMainImageWhiteBackgroundExport(
+            whiteBackgroundToolSuccessWithoutFile,
+            verifiedWhiteBackgroundProbe
+        ) === true
+        && JSON.stringify(mainImageProductionPreflightWithoutLegacyApprovals)
+            === JSON.stringify(mainImageProductionPreflightWithLegacyApprovals)
+        && mainImageProductionPreflightWithoutLegacyApprovals.status === 'context_ready',
+    JSON.stringify({
+        forgedApprovalWithoutGuardResult,
+        forgedMainImageDeliveryDispatchCount,
+        productionWithoutDeliveryAuthorityResult,
+        unboundMainImageGuardCallCount,
+        unbrandedWhiteBackgroundResult,
+        unbrandedWhiteBackgroundGuardCallCount,
+        whiteBackgroundToolSuccessWithoutFile,
+        unavailableWhiteBackgroundProbe,
+        verifiedWhiteBackgroundProbe,
+        mainImageProductionPreflightWithoutLegacyApprovals,
+        mainImageProductionPreflightWithLegacyApprovals
+    })
+);
+check(
+    '无效逐槽声明与跨 TaskRun 真 authority 均在任何 Host 调用前整体失败关闭',
+    invalidMixedMainImageResult.success === false
+        && invalidMixedMainImageResult.data?.status === 'blocked_invalid_slot_assignments'
+        && invalidMixedMainImageHarness.hostCalls.length === 0
+        && invalidMixedMainImageLedger?.entries.length === 0
+        && mismatchedMainImageRuntimeResult.success === false
+        && mismatchedMainImageRuntimeResult.error === 'runtime_delivery_authority_executor_mismatch'
+        && firstMismatchedMainImageHarness.hostCalls.length === 0
+        && secondMismatchedMainImageHarness.hostCalls.length === 0
+        && firstMismatchedMainImageLedger?.entries.length === 0
+        && secondMismatchedMainImageLedger?.entries.length === 0,
+    JSON.stringify({
+        invalidMixedMainImageResult,
+        invalidMixedMainImageHostCalls: invalidMixedMainImageHarness.hostCalls,
+        invalidMixedMainImageLedger,
+        mismatchedMainImageRuntimeResult,
+        firstMismatchedMainImageHostCalls: firstMismatchedMainImageHarness.hostCalls,
+        secondMismatchedMainImageHostCalls: secondMismatchedMainImageHarness.hostCalls,
+        firstMismatchedMainImageLedger,
+        secondMismatchedMainImageLedger
     })
 );
 const invalidMainImageGeometryBundle = buildMainImageStrategyInputs({
@@ -1660,6 +2568,274 @@ check(
         finalRoots: fakeHierarchyState.roots
     })
 );
+
+const positiveMainImageProjectRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'designecho-main-image-staged-')
+);
+const positiveMainImageOriginalWindow = global.window;
+const positiveMainImageHadOwnWindow = Object.prototype.hasOwnProperty.call(global, 'window');
+const positiveMainImageOriginalLocalStorage = global.localStorage;
+const positiveMainImageHadOwnLocalStorage = Object.prototype.hasOwnProperty.call(global, 'localStorage');
+let positiveMainImageResult;
+let positiveMainImageLedger;
+let positiveMainImagePlan;
+let positiveMainImageToolCalls = [];
+let positiveMainImageFinalFilesVerified = false;
+let positiveMainImageStagingCleaned = false;
+let positiveMainImageDriftResults = null;
+let positiveMainImageFixtureError = '';
+try {
+    const environment = createMainImageStagedDeliveryTestEnvironment(
+        positiveMainImageProjectRoot
+    );
+    positiveMainImageToolCalls = environment.toolCalls;
+    global.window = {
+        ...(positiveMainImageOriginalWindow || {}),
+        designEcho: environment.designEcho
+    };
+    global.localStorage = {
+        getItem() {
+            return null;
+        },
+        setItem() {},
+        removeItem() {},
+        clear() {}
+    };
+    const guardedExecutor = createGuardedAtomicToolExecutor({
+        userRequest: '按本轮一个明确槽位完成三规格主图生产。',
+        executeTool: environment.executeTool
+    });
+    const ledgerScope = beginRuntimeOwnedSkillToolLedgerScope(guardedExecutor);
+    const deliveryAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+        scope: ledgerScope,
+        executor: guardedExecutor
+    });
+    positiveMainImageResult = await mainImageExecutor.execute({
+        params: {
+            mainImageExecutionMode: 'product-disposable-live',
+            executionScope: 'disposable-document',
+            slotAssignments: [firstExplicitMainImageAssignment],
+            photoshopConnection: {
+                connected: true,
+                documentWriteAvailable: true,
+                source: 'design-authorship-positive-staged-fixture'
+            }
+        },
+        context: {
+            userInput: '按本轮一个明确槽位完成三规格主图生产。',
+            projectContext: { projectPath: positiveMainImageProjectRoot }
+        },
+        guardedAtomicToolExecutor: guardedExecutor,
+        runtimeDeliveryPlanAuthority: deliveryAuthority
+    });
+    positiveMainImageLedger = await completeRuntimeOwnedSkillToolLedgerScope(ledgerScope);
+    positiveMainImagePlan = positiveMainImageLedger?.deliveryPlanBinding?.plan;
+    const plannedArtifacts = positiveMainImagePlan?.artifacts || [];
+    positiveMainImageFinalFilesVerified = plannedArtifacts.length === 2
+        && plannedArtifacts.every((artifact) => {
+            if (!fs.existsSync(artifact.path)) return false;
+            const identity = readTestFileIdentity(artifact.path);
+            return identity.byteLength > 0 && /^[a-f0-9]{64}$/.test(identity.sha256);
+        });
+    positiveMainImageStagingCleaned = Array.from(environment.transactions.values()).every(
+        (transaction) => !fs.existsSync(transaction.stagingRoot)
+            && !fs.existsSync(transaction.stagingParent)
+    );
+
+    const driftHostCalls = [];
+    const driftExecutor = createGuardedAtomicToolExecutor({
+        userRequest: '交付身份漂移必须在 Host 前失败关闭。',
+        async executeTool(toolName, params) {
+            driftHostCalls.push({ toolName, params: { ...params } });
+            return { success: true };
+        }
+    });
+    const driftScope = beginRuntimeOwnedSkillToolLedgerScope(driftExecutor);
+    const driftAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+        scope: driftScope,
+        executor: driftExecutor
+    });
+    const driftFreeze = driftAuthority?.freeze({
+        projectPath: positiveMainImageProjectRoot,
+        convention: positiveMainImagePlan.convention,
+        artifacts: positiveMainImagePlan.artifacts
+    });
+    if (!driftAuthority || !driftFreeze || driftFreeze.status !== 'frozen') {
+        throw new Error('positive_main_image_drift_authority_not_frozen');
+    }
+    const driftStagingRoot = path.join(positiveMainImageProjectRoot, '.drift-staging');
+    const driftMappings = positiveMainImagePlan.artifacts.map((artifact) => ({
+        artifactId: artifact.artifactId,
+        stagedPath: path.join(
+            driftStagingRoot,
+            path.relative(positiveMainImageProjectRoot, artifact.path)
+        ),
+        finalPath: artifact.path
+    }));
+    const validDriftLease = issueRuntimeOwnedSkillStagingLease({
+        deliveryPlanDigest: positiveMainImagePlan.digest,
+        stagingRoot: driftStagingRoot,
+        destinationRoot: positiveMainImageProjectRoot,
+        artifactMappings: driftMappings
+    });
+    const wrongDigestLease = issueRuntimeOwnedSkillStagingLease({
+        deliveryPlanDigest: '0'.repeat(64),
+        stagingRoot: driftStagingRoot,
+        destinationRoot: positiveMainImageProjectRoot,
+        artifactMappings: driftMappings
+    });
+    const firstEditableArtifact = positiveMainImagePlan.artifacts.find((artifact) => (
+        artifact.kind === 'editable_document'
+    ));
+    const firstEditableMapping = driftMappings.find((mapping) => (
+        mapping.artifactId === firstEditableArtifact?.artifactId
+    ));
+    if (!firstEditableArtifact || !firstEditableMapping) {
+        throw new Error('positive_main_image_drift_editable_artifact_missing');
+    }
+    const validSaveParams = {
+        path: firstEditableMapping.stagedPath,
+        format: firstEditableArtifact.format,
+        asCopy: true,
+        conflictPolicy: 'fail_if_exists'
+    };
+    const wrongArtifactIdResult = await driftAuthority.executeStagedArtifacts({
+        lease: validDriftLease,
+        artifactIds: ['main-image-artifact-does-not-exist'],
+        toolName: 'saveDocument',
+        params: validSaveParams
+    });
+    const wrongStagedPathResult = await driftAuthority.executeStagedArtifacts({
+        lease: validDriftLease,
+        artifactIds: [firstEditableArtifact.artifactId],
+        toolName: 'saveDocument',
+        params: {
+            ...validSaveParams,
+            path: path.join(driftStagingRoot, 'wrong', 'wrong.psb')
+        }
+    });
+    const wrongLeaseDigestResult = await driftAuthority.executeStagedArtifacts({
+        lease: wrongDigestLease,
+        artifactIds: [firstEditableArtifact.artifactId],
+        toolName: 'saveDocument',
+        params: validSaveParams
+    });
+    const incompleteCommitReceipt = issueRuntimeOwnedSkillExternalDeliveryCommitReceipt({
+        deliveryPlanDigest: positiveMainImagePlan.digest,
+        committedFiles: positiveMainImagePlan.artifacts.slice(0, -1).map((artifact) => {
+            const identity = readTestFileIdentity(artifact.path);
+            return {
+                artifactId: artifact.artifactId,
+                path: artifact.path,
+                byteLength: identity.byteLength,
+                sha256: identity.sha256
+            };
+        })
+    });
+    const incompleteCommitDecision = driftAuthority.acceptExternalCommit({
+        artifactIds: positiveMainImagePlan.artifacts.map((artifact) => artifact.artifactId),
+        receipt: incompleteCommitReceipt
+    });
+    const driftLedger = await completeRuntimeOwnedSkillToolLedgerScope(driftScope);
+    positiveMainImageDriftResults = {
+        wrongArtifactIdResult,
+        wrongStagedPathResult,
+        wrongLeaseDigestResult,
+        incompleteCommitDecision,
+        hostCallCount: driftHostCalls.length,
+        ledgerEntryCount: driftLedger?.entries.length ?? -1
+    };
+} catch (error) {
+    positiveMainImageFixtureError = error instanceof Error ? error.stack || error.message : String(error);
+} finally {
+    if (positiveMainImageHadOwnWindow) {
+        global.window = positiveMainImageOriginalWindow;
+    } else {
+        delete global.window;
+    }
+    if (positiveMainImageHadOwnLocalStorage) {
+        global.localStorage = positiveMainImageOriginalLocalStorage;
+    } else {
+        delete global.localStorage;
+    }
+    const normalizedTemporaryRoot = path.resolve(positiveMainImageProjectRoot);
+    const normalizedOsTemporaryRoot = path.resolve(os.tmpdir());
+    if (path.dirname(normalizedTemporaryRoot) === normalizedOsTemporaryRoot
+        && path.basename(normalizedTemporaryRoot).startsWith('designecho-main-image-staged-')) {
+        fs.rmSync(normalizedTemporaryRoot, { recursive: true, force: true });
+    } else {
+        positiveMainImageFixtureError = positiveMainImageFixtureError
+            || 'positive_main_image_fixture_cleanup_scope_rejected';
+    }
+}
+const positiveMainImageSaveExportCalls = positiveMainImageToolCalls.filter((call) => (
+    call.toolName === 'saveDocument' || call.toolName === 'exportGroup'
+));
+const positiveMainImageFinalPathKeys = new Set(
+    (positiveMainImagePlan?.artifacts || []).map((artifact) => (
+        String(artifact.path).replace(/\\/g, '/').toLowerCase()
+    ))
+);
+check(
+    '主图正向 staged 交付以同一真实 guard、冻结计划、暂存映射和 external commit 闭合整组文件',
+    !positiveMainImageFixtureError
+        && positiveMainImageResult?.success === true
+        && positiveMainImageResult?.data?.runtimeDeliveryReceipt?.status === 'ready'
+        && positiveMainImageResult?.data?.mainImageDeliveryTransaction?.status === 'committed'
+        && positiveMainImageResult?.data?.mainImageDeliveryTransaction?.stagingCleanupComplete === true
+        && positiveMainImageLedger?.deliveryPlanBinding?.status === 'ready'
+        && positiveMainImagePlan?.artifacts.length === 2
+        && positiveMainImageLedger?.deliveryPlanBinding?.artifactExecutions.length === 1
+        && positiveMainImageLedger.deliveryPlanBinding.artifactExecutions[0]?.toolName
+            === 'runtimeExternalFileTransaction'
+        && positiveMainImageFinalFilesVerified
+        && positiveMainImageStagingCleaned
+        && positiveMainImageToolCalls.filter((call) => call.toolName === 'createDocument').length === 1
+        && positiveMainImageToolCalls.filter((call) => call.toolName === 'createGroup').length === 11
+        && positiveMainImageToolCalls.filter((call) => call.toolName === 'placeImage').length === 1
+        && positiveMainImageToolCalls.filter((call) => call.toolName === 'transformLayer').length === 1
+        && positiveMainImageSaveExportCalls.length === 2
+        && positiveMainImageSaveExportCalls.every((call) => {
+            const targetPath = String(
+                call.toolName === 'saveDocument' ? call.params.path : call.params.outputPath
+            );
+            const targetKey = targetPath.replace(/\\/g, '/').toLowerCase();
+            return targetKey.includes('/.designecho-staging/')
+                && !positiveMainImageFinalPathKeys.has(targetKey);
+        }),
+    JSON.stringify({
+        error: positiveMainImageFixtureError,
+        resultSuccess: positiveMainImageResult?.success,
+        resultError: positiveMainImageResult?.error,
+        runtimeDeliveryReceiptStatus: positiveMainImageResult?.data?.runtimeDeliveryReceipt?.status,
+        transactionStatus: positiveMainImageResult?.data?.mainImageDeliveryTransaction?.status,
+        ledgerStatus: positiveMainImageLedger?.deliveryPlanBinding?.status,
+        artifactCount: positiveMainImagePlan?.artifacts.length,
+        artifactExecutionCount: positiveMainImageLedger?.deliveryPlanBinding?.artifactExecutions.length,
+        toolCallCounts: Object.fromEntries(
+            Array.from(new Set(positiveMainImageToolCalls.map((call) => call.toolName))).map((toolName) => [
+                toolName,
+                positiveMainImageToolCalls.filter((call) => call.toolName === toolName).length
+            ])
+        ),
+        finalFilesVerified: positiveMainImageFinalFilesVerified,
+        stagingCleaned: positiveMainImageStagingCleaned
+    })
+);
+check(
+    '主图 staged authority 对 artifact、路径、lease digest 与 external commit 集合漂移均零 Host 失败关闭',
+    positiveMainImageDriftResults?.wrongArtifactIdResult?.code
+        === 'runtime_delivery_artifact_order_mismatch'
+        && positiveMainImageDriftResults?.wrongStagedPathResult?.code
+            === 'runtime_delivery_artifact_path_mismatch'
+        && positiveMainImageDriftResults?.wrongLeaseDigestResult?.code
+            === 'runtime_delivery_staging_lease_untrusted'
+        && positiveMainImageDriftResults?.incompleteCommitDecision?.code
+            === 'runtime_delivery_external_commit_mismatch'
+        && positiveMainImageDriftResults?.hostCallCount === 0
+        && positiveMainImageDriftResults?.ledgerEntryCount === 0,
+    JSON.stringify(positiveMainImageDriftResults)
+);
 const mainImageProductionStructure = {
     status: 'ready_production_document_structure',
     documents: [{
@@ -1877,6 +3053,10 @@ check(
         && mainImageExecutorSource.includes('runtimeDeliveryPlanAuthority.acceptExternalCommit({')
         && mainImageExecutorSource.includes('resultImagePaths: controlledResultPaths')
         && mainImageExecutorSource.includes('buildPublicMainImageRunnerSummary(runner)')
+        && mainImageExecutorSource.includes('return input.guardedAtomicToolExecutor(toolName, toolParams);')
+        && mainImageExecutorSource.includes('approvedLiveExecution: runtimeExecutionAuthorized')
+        && mainImageExecutorSource.includes('approvedLiveAdapterRun: runtimeExecutionAuthorized')
+        && !mainImageExecutorSource.includes("from '../tool-executor.service'")
         && !mainImageExecutorSource.includes('runtimeDeliveryPlanAuthority.executeArtifacts({')
         && !mainImageExecutorSource.includes('mainImageDeliveryPlan: strategy.deliveryPlan')
         && !mainImageExecutorSource.includes('function buildMainImageQuickExportOutputPath(')

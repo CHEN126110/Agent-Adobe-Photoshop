@@ -66,6 +66,12 @@ export interface CreateAgentCapabilitySessionInput {
     workflowBridgeNames?: readonly string[];
     requestedTaskType?: string;
     manifest?: SkillRuntimeManifest;
+    /**
+     * Agentic Manifest 的 owner-only 投影。它只开放该 Manifest 明确声明的
+     * workflow_entry_skill_ids，并保留 broad atomic Tool surface；不会启用 Stage、
+     * capability ceiling、执行权限或自动 Tool 调用。
+     */
+    agenticOwnerManifest?: SkillRuntimeManifest;
     workMode?: RuntimeDesignWorkMode;
     baselineCapabilityIds?: readonly string[];
     /** deny-only 约束；用于把被禁能力保留在审计结果中，并阻止按需重新激活。 */
@@ -108,6 +114,11 @@ export interface AgentCapabilitySession {
      * 先前已按需激活且仍被新 Manifest 允许的能力保留，被禁止的自然丢弃。
      */
     bindManifest(manifest: SkillRuntimeManifest, workMode?: RuntimeDesignWorkMode): void;
+    /**
+     * 在同一个 Session 内绑定 agentic workflow owner。activeTools 数组身份保持不变；
+     * 这里只改变下一轮 schema 可见性，不执行 Skill、不授予 Photoshop 权限。
+     */
+    bindAgenticManifestOwner(manifest: SkillRuntimeManifest): boolean;
     /** 在未激活能力里检索精确 id；只读目录，不修改 schema、不授予权限。 */
     searchCapabilities(query: string, limit?: number): AgentCapabilitySearchResult;
     requestCapabilities(capabilityIds: readonly string[]): AgentCapabilityActivationResult;
@@ -131,6 +142,13 @@ function cleanName(value: unknown): string {
 
 function unique(values: readonly string[]): string[] {
     return Array.from(new Set(values.map(cleanName).filter(Boolean)));
+}
+
+function listAgenticManifestWorkflowEntryCapabilityIds(
+    manifest: SkillRuntimeManifest | undefined
+): string[] {
+    if (manifest?.execution_model !== 'agentic') return [];
+    return unique((manifest.workflow_entry_skill_ids || []).map((skillId) => `skill.${skillId}`));
 }
 
 /**
@@ -328,24 +346,44 @@ export function createAgentCapabilitySession(
             manifestRequiredProviderToolNames.has(toolName)
         )))
         .map((entry) => entry.capabilityId);
-    const initialDeniedCapabilityIds = input.manifest
-        ? baseDeniedCapabilityIds
-        : unique([
+    function resolveBroadCapabilitiesWithAgenticOwner(
+        ownerManifest?: SkillRuntimeManifest
+    ): AgentCapabilityResolution {
+        const manifestRequiredCapabilitySet = new Set(manifestRequiredCapabilityIds);
+        const ownerCapabilityIds = listAgenticManifestWorkflowEntryCapabilityIds(ownerManifest)
+            .filter((capabilityId) => manifestRequiredCapabilitySet.has(capabilityId));
+        const ownerCapabilitySet = new Set(ownerCapabilityIds);
+        const initialDeniedCapabilityIds = unique([
             ...baseDeniedCapabilityIds,
-            ...manifestRequiredCapabilityIds,
+            ...manifestRequiredCapabilityIds.filter((capabilityId) => !ownerCapabilitySet.has(capabilityId)),
             ...manifestRequiredProviderCapabilityIds
         ]);
-    let resolution = resolveAgentCapabilities({
-        manifest: input.manifest,
-        requestedTaskType: input.requestedTaskType,
-        inventory,
-        candidateToolNames,
-        baselineCapabilityIds: input.baselineCapabilityIds,
-        initialCapabilityIds: resolveSkillRuntimeInitialCapabilities(input.manifest, input.workMode),
-        capabilityCeilingIds: resolveSkillRuntimeCapabilityCeiling(input.manifest, input.workMode),
-        deniedCapabilityIds: initialDeniedCapabilityIds,
-        additionalCapabilityProviders: input.additionalCapabilityProviders
-    });
+        return resolveAgentCapabilities({
+            inventory,
+            candidateToolNames,
+            baselineCapabilityIds: unique([
+                ...(input.baselineCapabilityIds || HARNESS_BASELINE_CAPABILITY_IDS),
+                ...ownerCapabilityIds
+            ]),
+            deniedCapabilityIds: initialDeniedCapabilityIds,
+            additionalCapabilityProviders: input.additionalCapabilityProviders
+        });
+    }
+
+    let resolution = input.manifest
+        ? resolveAgentCapabilities({
+            manifest: input.manifest,
+            requestedTaskType: input.requestedTaskType,
+            inventory,
+            candidateToolNames,
+            baselineCapabilityIds: input.baselineCapabilityIds,
+            initialCapabilityIds: resolveSkillRuntimeInitialCapabilities(input.manifest, input.workMode),
+            capabilityCeilingIds: resolveSkillRuntimeCapabilityCeiling(input.manifest, input.workMode),
+            deniedCapabilityIds: baseDeniedCapabilityIds,
+            additionalCapabilityProviders: input.additionalCapabilityProviders
+        })
+        : resolveBroadCapabilitiesWithAgenticOwner(input.agenticOwnerManifest);
+    let stagedManifestBound = Boolean(input.manifest);
     const activeTools: ToolSchema[] = [];
     const onDemandActivatedCapabilityIds = new Set<string>();
     // 只由结构化运行结果触发。它不进入 Manifest ceiling / on-demand 目录，
@@ -370,6 +408,35 @@ export function createAgentCapabilitySession(
             nextTools.push(buildRequestToolSchema(resolution));
         }
         activeTools.splice(0, activeTools.length, ...nextTools);
+    }
+
+    function restoreOnDemandCapabilities(
+        nextResolution: AgentCapabilityResolution,
+        priorOnDemand: readonly string[]
+    ): AgentCapabilityResolution {
+        let restoredResolution = nextResolution;
+        const preservableOnDemand = priorOnDemand.filter((capabilityId) => (
+            restoredResolution.onDemandCapabilityIds.includes(capabilityId)
+        ));
+        const reactivatedCapabilityIds: string[] = [];
+        for (let index = 0; index < preservableOnDemand.length; index += MAX_ON_DEMAND_CAPABILITY_REQUESTS) {
+            const reActivation = expandAgentCapabilities({
+                resolution: restoredResolution,
+                inventory,
+                requestedCapabilityIds: preservableOnDemand.slice(
+                    index,
+                    index + MAX_ON_DEMAND_CAPABILITY_REQUESTS
+                ),
+                additionalCapabilityProviders: input.additionalCapabilityProviders
+            });
+            restoredResolution = reActivation.resolution;
+            reactivatedCapabilityIds.push(...reActivation.activatedCapabilityIds);
+        }
+        onDemandActivatedCapabilityIds.clear();
+        reactivatedCapabilityIds.forEach((capabilityId) => {
+            onDemandActivatedCapabilityIds.add(capabilityId);
+        });
+        return restoredResolution;
     }
 
     refreshActiveTools();
@@ -484,7 +551,7 @@ export function createAgentCapabilitySession(
         },
         bindManifest(manifest: SkillRuntimeManifest, workMode?: RuntimeDesignWorkMode): void {
             const priorOnDemand = Array.from(onDemandActivatedCapabilityIds);
-            let nextResolution = resolveAgentCapabilities({
+            const nextResolution = resolveAgentCapabilities({
                 manifest,
                 inventory,
                 candidateToolNames,
@@ -498,29 +565,17 @@ export function createAgentCapabilitySession(
             // 的旧能力是“已被收窄”，不是本次请求失败；若把它们重新送进 expand，会把
             // 正常的 late bind 污染成 partial。旧能力可能来自多轮请求，因此按同一服务端
             // 批次上限重放，而不是用一次超限请求制造假失败。
-            const preservableOnDemand = priorOnDemand.filter((capabilityId) => (
-                nextResolution.onDemandCapabilityIds.includes(capabilityId)
-            ));
-            const reactivatedCapabilityIds: string[] = [];
-            for (let index = 0; index < preservableOnDemand.length; index += MAX_ON_DEMAND_CAPABILITY_REQUESTS) {
-                const reActivation = expandAgentCapabilities({
-                    resolution: nextResolution,
-                    inventory,
-                    requestedCapabilityIds: preservableOnDemand.slice(
-                        index,
-                        index + MAX_ON_DEMAND_CAPABILITY_REQUESTS
-                    ),
-                    additionalCapabilityProviders: input.additionalCapabilityProviders
-                });
-                nextResolution = reActivation.resolution;
-                reactivatedCapabilityIds.push(...reActivation.activatedCapabilityIds);
-            }
-            resolution = nextResolution;
-            onDemandActivatedCapabilityIds.clear();
-            reactivatedCapabilityIds.forEach((capabilityId) => {
-                onDemandActivatedCapabilityIds.add(capabilityId);
-            });
+            resolution = restoreOnDemandCapabilities(nextResolution, priorOnDemand);
+            stagedManifestBound = true;
             refreshActiveTools();
+        },
+        bindAgenticManifestOwner(manifest: SkillRuntimeManifest): boolean {
+            if (manifest.execution_model !== 'agentic' || stagedManifestBound) return false;
+            const priorOnDemand = Array.from(onDemandActivatedCapabilityIds);
+            const nextResolution = resolveBroadCapabilitiesWithAgenticOwner(manifest);
+            resolution = restoreOnDemandCapabilities(nextResolution, priorOnDemand);
+            refreshActiveTools();
+            return true;
         },
         searchCapabilities(query: string, limit?: number): AgentCapabilitySearchResult {
             return searchCapabilityInventory(query, limit);

@@ -76,10 +76,10 @@
 
 - 来源：用户 2026-08-31 提供 800 /750 /1200 Photoshop 空骨架截图与 `4.0主图导出所有主图文档.jsx`。截图确认工作画布分别为 1500×1500、1500×2000、1440×2160，三文档均含「点击图」5 个槽位与「转化图」2–5 四个槽位；脚本对三文档两个父组的所有非空子组逐一导出。
 - 归属层级：Main Image Skill production structure / delivery inventory / UXP exporter / Photoshop readback verification。
-- 状态：planned
-- 已实现：`main-image-production-spec.ts` 是 Skill-owned 唯一事实源；稳定 5+4 容器与 Agent 逐槽 `slotAssignments` 分离，assignmentKey 贯穿 structure / placement / operation / handoff / dry-run / live request。空骨架只保存 3 份可编辑稿，满 27 槽冻结为 120 步；非法主体 bounds、target /safe box 或低于冻结计划的显式预算写前拒绝。UXP 导出先隔离兄弟子组并保留工作画布，Adapter 以 documentId、Background id、父子路径和规格面板顺序读回。旧固定 DSL、Project State 三套方案、关键词痛点 /场景、local recipe 和 1200 禁转化已从生产投影清除。
-- 下一步：通过完整核心闸门和独立提交后，在正常程序的新普通项目里验证真实 800 /750 /1200 文档、5+4 层级、非空组逐图导出、源文档零意外修改及设计质量；补逐 assignment 视觉观察收据引用，自定义尺寸槽位契约另行立项，不用全局素材兜底恢复兼容。
-- 边界：截图只能证明容器，不能规定子组内部素材、图层、文案、版式或必须填满的数量；1200 的四个转化槽先保留，是否必须生产 /交付需用户规则或真实非空成稿证据。工作画布与平台上传尺寸分字段，不能从当前 JSX 猜 800×800 /750×1000 下采样。测试 fixture 不能反向成为生产 Skill 规则。
+- 状态：in_progress
+- 已实现：`main-image-production-spec.ts` 是 Skill-owned 唯一事实源；稳定 5+4 容器与 Agent 逐槽 `slotAssignments` 分离，assignmentKey 贯穿 structure / placement / operation / handoff / dry-run / live request。空骨架只保存 3 份可编辑稿，满 27 槽冻结为 120 步；非法主体 bounds、target /safe box 或低于冻结计划的显式预算写前拒绝。UXP 导出先隔离兄弟子组并保留工作画布，Adapter 以 documentId、Background id、父子路径和规格面板顺序读回。当前增量又统一了 pre-bound / loop-bound agentic Runtime 责任投影，只开放 Manifest 的唯一主图 production entry 并保留 broad atomic Tool；显式 assignments 只展开实际规格，guarded executor、delivery authority、staging、完整提交和实际 Tool result /文件身份形成同一事务链。旧固定 DSL、Project State 三套方案、关键词痛点 /场景、local recipe 和 1200 禁转化已从生产投影清除。
+- 下一步：当前增量的 fresh 65 阶段完整核心闸门已通过，完成只读审查、独立提交与推送；随后把生产入口拆成 prepare / finalize，中间由同一 Agent 使用现有通用 Tool 在绑定的 document /group /revision 内完成文字、形状、蒙版、多图和排版。再在正常程序的新普通项目里验证真实 800 /750 /1200 文档、5+4 层级、非空组逐图导出、源文档零意外修改及设计质量；补逐 assignment 视觉观察收据引用，自定义尺寸槽位契约另行立项。
+- 边界：截图只能证明容器，不能规定子组内部素材、图层、文案、版式或必须填满的数量；`slotAssignments` 也只是一素材一几何的生产交接，不等于完整设计表达。1200 的四个转化槽先保留，是否必须生产 /交付需用户规则或真实非空成稿证据。工作画布与平台上传尺寸分字段，不能从当前 JSX 猜 800×800 /750×1000 下采样。测试 fixture 不能反向成为生产 Skill 规则，也不能在 Skill 内复制第二套 DesignIR。
 
 ### INTAKE-089 工作流画布、交互 UI 与多 Agent 形态
 
@@ -93,6 +93,6 @@
 
 - 来源：用户 2026-08-31 明确反馈 Agent 运行很慢，希望下一纵切定位并处理；它是现有 S5 目标的前置测量需求，不等同于现在提前牺牲质量提速。
 - 归属层级：Runtime Accounting / Model Provider / Tool orchestration / Photoshop Provider / Performance Evaluation。
-- 状态：in_progress
+- 状态：triaged
 - 下一步：归因代码已让生产模型请求显式携带 call kind，并记录 context/output/transport/视觉 revision；审查同时修复了截断恢复未重发像素却可能取得视觉信用的事实错误。Tool name/origin/activity 继续由既有 AgentRunRecord 拥有，当前缺单次 Tool duration 时如实标记 unavailable，不复制第二账本。fresh 65 阶段完整核心验证已经通过；提交后固定同一 Case 跑一次，再选择单变量配对实验。
 - 边界：没有同 Case 基线不宣称提速；不通过减少必要视觉观察、跳过写后读回、缩短到无法完成的预算、换低质量模型或隐藏等待状态获得速度；优化后技术成功率与人工质量不得显著退化。

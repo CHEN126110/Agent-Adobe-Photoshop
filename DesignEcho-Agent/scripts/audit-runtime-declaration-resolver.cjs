@@ -36,6 +36,24 @@ const {
   SKU_TEMPLATE_METHOD_KNOWLEDGE_ID
 } = require(path.join(runtimeRoot, 'design-method-knowledge.ts'));
 const {
+  buildAgenticRuntimeBindingContext,
+  buildAgenticRuntimeBindingContextItem,
+  buildAgenticRuntimeBindingPromptSection
+} = require(path.join(runtimeRoot, 'agentic-runtime-binding-context.ts'));
+const {
+  buildAutonomousAgenticRuntimeBindingProjection,
+  buildAutonomousDesignBriefInputSources,
+  commitAgenticRuntimeDeclarationBinding
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'skill-executors',
+  'autonomous-agent.executor.ts'
+));
+const {
   buildDesignTaskTypePromptSection,
   getDesignTaskTypeSpec
 } = require(path.resolve(__dirname, '..', 'src', 'shared', 'design-task-types.ts'));
@@ -163,6 +181,17 @@ const {
   'services',
   'skill-executors',
   'skill-tools.ts'
+));
+const {
+  resolveAutonomousCapabilityRuntime
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'skill-executors',
+  'autonomous-agent.executor.ts'
 ));
 const {
   Agent,
@@ -736,6 +765,20 @@ function extractNamedFunctionSource(source, functionName) {
 
 const mainImageTaskProfile = getDesignTaskTypeSpec('ecommerce.main_image.v1');
 assert(mainImageTaskProfile, 'main-image Task Profile is missing');
+assert.strictEqual(mainImageTaskProfile.defaultCanvasWidth, undefined,
+  'main-image Task Profile must not invent an 800px upload canvas');
+assert.strictEqual(
+  mainImageTaskProfile.productionSpecRef,
+  'main-image-production-spec.ts#MAIN_IMAGE_DELIVERY_DOCUMENTS'
+);
+const mainImageTaskProfilePromptWithoutPlatformSize = buildDesignTaskTypePromptSection(
+  mainImageTaskProfile,
+  { hasPhotoshopDocument: false, hasProjectAssets: true, hasEagle: false }
+);
+assert(!/800\s*(?:px|×|x)\s*800|800px\s*正方形/i.test(mainImageTaskProfilePromptWithoutPlatformSize),
+  'main-image Task Profile prompt still injects an 800px square upload answer');
+assert(mainImageTaskProfilePromptWithoutPlatformSize.includes('平台上传尺寸尚未验证'),
+  'main-image Task Profile must keep an unspecified platform upload size unknown');
 const mainImageRoleGuidance = String(mainImageTaskProfile.declarationGuidance || '');
 assert(mainImageRoleGuidance.length > 0 && mainImageRoleGuidance.length <= 420,
   'main-image role guidance is missing or would be truncated in the pre-binding menu');
@@ -4792,35 +4835,53 @@ function activateMainImageAgenticRuntime(input) {
     manifestSkillId: resolution.bundle.manifest.skill_id
   });
   assert.deepStrictEqual(methodKnowledge.issues, []);
-  input.agent.activateAgenticRuntimeContractFromDeclaration({
-    artifactContract: {
-      version: 'agentic-artifact-completion-contract/v0',
-      skillId: resolution.bundle.manifest.skill_id,
-      taskType: resolution.bundle.manifest.task_type,
-      workMode: effectiveContract.workMode,
-      productionObligation: effectiveContract.productionObligation,
-      deliveryOutputs: [...effectiveContract.deliveryOutputs],
-      exitCriteria: [...effectiveContract.exitCriteria],
-      reviewRubricRef: effectiveContract.reviewRubricRef
-    },
-    referencePolicy: resolution.bundle.stagePlan.referencePolicy,
-    runtimeStageContextItems: methodKnowledge.items.map((item) => {
-      const { applicableStages: _applicableStages, ...stageAgnosticItem } = item;
-      return stageAgnosticItem;
-    }),
-    evaluationProfile: resolution.bundle.evaluationProfile,
-    performanceBudget: {
-      maxModelCalls: 36,
-      maxToolCalls: 120,
-      maxVisionCandidates: 16,
-      maxInitialVisionCandidates: 8,
-      maxVisualAnalyses: 6,
-      maxFullResolutionImageReads: 0,
-      softTimeBudgetMs: 900_000
-    },
-    reasoningEffort: 'high',
-    maxIterations: input.maxIterations || 60
+  const artifactContract = {
+    version: 'agentic-artifact-completion-contract/v0',
+    skillId: resolution.bundle.manifest.skill_id,
+    taskType: resolution.bundle.manifest.task_type,
+    workMode: effectiveContract.workMode,
+    productionObligation: effectiveContract.productionObligation,
+    deliveryOutputs: [...effectiveContract.deliveryOutputs],
+    exitCriteria: [...effectiveContract.exitCriteria],
+    reviewRubricRef: effectiveContract.reviewRubricRef
+  };
+  const bindingContext = buildAgenticRuntimeBindingContext({
+    manifest: resolution.bundle.manifest,
+    workMode: effectiveContract.workMode,
+    availableInputSources: [{ sourceKind: 'project_asset' }],
+    deliveryOutputs: artifactContract.deliveryOutputs,
+    productionObligation: artifactContract.productionObligation,
+    exitCriteria: artifactContract.exitCriteria
   });
+  const agenticBindingCommitted = commitAgenticRuntimeDeclarationBinding({
+    agent: input.agent,
+    capabilitySession: input.capabilitySession,
+    manifest: resolution.bundle.manifest,
+    activation: {
+      artifactContract,
+      referencePolicy: resolution.bundle.stagePlan.referencePolicy,
+      runtimeStageContextItems: [
+        ...methodKnowledge.items.map((item) => {
+          const { applicableStages: _applicableStages, ...stageAgnosticItem } = item;
+          return stageAgnosticItem;
+        }),
+        buildAgenticRuntimeBindingContextItem(bindingContext)
+      ],
+      evaluationProfile: resolution.bundle.evaluationProfile,
+      performanceBudget: {
+        maxModelCalls: 36,
+        maxToolCalls: 120,
+        maxVisionCandidates: 16,
+        maxInitialVisionCandidates: 8,
+        maxVisualAnalyses: 6,
+        maxFullResolutionImageReads: 0,
+        softTimeBudgetMs: 900_000
+      },
+      reasoningEffort: 'high',
+      maxIterations: input.maxIterations || 60
+    }
+  });
+  assert.strictEqual(agenticBindingCommitted, true, 'valid agentic Runtime owner binding was rejected');
   return { success: true };
 }
 
@@ -5035,14 +5096,27 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
 
 async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
   const identity = createPlanNeutralIdentity('same-turn-compatible-reads');
-  const declarationTool = requireAgentTool('declareDesignIntent');
-  const candidateBrowseTool = requireAgentTool('browseAssetCandidates');
-  const eagleTool = requireAgentTool('searchEagleReferences');
-  const documentTool = requireAgentTool('getDocumentInfo');
-  const writeTool = requireAgentTool('createRectangle');
-  const tools = [declarationTool, candidateBrowseTool, eagleTool, documentTool, writeTool];
+  const workflowBridgeTools = buildSkillToolSchemas();
+  const workflowBridgeNames = workflowBridgeTools.map((tool) => tool.name);
+  const manifestRequiredCapabilityIds = Array.from(new Set(
+    listSkillManifests().flatMap((manifest) => (
+      [
+        ...(manifest.legacy_skill_ids || []),
+        ...(manifest.workflow_entry_skill_ids || [])
+      ].map((skillId) => `skill.${skillId}`)
+    ))
+  ));
+  const capabilitySession = createAgentCapabilitySession({
+    candidateTools: [...getDefaultAgentTools(), ...workflowBridgeTools],
+    workflowBridgeNames,
+    baselineCapabilityIds: buildAgentCapabilityBaseline(true),
+    manifestRequiredCapabilityIds
+  });
+  const tools = capabilitySession.activeTools;
+  const activeToolsIdentity = tools;
   const executedToolNames = [];
   const modelPromptSnapshots = [];
+  const modelToolSurfaces = [];
   let modelCallCount = 0;
   let agent;
   agent = new Agent(
@@ -5052,8 +5126,9 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
       runtimeSessionIdentity: identity,
       openingCanvasObservationMode: 'none'
     }),
-    async (_modelId, messages) => {
+    async (_modelId, messages, visibleTools) => {
       modelCallCount += 1;
+      modelToolSurfaces.push(visibleTools.map((tool) => tool.name));
       modelPromptSnapshots.push(messages.map((message) => (
         typeof message.content === 'string'
           ? message.content
@@ -5082,6 +5157,9 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
         };
       }
       if (modelCallCount === 2) {
+        assert(!visibleTools.some((tool) => tool.name === 'declareDesignIntent'));
+        assert(visibleTools.some((tool) => tool.name === 'main-image-design'));
+        assert(visibleTools.some((tool) => tool.name === 'composeDesign'));
         return {
           stopReason: 'tool_use',
           toolCalls: [{
@@ -5098,6 +5176,7 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
       if (toolName === 'declareDesignIntent') {
         return activateMainImageAgenticRuntime({
           agent,
+          capabilitySession,
           arguments: arguments_,
           maxIterations: 3
         });
@@ -5136,7 +5215,15 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
     }
   );
 
-  const runResult = await agent.run('整理主图设计所需的素材与参考事实');
+  const runResult = await agent.run('帮我重新设计一套商品主图，按这个项目里的摄影图来做。');
+  assert.strictEqual(capabilitySession.activeTools, activeToolsIdentity);
+  assert(!modelToolSurfaces[0].includes('main-image-design'));
+  assert(modelToolSurfaces[1].includes('main-image-design'));
+  assert.deepStrictEqual(
+    modelToolSurfaces[1].filter((toolName) => workflowBridgeNames.includes(toolName)),
+    ['main-image-design']
+  );
+  assert(!executedToolNames.includes('main-image-design'), 'Harness auto-executed the visible workflow owner');
   assert.strictEqual(modelCallCount, 3, 'bound-context write was not regenerated in a fresh Agent turn');
   assert(!modelPromptSnapshots[0].includes('先区分点击图与转化图'),
     'main-image method knowledge leaked into the pre-declaration model turn');
@@ -5410,6 +5497,48 @@ async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRunt
     exitCriteria: [...effectiveContract.exitCriteria],
     reviewRubricRef: effectiveContract.reviewRubricRef
   };
+  const availableInputSources = buildAutonomousDesignBriefInputSources({
+    params: {},
+    context: {
+      projectContext: {
+        projectPath: 'C:\\fixture\\main-image-project',
+        projectImageCount: 64
+      }
+    },
+    runtimeContractBundle: resolution.bundle
+  });
+  const directRequestInputSources = buildAutonomousDesignBriefInputSources({
+    params: {
+      userTask: '为粉咖微压直板袜制作一张主图',
+      images: [{ id: 'attached-main-image-1' }]
+    },
+    context: {
+      photoshopContext: { hasDocument: true }
+    },
+    runtimeContractBundle: resolution.bundle
+  });
+  assert(directRequestInputSources.some((source) => source.sourceKind === 'user_goal'),
+    'current user goal was omitted from the Runtime input source projection');
+  assert(directRequestInputSources.some((source) => source.sourceKind === 'attached_image'),
+    'current attached image was omitted from the Runtime input source projection');
+  assert(directRequestInputSources.some((source) => source.sourceKind === 'photoshop_document'),
+    'current Photoshop document was omitted from the Runtime input source projection');
+  const bindingContext = buildAgenticRuntimeBindingContext({
+    manifest: resolution.bundle.manifest,
+    workMode: effectiveContract.workMode,
+    availableInputSources,
+    deliveryOutputs: artifactContract.deliveryOutputs,
+    productionObligation: artifactContract.productionObligation,
+    exitCriteria: artifactContract.exitCriteria
+  });
+  assert(availableInputSources.some((source) => source.sourceKind === 'project_asset'),
+    '64 project assets did not resolve to a project_asset input source');
+  assert.deepStrictEqual(bindingContext.resolvedInputs, [{
+    inputKey: 'asset_source',
+    sourceKinds: ['project_asset']
+  }]);
+  assert.deepStrictEqual(bindingContext.missingInputs, ['product'],
+    'missing product input was not preserved honestly');
   const methodKnowledge = buildDesignMethodKnowledgeRuntimeContext({
     knowledgeRefs: resolution.bundle.manifest.knowledge_refs || [],
     manifestSkillId: resolution.bundle.manifest.skill_id
@@ -5447,7 +5576,10 @@ async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRunt
   agent.activateAgenticRuntimeContractFromDeclaration({
     artifactContract,
     referencePolicy: resolution.bundle.stagePlan.referencePolicy,
-    runtimeStageContextItems: agenticRuntimeContextItems,
+    runtimeStageContextItems: [
+      ...agenticRuntimeContextItems,
+      buildAgenticRuntimeBindingContextItem(bindingContext)
+    ],
     evaluationProfile: resolution.bundle.evaluationProfile,
     performanceBudget: {
       maxModelCalls: 36,
@@ -5462,6 +5594,11 @@ async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRunt
     maxIterations: 60
   });
   const afterTools = await agent.buildModelVisibleToolsForIteration();
+  assert.deepStrictEqual(
+    afterTools.map((tool) => tool.name).sort(),
+    beforeTools.map((tool) => tool.name).filter((name) => name !== 'declareDesignIntent').sort(),
+    'agentic Runtime declaration granted or removed a production Tool instead of only hiding its consumed declaration control'
+  );
   assert.strictEqual(agent.runtimeSession, undefined, 'agentic declaration created a Runtime Session');
   assert.strictEqual(agent.config.runtimeStagePlan, undefined, 'agentic declaration activated Stage gating');
   assert.strictEqual(agent.config.agenticArtifactContract?.skillId, 'ecommerce.main_image');
@@ -5472,6 +5609,20 @@ async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRunt
   assert.strictEqual(agent.config.maxIterations, 60);
   assert.strictEqual(agent.config.reasoningEffort, 'high');
   const postBindingSystemPrompt = agent.buildSystemPromptWithRuntimeContract();
+  const bindingPrompt = buildAgenticRuntimeBindingPromptSection(bindingContext);
+  assert(bindingPrompt.includes('asset_source：已有来源 project_asset'));
+  assert(bindingPrompt.includes('product：尚无可靠来源'));
+  assert(bindingPrompt.includes('最终交付：'));
+  assert(bindingPrompt.includes('生产义务：'));
+  assert(
+    postBindingSystemPrompt.includes('context:agentic-runtime-binding:ecommerce.main_image:ecommerce.main_image.v1')
+      && postBindingSystemPrompt.includes('asset_source：已有来源 project_asset')
+      && postBindingSystemPrompt.includes('product：尚无可靠来源')
+      && postBindingSystemPrompt.includes('生产义务：'),
+    'next model turn did not receive the complete compiled agentic binding obligations'
+  );
+  assert(!/800\s*(?:px|×|x)\s*800|800px\s*正方形/i.test(postBindingSystemPrompt),
+    'agentic main-image prompt still contains the removed 800px square upload answer');
   assert(
     postBindingSystemPrompt.includes(mainImageRoleGuidance),
     'agentic binding lost the Task Profile role guidance from the live operating context'
@@ -5479,6 +5630,10 @@ async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRunt
   assert(
     postBindingSystemPrompt.includes('先区分点击图与转化图'),
     'agentic binding did not inject the Manifest-owned main-image method knowledge'
+  );
+  assert(
+    postBindingSystemPrompt.includes('未被用户认可的历史尝试'),
+    'main-image method context did not teach the Agent to recognize repetition before reusing a safe direction'
   );
   assert(
     !postBindingSystemPrompt.includes('当前设计进度：'),
@@ -5674,6 +5829,205 @@ function buildRecommendedFastPathFixture(recommendedSkillName) {
     recommendedSkill,
     workflowBridgeTools
   };
+}
+
+function assertAgenticManifestOwnerOnlyCapabilityBinding() {
+  const workflowBridgeTools = buildSkillToolSchemas();
+  const workflowBridgeNames = workflowBridgeTools.map((tool) => tool.name);
+  const workflowBridgeNameSet = new Set(workflowBridgeNames);
+  const candidateTools = [
+    ...getDefaultAgentTools(),
+    ...workflowBridgeTools
+  ];
+  const manifestRequiredCapabilityIds = Array.from(new Set(
+    listSkillManifests().flatMap((manifest) => (
+      [
+        ...(manifest.legacy_skill_ids || []),
+        ...(manifest.workflow_entry_skill_ids || [])
+      ].map((skillId) => `skill.${skillId}`)
+    ))
+  ));
+  const mainImageManifest = listSkillManifests().find((manifest) => (
+    manifest.task_type === 'ecommerce.main_image.v1'
+  ));
+  assert(mainImageManifest, 'main-image agentic Manifest is missing');
+  assert.deepStrictEqual(
+    mainImageManifest.workflow_entry_skill_ids,
+    ['main-image-design'],
+    'main-image Manifest must declare one exact production workflow entry'
+  );
+
+  const createSession = (input = {}) => createAgentCapabilitySession({
+    candidateTools,
+    workflowBridgeNames,
+    baselineCapabilityIds: buildAgentCapabilityBaseline(true),
+    manifestRequiredCapabilityIds,
+    ...input
+  });
+  const listActiveWorkflowTools = (session) => session.activeTools
+    .map((tool) => tool.name)
+    .filter((toolName) => workflowBridgeNameSet.has(toolName));
+
+  const lateBoundSession = createSession();
+  const activeToolsIdentity = lateBoundSession.activeTools;
+  const broadAtomicToolNames = lateBoundSession.activeTools
+    .map((tool) => tool.name)
+    .filter((toolName) => !workflowBridgeNameSet.has(toolName));
+  assert(!lateBoundSession.activeTools.some((tool) => tool.name === 'main-image-design'));
+  assert.deepStrictEqual(
+    listActiveWorkflowTools(lateBoundSession),
+    [],
+    'an unbound Session exposed a Manifest-owned workflow entry'
+  );
+
+  assert.strictEqual(lateBoundSession.bindAgenticManifestOwner(mainImageManifest), true);
+  assert.strictEqual(
+    lateBoundSession.activeTools,
+    activeToolsIdentity,
+    'agentic owner binding replaced the mutable activeTools array'
+  );
+  assert.deepStrictEqual(
+    listActiveWorkflowTools(lateBoundSession),
+    ['main-image-design'],
+    'agentic owner binding exposed another Skill or omitted the main-image entry'
+  );
+  assert.deepStrictEqual(
+    lateBoundSession.getActiveCapabilityIdsForTool('main-image-design'),
+    ['skill.main-image-design']
+  );
+  const lateBoundActiveToolNames = new Set(lateBoundSession.activeTools.map((tool) => tool.name));
+  assert(
+    broadAtomicToolNames.every((toolName) => lateBoundActiveToolNames.has(toolName)),
+    'agentic owner binding narrowed the existing broad atomic Tool surface'
+  );
+
+  const stagedManifest = listSkillManifests().find((manifest) => (
+    manifest.execution_model !== 'agentic'
+  ));
+  assert(stagedManifest, 'staged Manifest fixture is missing');
+  const stagedSession = createSession({ manifest: stagedManifest });
+  assert.strictEqual(stagedSession.bindAgenticManifestOwner(mainImageManifest), false,
+    'a staged-bound Session accepted an agentic owner switch');
+  let rejectedCommitActivatedAgent = false;
+  const rejectedCommit = commitAgenticRuntimeDeclarationBinding({
+    agent: {
+      activateAgenticRuntimeContractFromDeclaration() {
+        rejectedCommitActivatedAgent = true;
+      }
+    },
+    capabilitySession: {
+      bindAgenticManifestOwner() {
+        return false;
+      }
+    },
+    manifest: mainImageManifest,
+    activation: {}
+  });
+  assert.strictEqual(rejectedCommit, false);
+  assert.strictEqual(rejectedCommitActivatedAgent, false,
+    'rejected agentic owner binding left a partially activated Agent contract');
+
+  const preBoundSession = createSession({ agenticOwnerManifest: mainImageManifest });
+  assert.deepStrictEqual(
+    listActiveWorkflowTools(preBoundSession),
+    ['main-image-design'],
+    'pre-bound agentic owner did not expose the same unique workflow entry'
+  );
+  const mainImageTool = preBoundSession.activeTools.find((tool) => tool.name === 'main-image-design');
+  assert(mainImageTool?.inputSchema?.properties?.slotAssignments,
+    'main-image owner Tool schema omitted slotAssignments');
+  assert.strictEqual(mainImageTool.inputSchema.properties.slotAssignments.default, undefined);
+  assert.strictEqual(mainImageTool.inputSchema.properties.createEmptySkeleton?.default, undefined);
+  assert.strictEqual(mainImageTool.inputSchema.properties.mainImageExecutionMode?.default, undefined,
+    'main-image workflow entry must not default an omitted production submission back to strategy-only');
+  assert.strictEqual(mainImageTool.inputSchema.properties.approvedLiveExecution, undefined,
+    'model-visible main-image schema must not let Tool arguments mint execution approval');
+  assert.strictEqual(mainImageTool.inputSchema.properties.approvedLiveAdapterRun, undefined,
+    'model-visible main-image schema must not let Tool arguments mint adapter approval');
+
+  const forbiddenSession = createSession({
+    agenticOwnerManifest: mainImageManifest,
+    deniedCapabilityKinds: ['skill']
+  });
+  assert.deepStrictEqual(
+    listActiveWorkflowTools(forbiddenSession),
+    [],
+    'skillBridgePolicy-style deny was bypassed by agentic owner binding'
+  );
+  assert.deepStrictEqual(
+    forbiddenSession.getActiveCapabilityIdsForTool('main-image-design'),
+    [],
+    'denied agentic workflow entry still reported an active capability'
+  );
+
+  const resolveProductionRuntime = (extraParams = {}) => resolveAutonomousCapabilityRuntime({
+    declaredTaskType: 'ecommerce.main_image.v1',
+    agentIntentControlPlane: {
+      toolScope: 'write_photoshop',
+      executionAuthorization: 'confirmed_tool_required'
+    },
+    ...extraParams
+  }, {});
+  const productionRuntime = resolveProductionRuntime();
+  const productionActiveToolNames = productionRuntime.capabilitySession.activeTools
+    .map((tool) => tool.name);
+  assert.strictEqual(productionRuntime.runtimeContractStatus.status, 'resolved');
+  assert.strictEqual(
+    productionRuntime.agenticManifestBundle?.manifest?.skill_id,
+    'ecommerce.main_image'
+  );
+  const preBoundProjection = buildAutonomousAgenticRuntimeBindingProjection({
+    runtimeContractBundle: productionRuntime.agenticManifestBundle,
+    params: {
+      userTask: '为粉咖微压直板袜制作一张主图',
+      images: [{ id: 'attached-main-image-1' }]
+    },
+    context: {}
+  });
+  assert(preBoundProjection, 'pre-bound agentic Runtime did not build its responsibility projection');
+  assert.deepStrictEqual(preBoundProjection.bindingContext.resolvedInputs, [
+    { inputKey: 'product', sourceKinds: ['user_goal'] },
+    { inputKey: 'asset_source', sourceKinds: ['attached_image'] }
+  ], 'pre-bound agentic Runtime did not preserve the current user goal and attached image sources');
+  assert.deepStrictEqual(preBoundProjection.bindingContext.missingInputs, []);
+  const autonomousExecutorSource = fs.readFileSync(path.resolve(
+    __dirname,
+    '..',
+    'src',
+    'renderer',
+    'services',
+    'skill-executors',
+    'autonomous-agent.executor.ts'
+  ), 'utf8');
+  assert(autonomousExecutorSource.includes(
+    'buildAutonomousAgenticRuntimeBindingProjection({'
+  ) && autonomousExecutorSource.includes(
+    '?.contextItem].filter((item): item is RuntimeContextItem => Boolean(item))'
+  ), 'pre-bound Agent context compiler dropped the shared agentic Runtime binding projection');
+  assert(productionActiveToolNames.includes('main-image-design'),
+    'pre-bound autonomous runtime omitted its main-image workflow owner');
+  assert(productionActiveToolNames.includes('composeDesign'),
+    'agentic owner binding removed the broad autonomous design surface');
+  assert.deepStrictEqual(
+    productionActiveToolNames.filter((toolName) => workflowBridgeNameSet.has(toolName)),
+    ['main-image-design'],
+    'pre-bound autonomous runtime exposed another workflow Skill'
+  );
+
+  const unboundRuntime = resolveAutonomousCapabilityRuntime({
+    agentIntentControlPlane: {
+      toolScope: 'write_photoshop',
+      executionAuthorization: 'confirmed_tool_required'
+    }
+  }, {});
+  assert(!unboundRuntime.capabilitySession.activeTools.some((tool) => (
+    tool.name === 'main-image-design'
+  )), 'task text or broad design mode exposed main-image production without a declaration');
+
+  const forbiddenRuntime = resolveProductionRuntime({ skillBridgePolicy: 'forbid' });
+  assert(!forbiddenRuntime.capabilitySession.activeTools.some((tool) => (
+    tool.name === 'main-image-design'
+  )), 'production Runtime bypassed the explicit no-Skill policy');
 }
 
 async function assertCorrectRecommendationCanCallSkillOnFirstTurn() {
@@ -12170,6 +12524,7 @@ async function runBehaviorAssertions() {
   assertRunLevelVisionPoolMergesKindBudgets();
   assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentatives();
   assertTaskClosureCapabilitiesOpenOnlyAfterArtifactLifecycleSignal();
+  assertAgenticManifestOwnerOnlyCapabilityBinding();
   assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts();
   assertBareContinuationResumeDecision();
   assertExecutionAuthorizationBlockerCarriesUnlockOptions();

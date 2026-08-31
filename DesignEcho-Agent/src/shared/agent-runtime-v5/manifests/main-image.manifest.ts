@@ -30,10 +30,13 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
     // 开放创意路径：不建 Stage 机、不以声明作写入门票（设计路径宪法）。
     execution_model: 'agentic',
     legacy_skill_ids: ['main-image-design'],
+    // Agent 仍用 broad atomic tools 自主观察、设计和修订；这个唯一 workflow entry
+    // 只让它在设计决定形成后提交显式 slotAssignments 给主图生产 owner。
+    workflow_entry_skill_ids: ['main-image-design'],
     required_inputs: ['product', 'asset_source'],
     optional_inputs: ['platform_size', 'image_type', 'brand_style', 'target_user', 'selling_points'],
     input_sources: {
-        product: ['structured_input', 'project_product'],
+        product: ['user_goal', 'structured_input', 'project_product'],
         asset_source: ['structured_input', 'attached_image', 'project_asset'],
         platform_size: ['structured_input', 'photoshop_document'],
         image_type: ['structured_input'],

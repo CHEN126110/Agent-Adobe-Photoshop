@@ -16,12 +16,7 @@ import {
 } from './main-image-production-spec';
 
 export type MainImageVariantPlacementStrategyStatus =
-    | 'blocked_missing_project_style_strategy'
-    | 'blocked_missing_visual_context'
-    | 'blocked_missing_selected_asset'
-    | 'blocked_missing_source_dimensions'
-    | 'blocked_missing_subject_bounds'
-    | 'blocked_missing_size_plans'
+    | 'blocked_missing_slot_assignments'
     | 'ready_variant_placement_plan';
 
 export interface MainImageVariantPlacementStrategyInput {
@@ -205,31 +200,20 @@ function buildPlacementPlan(input: {
 }
 
 function resolveStatus(input: {
-    styleStrategy?: MainImageProjectStyleStrategy | null;
     assignments: MainImageSlotAssignment[];
     createEmptySkeleton: boolean;
 }): MainImageVariantPlacementStrategyStatus {
     if (input.assignments.length === 0 && input.createEmptySkeleton) return 'ready_variant_placement_plan';
-    if (!input.styleStrategy) return 'blocked_missing_project_style_strategy';
-    if (input.styleStrategy.status !== 'ready_visual_context') return 'blocked_missing_visual_context';
-    if (input.assignments.length === 0) return 'ready_variant_placement_plan';
+    if (input.assignments.length === 0) return 'blocked_missing_slot_assignments';
+    // 每个 assignment 都已经携带自己素材的像素尺寸、主体范围和放置决定。
+    // 全局 styleStrategy 可以继续用于解释与评审，但不再决定生产提交是否可编译。
     return 'ready_variant_placement_plan';
 }
 
 function buildBlockers(status: MainImageVariantPlacementStrategyStatus): string[] {
     switch (status) {
-        case 'blocked_missing_project_style_strategy':
-            return ['main_image_project_style_strategy_missing'];
-        case 'blocked_missing_visual_context':
-            return ['main_image_visual_context_required'];
-        case 'blocked_missing_selected_asset':
-            return ['main_image_selected_asset_missing'];
-        case 'blocked_missing_source_dimensions':
-            return ['main_image_source_dimensions_missing'];
-        case 'blocked_missing_subject_bounds':
-            return ['main_image_subject_bounds_missing'];
-        case 'blocked_missing_size_plans':
-            return ['main_image_size_plans_missing'];
+        case 'blocked_missing_slot_assignments':
+            return ['main_image_slot_assignments_required_for_production'];
         case 'ready_variant_placement_plan':
         default:
             return [];
@@ -273,7 +257,6 @@ export function buildMainImageVariantPlacementStrategy(
 ): MainImageVariantPlacementStrategy {
     const assignments = input.slotAssignments || [];
     const status = resolveStatus({
-        styleStrategy: input.projectStyleStrategy,
         assignments,
         createEmptySkeleton: input.createEmptySkeleton === true
     });
@@ -309,7 +292,7 @@ export function buildMainImageVariantPlacementStrategy(
         warnings,
         limitations: [
             '主图变体置入策略只输出几何计划，不调用模型、不搜索网页、不读图片像素、不执行 Photoshop。',
-            '款式判断必须来自 projectStyleStrategy 中与所选素材绑定的视觉上下文，不能从文件名猜测。',
+            '款式理解和构图决定必须由 Agent 在提交 slotAssignments 前完成；生产层不从文件名、全局 selectedAsset 或旧 projectStyleStrategy 重新猜测。',
             'destinationBox 和 subjectDestinationBox 是计划值，不是 Photoshop actualBounds。',
             '每个置入计划只消费其槽位 assignment 自己的素材尺寸、主体 bounds、目标区域和缩放预设；跨槽复用必须再次显式声明。'
         ]

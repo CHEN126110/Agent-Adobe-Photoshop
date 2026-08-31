@@ -26,6 +26,7 @@ import {
     SEARCH_AGENT_CAPABILITIES_TOOL_NAME,
     type AgentCapabilitySession
 } from '../agent-runtime/capability-session';
+import type { Agent } from '../agent-runtime/agent';
 import { collectAgentFinalDeliveryDebugProjection } from '../agent-runtime/final-delivery-artifact-collector';
 import { readAgentVisualObservation } from '../agent-runtime/visual-observation-strategy';
 import {
@@ -185,6 +186,12 @@ import {
     normalizeRuntimeDesignWorkMode,
     resolveSkillRuntimeManifestSelection
 } from '../../../shared/agent-runtime-v5/skill-runtime';
+import {
+    buildAgenticRuntimeBindingContext,
+    buildAgenticRuntimeBindingContextItem,
+    type AgenticRuntimeBindingContext
+} from '../../../shared/agent-runtime-v5/agentic-runtime-binding-context';
+import type { SkillRuntimeManifest } from '../../../shared/agent-runtime-v5/contracts';
 import { resolveRuntimeStagePlanEffectiveContract } from '../../../shared/agent-runtime-v5/runtime-stage-plan';
 import {
     buildRuntimeContractBundleForAgentTask,
@@ -2679,7 +2686,7 @@ function toCamelInputKey(inputKey: string): string {
     return inputKey.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
 }
 
-function buildAutonomousDesignBriefInputSources(input: {
+export function buildAutonomousDesignBriefInputSources(input: {
     params: Record<string, any>;
     context?: any;
     runtimeContractBundle: AgentTaskRuntimeContractBundle;
@@ -2709,10 +2716,14 @@ function buildAutonomousDesignBriefInputSources(input: {
         || (Array.isArray(contextProduct.facts) && contextProduct.facts.length > 0)
         || (Array.isArray(contextProduct.visibleFeatures) && contextProduct.visibleFeatures.length > 0)
     ));
+    const hasAttachedImage = Array.isArray(input.params.images) && input.params.images.length > 0;
+    const hasUserGoal = Boolean(getAutonomousTaskText(input.params, input.context));
     return [
+        ...(hasUserGoal ? [{ sourceKind: 'user_goal' as const }] : []),
         ...(structuredInputKeys.length > 0
             ? [{ sourceKind: 'structured_input' as const, inputKeys: structuredInputKeys }]
             : []),
+        ...(hasAttachedImage ? [{ sourceKind: 'attached_image' as const }] : []),
         ...(projectAssetCount > 0 ? [{ sourceKind: 'project_asset' as const }] : []),
         ...(String(project.selectedProjectImagePath || '').trim()
             ? [{ sourceKind: 'selected_project_asset' as const }]
@@ -2720,10 +2731,30 @@ function buildAutonomousDesignBriefInputSources(input: {
         ...(hasProjectProduct ? [{ sourceKind: 'project_product' as const }] : []),
         ...(project.hasSkuFiles === true ? [{ sourceKind: 'project_sku' as const }] : []),
         ...(project.hasTemplates === true ? [{ sourceKind: 'project_template' as const }] : []),
+        ...(resolveCurrentPhotoshopDocumentPresence(input.context) === true
+            ? [{ sourceKind: 'photoshop_document' as const }]
+            : []),
         ...(project.projectId || project.projectPath || project.contextSnapshot
             ? [{ sourceKind: 'project_context' as const }]
             : [])
     ];
+}
+
+/**
+ * 显式 agentic Runtime 声明的唯一提交边界。
+ *
+ * Agent 契约与 owner-only Capability 必须在同一次同步提交中生效；这里不执行
+ * Skill、不授予 Photoshop 权限，也不根据用户文字选择 Manifest。
+ */
+export function commitAgenticRuntimeDeclarationBinding(input: {
+    agent: Pick<Agent, 'activateAgenticRuntimeContractFromDeclaration'>;
+    capabilitySession: Pick<AgentCapabilitySession, 'bindAgenticManifestOwner'>;
+    manifest: SkillRuntimeManifest;
+    activation: Parameters<Agent['activateAgenticRuntimeContractFromDeclaration']>[0];
+}): boolean {
+    if (!input.capabilitySession.bindAgenticManifestOwner(input.manifest)) return false;
+    input.agent.activateAgenticRuntimeContractFromDeclaration(input.activation);
+    return true;
 }
 
 function isAutonomousCreativeDesignTask(
@@ -3020,6 +3051,42 @@ function buildAgenticArtifactCompletionContract(
         ...(effectiveContract.reviewRubricRef
             ? { reviewRubricRef: effectiveContract.reviewRubricRef }
             : {})
+    };
+}
+
+export interface AutonomousAgenticRuntimeBindingProjection {
+    artifactContract: AgenticArtifactCompletionContract;
+    bindingContext: AgenticRuntimeBindingContext;
+    contextItem: RuntimeContextItem;
+}
+
+/**
+ * 让“进入 Agent 前已绑定”和“Agent 循环内声明”复用完全相同的 agentic 责任投影。
+ * 本函数只读取当前请求已有来源和 Manifest 义务，不选择设计内容或授予执行权限。
+ */
+export function buildAutonomousAgenticRuntimeBindingProjection(input: {
+    runtimeContractBundle: AgentTaskRuntimeContractBundle;
+    params: Record<string, any>;
+    context?: any;
+}): AutonomousAgenticRuntimeBindingProjection | undefined {
+    const artifactContract = buildAgenticArtifactCompletionContract(input.runtimeContractBundle);
+    if (!artifactContract) return undefined;
+    const bindingContext = buildAgenticRuntimeBindingContext({
+        manifest: input.runtimeContractBundle.manifest,
+        workMode: input.runtimeContractBundle.stagePlan.expectedWorkMode,
+        availableInputSources: buildAutonomousDesignBriefInputSources({
+            params: input.params,
+            context: input.context,
+            runtimeContractBundle: input.runtimeContractBundle
+        }),
+        deliveryOutputs: artifactContract.deliveryOutputs,
+        productionObligation: artifactContract.productionObligation,
+        exitCriteria: artifactContract.exitCriteria
+    });
+    return {
+        artifactContract,
+        bindingContext,
+        contextItem: buildAgenticRuntimeBindingContextItem(bindingContext)
     };
 }
 
@@ -3698,6 +3765,9 @@ export function resolveAutonomousCapabilityRuntime(
         requestedTaskType: agenticExecution ? undefined : structuredTaskType,
         manifest: runtimeContractBundle?.manifest,
         workMode: runtimeContractBundle?.stagePlan.expectedWorkMode,
+        // Agentic 清单不裁剪 broad atomic Tool surface；只把当前清单显式声明的
+        // workflow entry 作为 owner-only schema 加入同一 Capability Session。
+        agenticOwnerManifest: agenticManifestBundle?.manifest,
         baselineCapabilityIds,
         // 声明了 canonical workflow owner 的业务 Skill 在 Manifest 绑定前一律不可按需激活。
         // 不能只封住“本轮恰好推荐的那一个”，否则模型可绕到另一个 legacy executor。
@@ -4856,7 +4926,14 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     taskContextItem,
                     ...(input.methodKnowledge ? { designMethodKnowledge: input.methodKnowledge } : {}),
                     stageAgnostic: !runtimeContractBundle
-                })
+                }),
+                ...(isAgenticExecutionModel(knowledgeBundle.manifest)
+                    ? [buildAutonomousAgenticRuntimeBindingProjection({
+                        runtimeContractBundle: knowledgeBundle,
+                        params: runtimeParams,
+                        context
+                    })?.contextItem].filter((item): item is RuntimeContextItem => Boolean(item))
+                    : [])
             ];
         };
         let runtimeStageContextItems: RuntimeContextItem[] = buildKnowledgeRuntimeContextItems({
@@ -5238,17 +5315,29 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 // candidate 还没有提交到闭包 owner；显式交给 Context Compiler，确保方法知识
                 // 与评价/交付契约在同一个 Tool result 边界原子生效，且失败时不留下半绑定。
                 rebuildGenerationRuntimeContextItems(agenticCandidate);
-                currentAgent.activateAgenticRuntimeContractFromDeclaration({
-                    artifactContract,
-                    referencePolicy: projectRuntimeReferencePolicy(
-                        agenticCandidate.manifest.reference_policy
-                    ),
-                    runtimeStageContextItems,
-                    evaluationProfile: agenticCandidate.evaluationProfile,
-                    performanceBudget: candidatePerformanceBudget,
-                    reasoningEffort: resolveManifestReasoningEffort(agenticCandidate.manifest),
-                    maxIterations: candidateMaxIterations
+                const agenticBindingCommitted = commitAgenticRuntimeDeclarationBinding({
+                    agent: currentAgent,
+                    capabilitySession,
+                    manifest: agenticCandidate.manifest,
+                    activation: {
+                        artifactContract,
+                        referencePolicy: projectRuntimeReferencePolicy(
+                            agenticCandidate.manifest.reference_policy
+                        ),
+                        runtimeStageContextItems,
+                        evaluationProfile: agenticCandidate.evaluationProfile,
+                        performanceBudget: candidatePerformanceBudget,
+                        reasoningEffort: resolveManifestReasoningEffort(agenticCandidate.manifest),
+                        maxIterations: candidateMaxIterations
+                    }
                 });
+                if (!agenticBindingCommitted) {
+                    return {
+                        success: false,
+                        code: 'runtime_agentic_owner_binding_rejected',
+                        error: '当前 Session 已绑定另一种运行合同，未切换为开放设计 Runtime。'
+                    };
+                }
                 agenticManifestBundle = agenticCandidate;
                 autonomousPerformancePolicy = candidatePerformancePolicy;
                 maxIterations = candidateMaxIterations;

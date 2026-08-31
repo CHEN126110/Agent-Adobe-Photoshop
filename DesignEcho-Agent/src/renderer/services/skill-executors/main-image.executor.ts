@@ -8,8 +8,12 @@
 import type { SkillExecutor, SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
 import type { DesignProjectState } from '../../../shared/types/design-project-state.types';
+import {
+    isGuardedAtomicToolExecutor,
+    isRuntimeOwnedSkillDeliveryPlanAuthority,
+    isRuntimeOwnedSkillDeliveryPlanAuthorityForExecutor
+} from '../../../shared/agent-skill-atomic-tool-execution';
 
-import { executeToolCall } from '../tool-executor.service';
 import { getPhotoshopConnectionStatus } from '../mcp-host.client';
 import { emitSkillStep } from './skill-step-events';
 import {
@@ -61,7 +65,10 @@ import type {
 import { buildMainImageAgentDraftPlan } from '../../../shared/main-image-agent-draft-plan';
 import { buildMainImageStrategyInputs } from '../../../shared/main-image-strategy-input-builder';
 import { buildMainImagePlatformSizeProfile } from '../../../shared/main-image-production-document-structure';
-import { resolveMainImageProductionSizeKey } from '../../../shared/main-image-production-spec';
+import {
+    resolveMainImageProductionSizeKey,
+    resolveMainImageSlotAssignments
+} from '../../../shared/main-image-production-spec';
 import {
     buildMainImageStateContext,
     buildMainImageStateVersionPatch,
@@ -156,7 +163,20 @@ function cleanString(value: unknown): string {
 }
 
 function normalizeMainImageExecutionMode(value: unknown): MainImageControlledExecutionMode {
+    if (value === 'strategy-only') return value;
     if (value === 'product-disposable-live') return value;
+    return 'strategy-only';
+}
+
+function resolveMainImageExecutionMode(params: Record<string, any>): MainImageControlledExecutionMode {
+    const explicitMode = normalizeMainImageExecutionMode(params.mainImageExecutionMode);
+    if (params.mainImageExecutionMode !== undefined && params.mainImageExecutionMode !== null) {
+        return explicitMode;
+    }
+    if (params.createEmptySkeleton === true) return 'product-disposable-live';
+    if (Array.isArray(params.slotAssignments) && params.slotAssignments.length > 0) {
+        return 'product-disposable-live';
+    }
     return 'strategy-only';
 }
 
@@ -167,6 +187,24 @@ function normalizeMainImageExecutionScope(value: unknown): MainImageControlledEx
 
 function isRecord(value: unknown): value is Record<string, any> {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+export function hasVerifiedMainImageWhiteBackgroundExport(
+    toolResult: unknown,
+    probes: readonly MainImageResultFileProbe[]
+): boolean {
+    const result = isRecord(toolResult) ? toolResult : {};
+    const toolData = isRecord(result.data) ? result.data : result;
+    const readback = isRecord(toolData.readback) ? toolData.readback : {};
+    const savedByTool = toolData.success === true || readback.saved === true;
+    const hasVerifiedFile = probes.some((probe) => (
+        probe.status === 'ok'
+        && probe.exists === true
+        && probe.isFile === true
+        && Number.isSafeInteger(Number(probe.byteLength))
+        && Number(probe.byteLength) > 0
+    ));
+    return result.success !== false && savedByTool && hasVerifiedFile;
 }
 
 function readNumber(value: unknown): number | undefined {
@@ -1031,10 +1069,13 @@ async function runControlledMainImageProductPath(input: {
     context?: SkillExecuteParams['context'];
     callbacks?: SkillExecuteParams['callbacks'];
     signal?: AbortSignal;
+    guardedAtomicToolExecutor?: SkillExecuteParams['guardedAtomicToolExecutor'];
     runtimeDeliveryPlanAuthority?: SkillExecuteParams['runtimeDeliveryPlanAuthority'];
     emitStep: EmitMainImageStep;
 }): Promise<AgentResult> {
-    const mode = normalizeMainImageExecutionMode(input.params.mainImageExecutionMode);
+    const mode = resolveMainImageExecutionMode(input.params);
+    const runtimeExecutionAuthorized = mode === 'product-disposable-live'
+        && isGuardedAtomicToolExecutor(input.guardedAtomicToolExecutor);
     const toolResults: Array<Record<string, unknown>> = [];
 
     input.emitStep(
@@ -1047,10 +1088,72 @@ async function runControlledMainImageProductPath(input: {
         0.02
     );
 
+    if (mode === 'product-disposable-live'
+        && !isGuardedAtomicToolExecutor(input.guardedAtomicToolExecutor)) {
+        return {
+            success: false,
+            message: '当前主图生产没有取得受保护的 Photoshop 执行通道，本轮没有写入或覆盖文件。',
+            error: 'main_image_guarded_atomic_executor_required',
+            toolResults,
+            data: {
+                status: 'blocked_guarded_atomic_executor_required'
+            }
+        };
+    }
+
     const userText = cleanString(input.params.userIntent || input.context?.userInput);
     const imageType = cleanString(input.params.imageType) || 'click';
     const executionScope = normalizeMainImageExecutionScope(input.params.executionScope);
     const projectPath = getMainImageProjectPath(input.context);
+    const submittedAssignments = resolveMainImageSlotAssignments(input.params.slotAssignments);
+    const isProductionSubmission = (
+        input.params.slotAssignments !== undefined
+        && input.params.slotAssignments !== null
+    )
+        || input.params.createEmptySkeleton === true;
+    if (mode === 'product-disposable-live'
+        && isProductionSubmission
+        && !isRuntimeOwnedSkillDeliveryPlanAuthority(input.runtimeDeliveryPlanAuthority)) {
+        return {
+            success: false,
+            message: '当前主图生产没有取得完整文件交付事务，本轮没有启动 Photoshop 写入。',
+            error: 'main_image_runtime_delivery_authority_required',
+            toolResults,
+            data: {
+                status: 'blocked_runtime_delivery_authority_required'
+            }
+        };
+    }
+    if (mode === 'product-disposable-live'
+        && isProductionSubmission
+        && !isRuntimeOwnedSkillDeliveryPlanAuthorityForExecutor(
+            input.runtimeDeliveryPlanAuthority,
+            input.guardedAtomicToolExecutor
+        )) {
+        return {
+            success: false,
+            message: '当前主图生产的 Photoshop 执行通道与文件交付事务不属于同一次运行，本轮没有启动写入。',
+            error: 'runtime_delivery_authority_executor_mismatch',
+            toolResults,
+            data: {
+                status: 'blocked_runtime_delivery_authority_executor_mismatch'
+            }
+        };
+    }
+    if (input.params.slotAssignments !== undefined
+        && input.params.slotAssignments !== null
+        && submittedAssignments.issues.length > 0) {
+        return {
+            success: false,
+            message: '主图逐槽声明不完整，本轮没有读取、写入或导出 Photoshop 文档。',
+            error: submittedAssignments.issues[0] || 'blocked_invalid_slot_assignments',
+            toolResults,
+            data: {
+                status: 'blocked_invalid_slot_assignments',
+                blockers: [...submittedAssignments.issues]
+            }
+        };
+    }
     if (input.params.deliveryConvention !== undefined && input.params.deliveryConvention !== null) {
         const deliveryConventionResolution = resolveSkillDeliveryConvention(input.params.deliveryConvention);
         if (deliveryConventionResolution.status === 'blocked') {
@@ -1066,34 +1169,64 @@ async function runControlledMainImageProductPath(input: {
             };
         }
     }
-    const explicitSelectedAsset = buildControlledSelectedAsset(input.params, input.context);
-    const projectAssetCandidates = buildMainImageProjectAssetCandidates(input.context);
-    const assetSelection = selectMainImageAssetCandidate({
-        userText,
-        projectAssets: projectAssetCandidates,
-        selectedAsset: explicitSelectedAsset
-    });
-    const selectedAsset = enrichMainImageSelectedAsset(
-        explicitSelectedAsset || assetSelection.selectedAsset || null,
-        projectAssetCandidates
-    );
+    const explicitSelectedAsset = isProductionSubmission
+        ? null
+        : buildControlledSelectedAsset(input.params, input.context);
+    const projectAssetCandidates = isProductionSubmission
+        ? []
+        : buildMainImageProjectAssetCandidates(input.context);
+    const assetSelection = isProductionSubmission
+        ? { selectedAsset: null }
+        : selectMainImageAssetCandidate({
+            userText,
+            projectAssets: projectAssetCandidates,
+            selectedAsset: explicitSelectedAsset
+        });
+    const selectedAsset = isProductionSubmission
+        ? null
+        : enrichMainImageSelectedAsset(
+            explicitSelectedAsset || assetSelection.selectedAsset || null,
+            projectAssetCandidates
+        );
+    const submittedSlotAssets = submittedAssignments.assignments.map((assignment) => ({
+        ...assignment.asset,
+        role: 'agent-submitted-slot-asset',
+        source: 'slot-assignment'
+    }));
     const projectAssets = [
         ...projectAssetCandidates,
-        selectedAsset
+        selectedAsset,
+        ...submittedSlotAssets
     ].filter(Boolean) as MainImageAssetSelectionAsset[];
-    const subjectBounds = normalizeSubjectBounds(input.params.subjectBounds)
-        || inferSubjectBoundsFromSelectedAsset(selectedAsset);
+    const subjectBounds = isProductionSubmission
+        ? null
+        : normalizeSubjectBounds(input.params.subjectBounds)
+            || inferSubjectBoundsFromSelectedAsset(selectedAsset);
     const outputDir = resolveMainImageProjectOutputDir(input.params, input.context);
     const effectiveParams = {
         ...input.params,
         outputDir
     };
     const sizePlans = normalizeMainImageSizePlans(effectiveParams, subjectBounds);
+    const submittedSizeKeys = Array.from(new Set(
+        submittedAssignments.assignments.map((assignment) => assignment.sizeKey)
+    ));
+    let materialPlanDetail: string;
+    let materialPlanStatus: 'success' | 'error';
+    if (isProductionSubmission) {
+        materialPlanDetail = input.params.createEmptySkeleton === true
+            ? '已收到明确的标准空骨架请求；不会置入素材或导出 raster。'
+            : `已收到 ${submittedAssignments.assignments.length} 个逐槽素材决定，覆盖 ${submittedSizeKeys.length} 份工作文档。`;
+        materialPlanStatus = submittedAssignments.issues.length === 0 ? 'success' : 'error';
+    } else {
+        materialPlanDetail = `已确认 ${selectedAsset ? '1 个主素材' : '素材待补'}，并形成 ${sizePlans.length} 组尺寸计划。`;
+        materialPlanStatus = selectedAsset && sizePlans.length > 0 ? 'success' : 'error';
+    }
     input.emitStep(
         'verification',
         '主图素材与尺寸方案已确认',
-        `已确认 ${selectedAsset ? '1 个主素材' : '素材待补'}，并形成 ${sizePlans.length} 组尺寸计划。`,
-        selectedAsset && sizePlans.length > 0 ? 'success' : 'error',
+        materialPlanDetail,
+        materialPlanStatus,
         0.08
     );
     const explicitCustomSize = getExplicitMainImageCustomSize(effectiveParams);
@@ -1155,8 +1288,8 @@ async function runControlledMainImageProductPath(input: {
             projectPath,
             preferredSkuColor: input.params.preferredSkuColor || input.params.skuColor || input.params.colorName,
             mainImageExecutionMode: mode,
-            approvedLiveExecution: input.params.approvedLiveExecution,
-            approvedLiveAdapterRun: input.params.approvedLiveAdapterRun
+            approvedLiveExecution: runtimeExecutionAuthorized,
+            approvedLiveAdapterRun: runtimeExecutionAuthorized
         })
         : null;
     const whiteBackgroundLiveToolRequest = whiteBackgroundExportContract
@@ -1195,7 +1328,7 @@ async function runControlledMainImageProductPath(input: {
         desiredConversionImageCount: input.params.desiredConversionImageCount,
         mainImagePlatformProfile: explicitCustomSize ? buildExplicitMainImagePlatformProfile(explicitCustomSize) : undefined,
         allowPendingRatioExecution: input.params.allowPendingRatioExecution !== false,
-        userCheckpointApproved: input.params.userCheckpointApproved === true
+        userCheckpointApproved: runtimeExecutionAuthorized
     });
     const effectiveStrategyInputs = {
         ...strategy.strategyInputs,
@@ -1246,7 +1379,7 @@ async function runControlledMainImageProductPath(input: {
     );
     const checkpoint = buildMainImageLiveExecutorCheckpoint({
         requestPackage: strategy.liveExecutorRequestPackage,
-        approvedLiveExecution: input.params.approvedLiveExecution === true,
+        approvedLiveExecution: runtimeExecutionAuthorized,
         photoshopConnection,
         executionScope,
         maxOperationCount: readNumber(input.params.maxOperationCount)
@@ -1262,7 +1395,14 @@ async function runControlledMainImageProductPath(input: {
         toolParams: Record<string, unknown>
     ): Promise<unknown> => {
         if (toolName !== 'exportGroup' && toolName !== 'saveDocument') {
-            return executeToolCall(toolName, toolParams, { signal: input.signal });
+            if (!input.guardedAtomicToolExecutor) {
+                return {
+                    success: false,
+                    code: 'main_image_guarded_atomic_executor_required',
+                    error: '当前主图生产没有取得 Harness 签发的原子执行通道。'
+                };
+            }
+            return input.guardedAtomicToolExecutor(toolName, toolParams);
         }
         const expectedKind = toolName === 'saveDocument' ? 'editable_document' : 'raster_export';
         const targetPath = toolName === 'saveDocument'
@@ -1305,7 +1445,7 @@ async function runControlledMainImageProductPath(input: {
     };
     const adapterBuild = createMainImageLivePhotoshopToolAdapter({
         adapterContract,
-        approvedLiveAdapterRun: input.params.approvedLiveAdapterRun === true,
+        approvedLiveAdapterRun: runtimeExecutionAuthorized,
         executionScope,
         executeTool: executeMainImageTool
     });
@@ -1410,6 +1550,18 @@ async function runControlledMainImageProductPath(input: {
     }
 
     if (whiteBackgroundExportContract) {
+        if (!input.guardedAtomicToolExecutor) {
+            return {
+                success: false,
+                message: '**白底图暂时不能导出** 当前运行没有取得受保护的 Photoshop 执行通道，本轮没有写入或覆盖文件。',
+                error: 'main_image_guarded_atomic_executor_required',
+                toolResults,
+                data: {
+                    ...data,
+                    status: 'blocked_guarded_atomic_executor_required'
+                }
+            };
+        }
         if (!whiteBackgroundLiveToolRequest?.canExecute) {
             input.emitStep(
                 'warning',
@@ -1438,10 +1590,9 @@ async function runControlledMainImageProductPath(input: {
             'running',
             0.18
         );
-        const toolResult = await executeToolCall(
+        const toolResult = await input.guardedAtomicToolExecutor(
             whiteBackgroundLiveToolRequest.toolName,
-            whiteBackgroundLiveToolRequest.params,
-            { signal: input.signal }
+            whiteBackgroundLiveToolRequest.params
         );
         const toolData = isRecord(toolResult?.data) ? toolResult.data : (isRecord(toolResult) ? toolResult : {});
         const readback = isRecord(toolData.readback) ? toolData.readback : {};
@@ -1449,9 +1600,7 @@ async function runControlledMainImageProductPath(input: {
             || cleanString(readback.outputPath)
             || whiteBackgroundLiveToolRequest.params.outputPath;
         const resultFileProbes = await probeMainImageResultFiles([outputPath]);
-        const hasOkProbe = resultFileProbes.some((probe) => probe.status === 'ok' && probe.exists !== false);
-        const savedByTool = toolData.success === true || readback.saved === true;
-        const success = toolResult?.success !== false && (savedByTool || hasOkProbe);
+        const success = hasVerifiedMainImageWhiteBackgroundExport(toolResult, resultFileProbes);
 
         data.mainImageWhiteBackgroundToolResult = toolResult;
         data.mainImageWhiteBackgroundResultFileProbes = resultFileProbes;
@@ -1866,6 +2015,7 @@ export const mainImageExecutor: SkillExecutor = {
         callbacks,
         context,
         signal,
+        guardedAtomicToolExecutor,
         runtimeDeliveryPlanAuthority
     }: SkillExecuteParams): Promise<AgentResult> {
         const emitStep: EmitMainImageStep = (
@@ -1881,6 +2031,7 @@ export const mainImageExecutor: SkillExecutor = {
             context,
             callbacks,
             signal,
+            guardedAtomicToolExecutor,
             runtimeDeliveryPlanAuthority,
             emitStep
         });

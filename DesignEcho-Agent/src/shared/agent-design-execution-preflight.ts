@@ -8,7 +8,6 @@ import {
 } from './design-intelligence-plan';
 import type { DesignKnowledgeResult } from './design-knowledge-search';
 import { isMainImageWhiteBackgroundFromSkuMaterialRequest } from './main-image-white-background-export-contract';
-import { isProjectContextMainImageDeliveryIntent } from './project-image-analysis-intent';
 
 export type AgentDesignExecutionPreflightStatus =
     | 'not_applicable'
@@ -110,23 +109,22 @@ function isControlledProjectContextMainImageRequest(
 ): boolean {
     const skillId = cleanString(input.skillId);
     const params = input.params || {};
-    const executionMode = cleanString(params.mainImageExecutionMode).toLowerCase();
-    const executionScope = cleanString(params.executionScope).toLowerCase();
-    const sourceAssetKind = cleanString(params.sourceAssetKind).toLowerCase();
-    const outputDirPolicy = cleanString(params.outputDirPolicy).toLowerCase();
+    const hasProductionSubmission = (
+        Array.isArray(params.slotAssignments)
+        && params.slotAssignments.length > 0
+    ) || params.createEmptySkeleton === true;
+    const executionMode = cleanString(params.mainImageExecutionMode).toLowerCase()
+        || (hasProductionSubmission ? 'product-disposable-live' : '');
+    const executionScope = cleanString(params.executionScope).toLowerCase()
+        || (hasProductionSubmission ? 'disposable-document' : '');
 
     return input.route === 'skill_execution'
         && scenario === 'main-image'
         && skillId === 'main-image-design'
-        && isProjectContextMainImageDeliveryIntent(input.userText)
+        && Boolean(cleanString(input.projectContext?.projectPath))
         && executionMode === 'product-disposable-live'
         && executionScope === 'disposable-document'
-        && sourceAssetKind === 'selected-project-image'
-        && outputDirPolicy === 'project-main-image-dir'
-        && params.approvedLiveExecution === true
-        && params.approvedLiveAdapterRun === true
-        && params.enableVisionPreflight === true
-        && params.userCheckpointApproved === true
+        && hasProductionSubmission
         && !requiresGenericDesignDecision(input);
 }
 
@@ -265,9 +263,9 @@ export function buildAgentDesignExecutionPreflight(
             ]
             : controlledPlannerKind === 'project-context-main-image'
                 ? [
-                    'project-main-image-source-resolution',
-                    'project-visual-preflight',
-                    'controlled-main-image-production-plan',
+                    'agent-authored-slot-assignments-or-explicit-empty-skeleton',
+                    'runtime-owned-main-image-delivery-plan',
+                    'guarded-main-image-production-plan',
                     'main-image-result-readback'
                 ]
                 : [
@@ -282,7 +280,7 @@ export function buildAgentDesignExecutionPreflight(
             ]
             : controlledPlannerKind === 'project-context-main-image'
                 ? [
-                    '项目素材主图生产使用主图专用选图、视觉预检、一次性文档和导出读回，不要求通用创意设计确认。'
+                    '当前生产提交已经携带 Agent 作者化逐槽决定或明确空骨架请求；本检查不再读取模型参数中的旧批准字段。'
                 ]
                 : [
                     'SKU 批量生产使用 SKU 专用项目上下文和执行计划，不要求通用视觉设计决策。'
@@ -290,12 +288,12 @@ export function buildAgentDesignExecutionPreflight(
         const extraBoundary = controlledPlannerKind === 'main-image-white-background'
             ? '白底图专用执行计划必须使用项目 PSD/SKU.psb 和主图/白底.jpg 导出目标。'
             : controlledPlannerKind === 'project-context-main-image'
-                ? '项目素材主图专用执行计划必须限定 selected-project-image、disposable-document 和 project-main-image-dir。'
+                ? '主图生产必须限定当前项目、disposable-document、逐槽提交和 Runtime-owned 交付事务。'
                 : 'SKU 专用执行计划必须优先使用当前项目中的 SKU 文档、模板文件和配置文件。';
         const extraLimitation = controlledPlannerKind === 'main-image-white-background'
             ? '白底图专用 executor 仍需检查实际文件、图层选择和导出读回。'
             : controlledPlannerKind === 'project-context-main-image'
-                ? '项目素材主图 executor 仍需完成实际选图、视觉理解、排版、导出和读回。'
+                ? '主图 executor 只消费 Agent 已提交的槽位内容；选图、视觉理解和排版仍由 Agent 完成，执行后仍需导出和读回。'
                 : 'SKU executor 仍需检查实际文件、模板匹配、组合数量和导出结果。';
 
         return {

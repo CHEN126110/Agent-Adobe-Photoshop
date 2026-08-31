@@ -15,6 +15,7 @@
 
 import type { DesignAgentOsScenario } from './design-agent-os-contracts';
 import type { DesignDocumentRole } from './design-document-role';
+import { MAIN_IMAGE_DELIVERY_DOCUMENTS } from './main-image-production-spec';
 
 export type DesignTaskTypeVersion = 'design-task-types/v0';
 
@@ -81,7 +82,9 @@ export interface DesignTaskTypeSpec {
      */
     excludeSignals: string[];
     /** 默认画布宽度（电商常见尺寸），用作未指定时的合理默认 */
-    defaultCanvasWidth: number;
+    defaultCanvasWidth?: number;
+    /** Skill-owned production specification used by this Task Profile, when one exists. */
+    productionSpecRef?: string;
     /** 默认结构（起点，需按产品与素材调整，不是死模板） */
     defaultStructure: DesignTaskTypeStructureItem[];
     /** 开工前需要确认的问题（阻塞的才问，非阻塞的使用默认值） */
@@ -172,7 +175,7 @@ const MAIN_IMAGE_DESIGN_TASK_TYPE: DesignTaskTypeSpec = {
     },
     matchSignals: ['主图', '首图', '主视觉', '点击图', 'main image'],
     excludeSignals: ['白底图', '自底图', '白底', 'sku', '模板填充', '看一下', '检查', '结构', '保存', '导出当前'],
-    defaultCanvasWidth: 800,
+    productionSpecRef: 'main-image-production-spec.ts#MAIN_IMAGE_DELIVERY_DOCUMENTS',
     // 用户委托一张或多张时按真实目标形成结构，不能把固定五图清单扩成默认交付范围。
     defaultStructure: [],
     intakeQuestions: [
@@ -185,7 +188,11 @@ const MAIN_IMAGE_DESIGN_TASK_TYPE: DesignTaskTypeSpec = {
         {
             key: 'platform_size',
             question: '使用哪个平台尺寸？',
-            defaultNote: '未指定则按 800px 正方形电商主图处理',
+            defaultNote: MAIN_IMAGE_DELIVERY_DOCUMENTS.every((document) => (
+                document.platformUploadSizeStatus === 'unverified'
+            ))
+                ? '当前生产规范只确认工作文档结构，平台上传尺寸尚未验证；应以用户明确要求、渠道规范或当前交付目标为准。'
+                : '按当前已验证的主图生产规范处理。',
             blocking: false
         }
     ],

@@ -172,6 +172,9 @@ requireToken('session', 'manifestRequiredProviderToolNames?: readonly string[];'
 requireToken('session', 'manifestRequiredProviderCapabilityIds', 'Internal Tool ownership must close over real Capability inventory entries.');
 requireToken('session', 'initialDeniedCapabilityIds', 'Pre-Manifest owner capabilities must be denied without becoming a permanent provider deny.');
 requireToken('session', 'deniedCapabilityIds: baseDeniedCapabilityIds', 'Binding a Manifest must remove only the temporary owner-selection deny.');
+requireToken('session', 'bindAgenticManifestOwner(manifest: SkillRuntimeManifest): boolean', 'Agentic Runtime binding must expose only its workflow owner in the existing Capability Session.');
+requireToken('executor', 'agenticOwnerManifest: agenticManifestBundle?.manifest', 'Production startup must project a pre-bound agentic owner into the Capability Session.');
+requireToken('executor', 'commitAgenticRuntimeDeclarationBinding({', 'Production late binding must atomically project Agent contract and declared workflow owner through the shared commit boundary.');
 requireToken('skillDeclarations', 'internalTools', 'Internal Tool ownership must be declared by Skill packages.');
 requireToken('skillDeclarations', 'interactionOwner', 'Domain interaction ownership must be declared by Skill packages.');
 requireToken('executor', 'manifestRequiredProviderToolNames: areSkillBridgesForbidden(params)', 'Executor must preserve the explicit no-Skill atomic Tool path.');
