@@ -11,7 +11,7 @@
     "install:electron-runtime": "node node_modules/electron/install.js",
     "dev": "chcp 65001>nul && npm run build && electron .",
     "dev:chat-ui:debug-window": "node scripts/launch-chat-ui-debug-window.cjs --port 9223 --isolated-user-data --log-file tmp/chat-ui-debug-window.log",
-    "dev:chat-ui:debug-window:default-mcp": "node scripts/launch-chat-ui-debug-window.cjs --port auto --use-default-runtime-ports --seed-user-state --project \"D:\\A1 neveralone旗舰店\\C-1163\" --log-file tmp/chat-ui-debug-window-default-mcp.log",
+    "dev:chat-ui:debug-window:default-mcp": "node scripts/launch-chat-ui-debug-window.cjs --port auto --use-default-runtime-ports --isolated-user-data --seed-user-state --reuse-codex-subscription-session --log-file tmp/chat-ui-debug-window-default-mcp.log",
     "dev:chat-ui:debug-window:default-mcp:preflight": "node scripts/launch-chat-ui-debug-window.cjs --port auto --use-default-runtime-ports --preflight-only",
     "dev:chat-ui:debug-window:fake": "node scripts/launch-chat-ui-debug-window.cjs --port 9223 --fake-model --fake-model-fixture neutral --fake-photoshop --isolated-user-data --log-file tmp/chat-ui-debug-window.log",
     "dev:watch": "concurrently -k \"vite build --watch\" \"tsc -p tsconfig.main.json --watch\"",

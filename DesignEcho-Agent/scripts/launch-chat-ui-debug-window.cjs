@@ -21,7 +21,7 @@ function usage() {
     "The debug window uses an isolated runtime port block by default so it does not disturb a normal running Agent window.",
     "Use --use-default-runtime-ports only after the normal runtime has stopped; the debug window becomes the sole owner for live Photoshop validation.",
     "--model requires --seed-user-state and changes only a minimal credential-free preference seed in OS temp; it never copies API keys or rewrites normal DesignEcho userData.",
-    "With --seed-user-state, the isolated seed retains only model preferences and design dimensions; --project replaces normal current/recent projects with the explicit fixture.",
+    "With --seed-user-state, the isolated seed retains only model preferences and design dimensions; --project must be a disposable fixture under repository tmp or OS temp.",
     "--reuse-codex-subscription-session is for an isolated real-model run after the normal runtime has stopped. It reuses the normal secure ChatGPT subscription home without copying or printing credentials."
   ].join("\n");
 }
@@ -181,6 +181,12 @@ function parseArgs(argv) {
       throw new Error("--reuse-codex-subscription-session cannot be combined with --fake-model.");
     }
   }
+  if (parsed.projectPath) {
+    if (!parsed.isolatedUserData) {
+      throw new Error("--project requires --isolated-user-data; the test bridge must not share normal DesignEcho userData.");
+    }
+    parsed.projectPath = assertDisposableDebugProjectPath(parsed.projectPath);
+  }
 
   return parsed;
 }
@@ -257,13 +263,43 @@ function buildEnv(parsed) {
 }
 
 function ensureDefaultProjectPath() {
-  const projectPath = path.join(TMP_ROOT, "chat-ui-debug-project");
+  const projectRoot = path.join(TMP_ROOT, "chat-ui-debug-projects");
+  fs.mkdirSync(projectRoot, { recursive: true });
+  const projectPath = fs.mkdtempSync(path.join(projectRoot, "run-"));
   const subdirs = ["assets", "PSD", "SKU", "main-image", "detail-page"];
-  fs.mkdirSync(projectPath, { recursive: true });
   for (const subdir of subdirs) {
     fs.mkdirSync(path.join(projectPath, subdir), { recursive: true });
   }
   return projectPath;
+}
+
+function isPathInside(rootPath, targetPath) {
+  const relative = path.relative(rootPath, targetPath);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function assertDisposableDebugProjectPath(projectPath) {
+  const resolved = path.resolve(projectPath);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    throw new Error("--project must point to an existing disposable fixture directory.");
+  }
+  const stat = fs.lstatSync(resolved);
+  if (stat.isSymbolicLink()) {
+    throw new Error("--project cannot be a symlink or junction to a user project.");
+  }
+  const realTarget = fs.realpathSync.native(resolved);
+  const safeRoots = [fs.realpathSync.native(path.resolve(os.tmpdir()))];
+  fs.mkdirSync(TMP_ROOT, { recursive: true });
+  safeRoots.push(fs.realpathSync.native(TMP_ROOT));
+  if (!safeRoots.some((rootPath) => isPathInside(rootPath, realTarget))) {
+    throw new Error(
+      "Refusing to attach the chat test bridge to a user project. Copy the fixture under repository tmp or OS temp first."
+    );
+  }
+  if (fs.existsSync(path.join(realTarget, ".designecho"))) {
+    throw new Error("--project must be a fresh one-time fixture without prior .designecho runtime state.");
+  }
+  return realTarget;
 }
 
 function resolveIsolatedUserDataDir(parsed) {
@@ -837,6 +873,44 @@ function runSelfTest() {
   } finally {
     fs.rmSync(modelStateRoot, { recursive: true, force: true });
   }
+  const safeProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-debug-project-"));
+  try {
+    assertThrows(
+      () => parseArgs(["--project", safeProjectRoot]),
+      "--project requires --isolated-user-data"
+    );
+    const safeProjectArgs = parseArgs([
+      "--isolated-user-data",
+      "--project",
+      safeProjectRoot
+    ]);
+    if (path.resolve(safeProjectArgs.projectPath) !== path.resolve(safeProjectRoot)) {
+      throw new Error("a disposable temp project path must survive argument validation");
+    }
+    assertThrows(
+      () => parseArgs(["--isolated-user-data", "--project", ROOT]),
+      "Refusing to attach the chat test bridge to a user project"
+    );
+    fs.mkdirSync(path.join(safeProjectRoot, ".designecho"));
+    assertThrows(
+      () => parseArgs(["--isolated-user-data", "--project", safeProjectRoot]),
+      "fresh one-time fixture"
+    );
+  } finally {
+    fs.rmSync(safeProjectRoot, { recursive: true, force: true });
+  }
+  const freshProjectOne = ensureDefaultProjectPath();
+  const freshProjectTwo = ensureDefaultProjectPath();
+  try {
+    if (freshProjectOne === freshProjectTwo
+      || fs.existsSync(path.join(freshProjectOne, ".designecho"))
+      || fs.existsSync(path.join(freshProjectTwo, ".designecho"))) {
+      throw new Error("default chat-test projects must be unique and free of prior DesignEcho state");
+    }
+  } finally {
+    fs.rmSync(freshProjectOne, { recursive: true, force: true });
+    fs.rmSync(freshProjectTwo, { recursive: true, force: true });
+  }
   const dir9223 = resolveIsolatedUserDataDir(seeded9223);
   const dir9224 = resolveIsolatedUserDataDir(seeded9224);
   if (dir9223 === dir9224) {
@@ -883,7 +957,104 @@ function runSelfTest() {
       throw new Error(`default runtime ports must include ${expectedPort}: ${defaultPorts.join(",")}`);
     }
   }
+  assertChatTestEnvironmentEnvelope();
   console.log("launch-chat-ui-debug-window self-test passed");
+}
+
+function assertChatTestEnvironmentEnvelope() {
+  require("ts-node").register({
+    transpileOnly: true,
+    project: path.join(ROOT, "tsconfig.main.json")
+  });
+  const { resolveChatTestEnvironmentEnvelope } = require(
+    path.join(ROOT, "src", "main", "chat-test-environment.ts")
+  );
+  const envelopeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-chat-envelope-"));
+  try {
+    const normalUserDataDir = path.join(envelopeRoot, "normal-user-data");
+    const testUserDataDir = path.join(envelopeRoot, "test-user-data");
+    const projectPath = path.join(envelopeRoot, "project");
+    const priorStateProjectPath = path.join(envelopeRoot, "prior-state-project");
+    for (const directoryPath of [normalUserDataDir, testUserDataDir, projectPath, priorStateProjectPath]) {
+      fs.mkdirSync(directoryPath);
+    }
+    fs.mkdirSync(path.join(priorStateProjectPath, ".designecho"));
+
+    const baseEnvironment = {
+      DESIGNECHO_CHAT_TEST_BRIDGE: "1",
+      DESIGNECHO_TEST_USER_DATA_DIR: testUserDataDir,
+      DESIGNECHO_CHAT_TEST_PROJECT_PATH: projectPath,
+      DESIGNECHO_REMOTE_DEBUGGING_PORT: "9238"
+    };
+    const resolveEnvelope = (environment, overrides = {}) => resolveChatTestEnvironmentEnvelope({
+      environment,
+      isPackaged: false,
+      normalUserDataDir,
+      appPath: ROOT,
+      tempDir: os.tmpdir(),
+      ...overrides
+    });
+
+    const valid = resolveEnvelope(baseEnvironment);
+    if (!valid.enabled
+      || valid.remoteDebuggingPort !== 9238
+      || valid.testUserDataDir !== fs.realpathSync.native(testUserDataDir)
+      || valid.projectPath !== fs.realpathSync.native(projectPath)) {
+      throw new Error("a legal isolated chat-test envelope must return canonical paths and its CDP port");
+    }
+    assertThrows(
+      () => resolveEnvelope({ ...baseEnvironment, DESIGNECHO_CHAT_TEST_PROJECT_PATH: ROOT }),
+      "disposable directory under repository tmp or OS temp"
+    );
+    assertThrows(
+      () => resolveEnvelope({
+        ...baseEnvironment,
+        DESIGNECHO_CHAT_TEST_PROJECT_PATH: priorStateProjectPath
+      }),
+      "fresh one-time directory"
+    );
+    assertThrows(
+      () => resolveEnvelope({
+        ...baseEnvironment,
+        DESIGNECHO_CHAT_TEST_PROJECT_PATH: testUserDataDir
+      }),
+      "must not overlap"
+    );
+    assertThrows(
+      () => resolveEnvelope(baseEnvironment, { isPackaged: true }),
+      "require an unpackaged test bridge"
+    );
+    const { DESIGNECHO_CHAT_TEST_BRIDGE: _bridge, ...environmentWithoutBridge } = baseEnvironment;
+    assertThrows(
+      () => resolveEnvelope(environmentWithoutBridge),
+      "require an unpackaged test bridge"
+    );
+    assertThrows(
+      () => resolveEnvelope({ DESIGNECHO_REMOTE_DEBUGGING_PORT: "9238" }),
+      "require an unpackaged test bridge"
+    );
+  } finally {
+    fs.rmSync(envelopeRoot, { recursive: true, force: true });
+  }
+
+  const mainSource = fs.readFileSync(path.join(ROOT, "src", "main", "index.ts"), "utf8");
+  const requiredFragments = [
+    "import { resolveChatTestEnvironmentEnvelope } from './chat-test-environment'",
+    "const chatTestEnvironment = resolveChatTestEnvironmentEnvelope({",
+    "? { designechoChatTestProjectPath: validatedChatTestProjectPath }"
+  ];
+  for (const fragment of requiredFragments) {
+    if (!mainSource.includes(fragment)) {
+      throw new Error(`Main chat-test envelope is missing required boundary: ${fragment}`);
+    }
+  }
+  const envelopeIndex = mainSource.indexOf("const chatTestEnvironment = resolveChatTestEnvironmentEnvelope({");
+  const remoteDebugApplyIndex = mainSource.indexOf(
+    "applyRemoteDebuggingPort(chatTestEnvironment.remoteDebuggingPort);"
+  );
+  if (envelopeIndex < 0 || remoteDebugApplyIndex <= envelopeIndex) {
+    throw new Error("Main must validate the complete chat-test envelope before enabling remote debugging.");
+  }
 }
 
 function assertThrows(fn, expectedMessage) {

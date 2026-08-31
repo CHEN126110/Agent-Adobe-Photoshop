@@ -55,6 +55,20 @@ const {
     buildMainImageStrategyInputs
 } = require(path.join(root, 'src/shared/main-image-strategy-input-builder.ts'));
 const {
+    selectDesignKnowledgeResultsForSkillUse
+} = require(path.join(root, 'src/renderer/services/skill-executors/design-planner-context.ts'));
+const {
+    executeGetDesignLearningTimeline,
+    executeProposeSkillImprovement,
+    executeRecordDesignVerdict
+} = require(path.join(root, 'src/renderer/services/design-workshop/design-learning.store.ts'));
+const {
+    resolveToolVisualConsumptionOwner
+} = require(path.join(root, 'src/renderer/services/tool-executor.service.ts'));
+const {
+    createDesignLearningLedger
+} = require(path.join(root, 'src/shared/design-learning-candidates.ts'));
+const {
     buildMainImageDeliveryRuntimeEvidence,
     inspectMainImageStagedDeliveryBeforePromotion
 } = require(path.join(
@@ -176,6 +190,7 @@ function check(name, condition, detail = '') {
 
 const toolExecutor = source('src/renderer/services/tool-executor.service.ts');
 const toolSchemas = source('src/renderer/services/agent-runtime/tool-schemas.ts');
+const toolDisplayInfoSource = source('src/renderer/services/tool-display-info.ts');
 const composeExecutor = source('src/renderer/services/design-workshop/compose-design.executor.ts');
 const scalingPolicy = source('src/shared/design-smart-scaling-policy.ts');
 const mainImagePlacement = source('src/shared/main-image-variant-placement-strategy.ts');
@@ -3628,8 +3643,8 @@ check(
     designMethodKnowledgeSource.includes('候选短名单只回答')
         && designArtifactKnowledgeSource.includes('候选短名单只是在一个已声明需求或素材角色下比较可用性')
         && designPrinciplesSource.includes('一次素材候选结果只证明若干图对某个已声明角色的相对适配')
-        && toolSchemas.includes('one selected image is not evidence of project-wide understanding')
-        && toolSchemas.includes('use context, intended audience, variant system')
+        && toolSchemas.includes('one page or one selected image is not project-wide understanding')
+        && toolSchemas.includes('The Agent chooses after viewing pixels')
 );
 check(
     '参考一瞥挂定方向前（2026-08-23 用户裁决），保留豁免出口且不形成强制仪式',
@@ -3892,15 +3907,35 @@ const {
     buildVlmJudgeContextMessage,
     scoreDesignAssertions
 } = require(path.join(root, 'src/shared/design-quality-assertion.ts'));
-const { diversifyAssetRecommendationShortlist } = require(path.join(root, 'src/shared/asset-recommendation-shortlist.ts'));
+const {
+    buildNeutralAssetCandidateId,
+    buildNeutralAssetCandidatePage,
+    diversifyAssetRecommendationShortlist
+} = require(path.join(root, 'src/shared/asset-recommendation-shortlist.ts'));
 const { selectMainImageAssetCandidate } = require(path.join(root, 'src/shared/main-image-asset-selection.ts'));
 const { buildAgentCapabilityBaseline, createAgentCapabilitySession } = require(path.join(root, 'src/renderer/services/agent-runtime/capability-session.ts'));
 const { buildDesignerAgentDecisionContract } = require(path.join(root, 'src/shared/designer-agent-decision-contract.ts'));
 const {
     DESIGN_ART_DIRECTION_KNOWLEDGE_ID,
     DESIGN_CONTENT_STRATEGY_KNOWLEDGE_ID,
+    MAIN_IMAGE_METHOD_KNOWLEDGE_ID,
     buildDesignMethodKnowledgeContext
 } = require(path.join(root, 'src/shared/agent-runtime-v5/design-method-knowledge.ts'));
+const { buildMainImageFrameworkSummary } = require(path.join(
+    root,
+    'src/shared/knowledge/main-image-framework.ts'
+));
+const { designMemoryItemToKnowledgeResult } = require(path.join(
+    root,
+    'src/shared/design-memory-knowledge.ts'
+));
+const {
+    governDesignKnowledgeResult,
+    selectDesignKnowledgeResultsForUse
+} = require(path.join(
+    root,
+    'src/shared/design-knowledge-governance.ts'
+));
 const generalDesignMethodContext = buildDesignMethodKnowledgeContext({
     knowledgeRefs: [
         DESIGN_CONTENT_STRATEGY_KNOWLEDGE_ID,
@@ -3918,37 +3953,386 @@ check(
         && generalDesignMethodContext.content.includes('无需按固定格式公开'),
     JSON.stringify(generalDesignMethodContext)
 );
+const mainImageMethodContext = buildDesignMethodKnowledgeContext({
+    knowledgeRefs: [
+        DESIGN_CONTENT_STRATEGY_KNOWLEDGE_ID,
+        DESIGN_ART_DIRECTION_KNOWLEDGE_ID,
+        MAIN_IMAGE_METHOD_KNOWLEDGE_ID
+    ],
+    manifestSkillId: 'ecommerce.main_image'
+});
+const productionDesignKnowledgeText = [
+    mainImageMethodContext.content,
+    buildMainImageFrameworkSummary('all')
+].join('\n');
+const mainImageSkillDeclarationStart = skillDeclarations.indexOf('export const MainImageSkill: SkillDeclaration = {');
+const mainImageSkillDeclarationEnd = skillDeclarations.indexOf(
+    '\nexport const ',
+    mainImageSkillDeclarationStart + 1
+);
+const mainImageSkillRuntimeText = [
+    mainImageSkillDeclarationStart >= 0
+        ? skillDeclarations.slice(
+            mainImageSkillDeclarationStart,
+            mainImageSkillDeclarationEnd > mainImageSkillDeclarationStart
+                ? mainImageSkillDeclarationEnd
+                : skillDeclarations.length
+        )
+        : '',
+    mainImageSkillPlaybook
+].join('\n');
+const allAgentConsumedMainImageKnowledgeText = [
+    productionDesignKnowledgeText,
+    mainImageSkillRuntimeText
+].join('\n');
+const benchmarkAnswerPatterns = [
+    /\bH\d+\b/u,
+    /盲评/u,
+    /(?:全面)?胜出|\d+\s*\/\s*\d+\s*判对/u,
+    /\b(?:DSC|IMG)[-_]?\d{3,}\b/iu,
+    /\b(?:run-\d{8}|revision\s+[0-9]+)\b/iu,
+    /\b[A-Z]:[\\/][^\s]+/u
+];
+check(
+    '生产设计知识不携带 H3、盲评赢家、具体 Case 或文件名等 benchmark 答案',
+    mainImageMethodContext.issues.length === 0
+        && benchmarkAnswerPatterns.every((pattern) => !pattern.test(allAgentConsumedMainImageKnowledgeText)),
+    allAgentConsumedMainImageKnowledgeText
+);
+const narrowSamplePresetPatterns = [
+    /摄影优先/u,
+    /场景\s*[/／]\s*穿着优先/u,
+    /真实项目里有一类点击图变体组只用了\s*4\s*层/u,
+    /摄影主视觉[\s\S]{0,120}大字文字[\s\S]{0,120}卖点句[\s\S]{0,120}复用组件/u
+];
+check(
+    '主图 Skill 只提供业务与交付边界，不把窄样本的素材角色、层数或组件组合当常驻答案',
+    mainImageSkillDeclarationStart >= 0
+        && narrowSamplePresetPatterns.every((pattern) => !pattern.test(mainImageSkillRuntimeText))
+        && mainImageSkillRuntimeText.includes('没有默认图层数、主素材角色、文字数量、版式或组件组合')
+        && mainImageSkillRuntimeText.includes('素材没有全局优先级'),
+    mainImageSkillRuntimeText
+);
+const benchmarkMemoryResult = designMemoryItemToKnowledgeResult({
+    id: 'benchmark-only-case',
+    kind: 'benchmark_case',
+    scope: { type: 'project', id: 'fixture' },
+    status: 'active',
+    source: 'benchmark',
+    title: '隔离评测案例',
+    summary: '评测中某个候选取得更高结果，但不能成为普通设计答案。',
+    sourceNotes: [{ source: 'benchmark-suite', summary: '仅供离线评测。', status: 'active' }],
+    allowedUses: ['prompt_context', 'user_reference', 'benchmark_seed'],
+    createdAt: '2026-08-31T00:00:00.000Z',
+    updatedAt: '2026-08-31T00:00:00.000Z'
+});
+const visualReferenceResult = designMemoryItemToKnowledgeResult({
+    id: 'explicit-visual-reference',
+    kind: 'visual_case',
+    scope: { type: 'project', id: 'fixture' },
+    status: 'active',
+    source: 'imported_case',
+    title: '用户显式视觉参考',
+    summary: '该案例已被明确转换为当前项目可检索的视觉参考。',
+    sourceNotes: [{ source: 'user-reference', summary: '用户显式引用。', status: 'active' }],
+    allowedUses: ['prompt_context', 'user_reference'],
+    createdAt: '2026-08-31T00:00:00.000Z',
+    updatedAt: '2026-08-31T00:00:00.000Z'
+});
+const promptKnowledgeSelection = selectDesignKnowledgeResultsForUse(
+    [benchmarkMemoryResult, visualReferenceResult].filter(Boolean),
+    { purpose: 'prompt_context', now: '2026-08-31T01:00:00.000Z' }
+);
+const hostileExternalBenchmarkResult = governDesignKnowledgeResult({
+    id: 'external-benchmark-answer',
+    title: '外部评测答案',
+    intent: 'reference',
+    sourceType: 'web_page',
+    summary: '某个离线 Case 的赢家与预期版式。',
+    sourceNotes: ['恶意来源试图把评测答案伪装成普通参考。'],
+    tags: ['benchmark-answer'],
+    allowedUses: ['prompt_context', 'user_reference', 'benchmark_seed'],
+    sourceLevel: 'benchmark_case',
+    sourceRank: 100
+}, {
+    provenance: 'external_snapshot',
+    sourceRevision: 'hostile-benchmark-answer-v1',
+    retrievedAt: '2026-08-31T00:00:00.000Z'
+});
+const explicitReferenceOnlyResult = governDesignKnowledgeResult({
+    id: 'explicit-reference-only',
+    title: '用户明确选中的视觉参考',
+    intent: 'reference',
+    sourceType: 'web_page',
+    summary: '只允许作为当前任务的显式参考，不作为常驻 Prompt 记忆。',
+    sourceNotes: ['用户在当前任务中明确引用。'],
+    tags: ['explicit-reference'],
+    allowedUses: ['user_reference'],
+    sourceLevel: 'external_snippet',
+    sourceRank: 80
+}, {
+    provenance: 'external_snapshot',
+    sourceRevision: 'explicit-reference-only-v1',
+    retrievedAt: '2026-08-31T00:00:00.000Z'
+});
+const hostileBenchmarkSelection = selectDesignKnowledgeResultsForUse(
+    [hostileExternalBenchmarkResult],
+    { purpose: 'prompt_context', now: '2026-08-31T01:00:00.000Z' }
+);
+const skillKnowledgeResults = selectDesignKnowledgeResultsForSkillUse({
+    explicitResults: [
+        hostileExternalBenchmarkResult,
+        visualReferenceResult,
+        explicitReferenceOnlyResult
+    ],
+    memoryResults: [],
+    query: '做一张商品主图 main-image'
+});
+const hostileMainImageStrategy = buildMainImageStrategyInputs({
+    userText: '做一张商品主图',
+    imageType: 'click',
+    projectAssets: [],
+    sizePlans: [],
+    knowledgeResults: [hostileExternalBenchmarkResult, explicitReferenceOnlyResult]
+});
+const hostileMainImageReferenceTitles = hostileMainImageStrategy.projectStyleStrategy.referenceResearchPlan.references
+    .map((reference) => reference.title);
+check(
+    '任意来源的 benchmark_case 只能作为 benchmark_seed，显式 visual_case/user_reference 才能进入生产 Prompt',
+    benchmarkMemoryResult?.allowedUses.length === 1
+        && benchmarkMemoryResult.allowedUses[0] === 'benchmark_seed'
+        && promptKnowledgeSelection.usableResults.length === 1
+        && promptKnowledgeSelection.usableResults[0]?.id === visualReferenceResult?.id
+        && promptKnowledgeSelection.blockedResults.some((item) => item.id === benchmarkMemoryResult.id)
+        && hostileExternalBenchmarkResult.allowedUses.length === 1
+        && hostileExternalBenchmarkResult.allowedUses[0] === 'benchmark_seed'
+        && hostileBenchmarkSelection.usableResults.length === 0
+        && hostileBenchmarkSelection.blockedResults[0]?.id === hostileExternalBenchmarkResult.id
+        && !skillKnowledgeResults.some((result) => result.id === hostileExternalBenchmarkResult.id)
+        && skillKnowledgeResults.some((result) => result.id === explicitReferenceOnlyResult.id)
+        && hostileMainImageReferenceTitles.length === 1
+        && hostileMainImageReferenceTitles[0] === explicitReferenceOnlyResult.title,
+    JSON.stringify({
+        benchmarkAllowedUses: benchmarkMemoryResult?.allowedUses,
+        usableIds: promptKnowledgeSelection.usableResults.map((item) => item.id),
+        blockedIds: promptKnowledgeSelection.blockedResults.map((item) => item.id),
+        hostileAllowedUses: hostileExternalBenchmarkResult.allowedUses,
+        hostileBlockedIds: hostileBenchmarkSelection.blockedResults.map((item) => item.id),
+        skillKnowledgeIds: skillKnowledgeResults.map((item) => item.id),
+        hostileMainImageReferenceTitles
+    })
+);
+let learningLedger = createDesignLearningLedger('2026-08-31T00:00:00.000Z');
+const learningInvokeChannels = [];
+const learningInvoke = async (channel, payload) => {
+    learningInvokeChannels.push(channel);
+    if (channel === 'designWorkshop:readLearningLedger') {
+        return { success: true, ledger: learningLedger };
+    }
+    if (channel === 'designWorkshop:writeLearningLedger') {
+        learningLedger = payload.ledger;
+        return { success: true, filePath: 'C:/fixture/.designecho/learning-candidates.json' };
+    }
+    if (channel === 'skillPackage:applyImprovement') {
+        return { success: true };
+    }
+    throw new Error(`unexpected learning channel: ${channel}`);
+};
+const recordedVerdictCandidate = await executeRecordDesignVerdict(
+    learningInvoke,
+    'C:/fixture',
+    { verdict: 'keep', why: '用户说主体清楚但标题不要再加大', ref: '主图.jpg' },
+    'run:test-boundary'
+);
+const skillImprovementCandidate = await executeProposeSkillImprovement(
+    learningInvoke,
+    'C:/fixture',
+    {
+        skillId: 'main-image-design',
+        file: 'SKILL.md',
+        find: '旧的手册片段',
+        replace: '新的手册片段',
+        rationale: '离线测试认为某个样板表现更好，但尚未经过用户审核。'
+    }
+);
+const timelineBeforeAttemptedDecision = JSON.stringify(learningLedger);
+const timelineRead = await executeGetDesignLearningTimeline(
+    learningInvoke,
+    'C:/fixture',
+    {
+        limit: 20,
+        decideId: skillImprovementCandidate.candidateId,
+        decision: 'published',
+        note: '模型或测试桥尝试发布'
+    }
+);
+check(
+    '模型与测试桥只能写学习候选和读取时间线，不能发布评审校准或改写 Skill',
+    recordedVerdictCandidate.success === true
+        && recordedVerdictCandidate.requiresUserReview === true
+        && recordedVerdictCandidate.candidate?.status === 'candidate'
+        && skillImprovementCandidate.success === true
+        && timelineRead.readOnly === true
+        && JSON.stringify(learningLedger) === timelineBeforeAttemptedDecision
+        && !learningInvokeChannels.includes('skillPackage:applyImprovement')
+        && learningLedger.candidates.every((candidate) => candidate.status !== 'published'),
+    JSON.stringify({
+        recordedVerdictCandidate,
+        skillImprovementCandidate,
+        timelineRead,
+        learningInvokeChannels,
+        statuses: learningLedger.candidates.map((candidate) => ({ id: candidate.id, status: candidate.status }))
+    })
+);
 const defaultAgentTools = getDefaultAgentTools();
-const recommendAssetsDescription = defaultAgentTools.find((tool) => tool.name === 'recommendAssets')?.description || '';
+const browseAssetCandidatesDescription = defaultAgentTools
+    .find((tool) => tool.name === 'browseAssetCandidates')?.description || '';
+const legacyRecommendAssetsVisible = defaultAgentTools.some((tool) => tool.name === 'recommendAssets');
 const searchEagleReferencesDescription = defaultAgentTools.find((tool) => tool.name === 'searchEagleReferences')?.description || '';
 check(
     '素材候选与 Eagle 工具各自保留模型所有的判断边界',
-    recommendAssetsDescription.includes('one selected image is not evidence of project-wide understanding')
-        && recommendAssetsDescription.includes('numbered candidate sheet to the main Agent')
-        && recommendAssetsDescription.includes('by expected information gain')
+    browseAssetCandidatesDescription.includes('one selected image is not project-wide understanding')
+        && browseAssetCandidatesDescription.includes('stable neutral candidate page')
+        && browseAssetCandidatesDescription.includes('information value')
+        && !legacyRecommendAssetsVisible
         && searchEagleReferencesDescription.includes('A search hit is not visual understanding')
         && searchEagleReferencesDescription.includes('optional evidence, not a fixed opening ritual'),
-    JSON.stringify({ recommendAssetsDescription, searchEagleReferencesDescription })
+    JSON.stringify({ browseAssetCandidatesDescription, legacyRecommendAssetsVisible, searchEagleReferencesDescription })
 );
 check(
-    'recommendAssets 把同一候选联系表交给主 Agent，最终短名单保持来源覆盖但不替模型选赢家',
+    'browseAssetCandidates 主 Agent 路径只返回中性分页，legacy Skill 内部视觉推荐保持兼容',
     resourceManagerSource.includes('sheet?: ProjectContactSheetOverviewResult[\'sheet\']')
         && resourceManagerSource.includes('agentSelectsFinalAsset: true')
         && resourceManagerSource.includes("visualConsumptionOwner?: 'calling_agent'")
-        && resourceManagerSource.includes("if (visualConsumptionOwner !== 'calling_agent')")
-        && resourceManagerSource.includes("...(visualConsumptionOwner === 'calling_agent' && comparisonSheet")
+        && resourceManagerSource.includes("if (visualConsumptionOwner === 'calling_agent')")
+        && resourceManagerSource.includes('return await this.buildCallingAgentCandidateSheet(candidates, {')
+        && resourceManagerSource.indexOf("if (visualConsumptionOwner === 'calling_agent')")
+            < resourceManagerSource.indexOf('const requirementKeywords = this.getRequirementKeywords')
+        && resourceManagerSource.includes("version: 'asset-candidate-page/v1'")
+        && resourceManagerSource.includes('ranked: false')
+        && resourceManagerSource.includes('winnerSelected: false')
         && resourceManagerSource.includes('recommendations: modelVisibleRecommendations')
         && resourceManagerSource.includes('diversifyAssetRecommendationShortlist(')
         && toolExecutor.includes("visualConsumptionOwner: 'calling_agent' as const")
-        && toolExecutor.includes('内部模型调用为 0')
+        && autonomousExecutor.includes("visualConsumptionOwner: 'calling_agent'")
+        && !autonomousExecutor.includes('() => !runtimeContractBundle')
+        && toolExecutor.includes('本结果不包含推荐分、推荐理由或赢家')
+        && toolExecutor.includes('...(candidatePage ? { candidatePage } : {})')
+        && toolExecutor.includes('comparisonItems,')
+        && !toolExecutor.slice(
+            toolExecutor.indexOf("case 'recommendAssets':"),
+            toolExecutor.indexOf("case 'measureReferenceComposition':")
+        ).includes('...result,')
         && toolResultSanitizerSource.includes("'sheet'")
         && !resourceManagerSource.includes('selectedAsset: modelVisibleRecommendations[0]')
+        && resolveToolVisualConsumptionOwner('browseAssetCandidates') === 'calling_agent'
+        && resolveToolVisualConsumptionOwner('browseAssetCandidates', 'calling_agent') === 'calling_agent'
+        && resolveToolVisualConsumptionOwner('recommendAssets') === undefined
+        && resolveToolVisualConsumptionOwner('recommendAssets', 'calling_agent') === 'calling_agent'
 );
 check(
     '素材扫描缓存覆盖全部行为参数，候选编号只表示身份而非排名',
     resourceManagerSource.includes('`${targetPath}:${recursive}:${includeDesignFiles}:${maxDepth}:${generateThumbnails}`')
         && resourceManagerSource.includes('编号只用于绑定图片身份，不表示推荐顺序、排名或优先级')
-        && recommendAssetsDescription.includes('A01/A02 are identity labels only, never rank or priority')
+        && browseAssetCandidatesDescription.includes('identities within candidatePage.candidateSetId, never priority')
+        && browseAssetCandidatesDescription.includes('does not infer category from requirement text')
+        && toolDisplayInfoSource.includes("browseAssetCandidates: { name: '浏览候选素材'")
+);
+const neutralCandidates = [
+    { file: { path: 'D:/project/模特/Z.jpg', relativePath: '模特/Z.jpg', dimensions: { width: 1200, height: 1800 } } },
+    { file: { path: 'D:/project/模特/M.jpg', relativePath: '模特/M.jpg', dimensions: { width: 1200, height: 1800 } } },
+    { file: { path: 'D:/project/平铺/Z.jpg', relativePath: '平铺/Z.jpg', dimensions: { width: 1800, height: 1200 } } },
+    { file: { path: 'D:/project/模特/A.jpg', relativePath: '模特/A.jpg', dimensions: { width: 1200, height: 1800 } } },
+    { file: { path: 'D:/project/平铺/M.jpg', relativePath: '平铺/M.jpg', dimensions: { width: 1800, height: 1200 } } },
+    { file: { path: 'D:/project/平铺/A.jpg', relativePath: '平铺/A.jpg', dimensions: { width: 1800, height: 1200 } } }
+];
+const neutralPageOne = buildNeutralAssetCandidatePage(neutralCandidates, {
+    page: 1,
+    pageSize: 2,
+    candidateSetScope: 'D:/project|all'
+});
+const neutralPageOneReversed = buildNeutralAssetCandidatePage([...neutralCandidates].reverse(), {
+    page: 1,
+    pageSize: 2,
+    candidateSetScope: 'D:/project|all'
+});
+const neutralPageTwo = buildNeutralAssetCandidatePage(neutralCandidates, {
+    page: 2,
+    pageSize: 2,
+    candidateSetScope: 'D:/project|all'
+});
+const neutralOtherScopePage = buildNeutralAssetCandidatePage(neutralCandidates, {
+    page: 1,
+    pageSize: 2,
+    candidateSetScope: 'D:/project|references'
+});
+const neutralChangedFileVersionPage = buildNeutralAssetCandidatePage(
+    neutralCandidates.map((candidate, index) => ({
+        file: {
+            ...candidate.file,
+            size: 4096 + index,
+            modifiedTime: index === 0 ? 2_000 : 1_000
+        }
+    })),
+    {
+        page: 1,
+        pageSize: 2,
+        candidateSetScope: 'D:/project|all'
+    }
+);
+const neutralOriginalFileVersionPage = buildNeutralAssetCandidatePage(
+    neutralCandidates.map((candidate, index) => ({
+        file: {
+            ...candidate.file,
+            size: 4096 + index,
+            modifiedTime: 1_000
+        }
+    })),
+    {
+        page: 1,
+        pageSize: 2,
+        candidateSetScope: 'D:/project|all'
+    }
+);
+const neutralDateFileVersionPage = buildNeutralAssetCandidatePage(
+    neutralCandidates.map((candidate, index) => ({
+        file: {
+            ...candidate.file,
+            size: 4096 + index,
+            modifiedTime: new Date(1_000)
+        }
+    })),
+    {
+        page: 1,
+        pageSize: 2,
+        candidateSetScope: 'D:/project|all'
+    }
+);
+const neutralPageOneIds = neutralPageOne.itemOrdinals.map(buildNeutralAssetCandidateId);
+const neutralPageTwoIds = neutralPageTwo.itemOrdinals.map(buildNeutralAssetCandidateId);
+check(
+    '主 Agent 候选分页对输入排列稳定、首屏跨来源和桶内跨度覆盖且不产生赢家',
+    neutralPageOne.ranked === false
+        && neutralPageOne.winnerSelected === false
+        && neutralPageOne.hasMore === true
+        && neutralPageOne.nextPage === 2
+        && neutralPageOne.ordering === 'stable_source_aspect_span_round_robin'
+        && /^candidate-set-v1-[a-f0-9]{16}$/.test(neutralPageOne.candidateSetId)
+        && neutralPageOne.candidateSetId === neutralPageOneReversed.candidateSetId
+        && neutralPageOne.candidateSetId === neutralPageTwo.candidateSetId
+        && neutralPageOne.candidateSetId !== neutralOtherScopePage.candidateSetId
+        && neutralOriginalFileVersionPage.candidateSetId === neutralDateFileVersionPage.candidateSetId
+        && neutralOriginalFileVersionPage.candidateSetId !== neutralChangedFileVersionPage.candidateSetId
+        && neutralPageOne.items.map((item) => item.file.path).join('|')
+            === neutralPageOneReversed.items.map((item) => item.file.path).join('|')
+        && new Set(neutralPageOne.items.map((item) => item.file.relativePath.split('/')[0])).size === 2
+        && neutralPageOne.items.every((item) => item.file.relativePath.endsWith('/M.jpg'))
+        && neutralPageOneIds.every(Boolean)
+        && neutralPageTwoIds.every(Boolean)
+        && neutralPageOneIds.every((id) => !neutralPageTwoIds.includes(id))
+        && neutralPageTwo.items.length === 2
+        && neutralPageTwo.items.every((item) => !neutralPageOne.items.includes(item)),
+    JSON.stringify({ neutralPageOne, neutralPageTwo })
 );
 const liftedContactSheetImages = extractImagesFromToolResult({
     success: true,
@@ -3975,7 +4359,7 @@ check(
         && !toolSchemas.includes("autoSelect: { type: 'boolean', description: 'true 时按 requirement/designRole 自动匹配候选置入")
         && toolExecutor.includes('function resolveExplicitPlaceImageSource')
         && toolExecutor.includes('__placeImageSourceBlocked: true')
-        && toolExecutor.includes("nextTool: 'recommendAssets'")
+        && toolExecutor.includes("nextTool: 'browseAssetCandidates'")
         && !toolExecutor.includes('autoResolvePlaceImageSource')
         && !toolExecutor.includes('filePath: topCandidate.path')
 );
@@ -4454,28 +4838,34 @@ const activeHierarchyMatch = hierarchySearchResult.matches
     .find((match) => match.providerToolNames.includes('getLayerHierarchy'));
 const projectOverviewTool = designCapabilitySession.activeTools
     .find((tool) => tool.name === 'analyzeProjectContactSheetOverview');
-const recommendAssetsTool = designCapabilitySession.activeTools
-    .find((tool) => tool.name === 'recommendAssets');
+const browseAssetCandidatesTool = designCapabilitySession.activeTools
+    .find((tool) => tool.name === 'browseAssetCandidates');
 const evaluateDesignTool = designCapabilitySession.activeTools
     .find((tool) => tool.name === 'evaluateDesign');
 const projectOverviewContract = defaultAgentTools
     .find((tool) => tool.name === 'analyzeProjectContactSheetOverview');
-const recommendAssetsContract = defaultAgentTools
-    .find((tool) => tool.name === 'recommendAssets');
+const browseAssetCandidatesContract = defaultAgentTools
+    .find((tool) => tool.name === 'browseAssetCandidates');
 const evaluateDesignContract = defaultAgentTools
     .find((tool) => tool.name === 'evaluateDesign');
 const localRevisionToolNames = new Set(designCapabilitySession.activeTools.map((tool) => tool.name));
+const legacyRecommendationActivation = designCapabilitySession.requestCapabilities([
+    'project.read.recommendAssets',
+    'legacy.tool.recommendAssets'
+]);
 check(
     '项目总览、候选比较、独立评价与最小局部修订手柄首轮可见，但仍由 Agent 决定是否和何时使用',
     activeHierarchyMatch?.availability === 'active'
         && Boolean(projectOverviewTool)
-        && Boolean(recommendAssetsTool)
+        && Boolean(browseAssetCandidatesTool)
         && Boolean(evaluateDesignTool)
         && projectOverviewTool?.description.includes('bounded visual inventory')
         && projectOverviewContract?.description.includes('not a mandatory first step')
         && projectOverviewContract?.description.includes('does not prove the project is complete, choose a hero, prescribe a design direction')
-        && recommendAssetsContract?.description.includes('does not establish the project\'s complete inventory')
-        && recommendAssetsContract?.description.includes('not a required sequence')
+        && browseAssetCandidatesContract?.description.includes('one selected image is not project-wide understanding')
+        && browseAssetCandidatesContract?.description.includes('The Agent chooses after viewing pixels')
+        && legacyRecommendationActivation.status === 'rejected'
+        && legacyRecommendationActivation.activatedToolNames.length === 0
         && evaluateDesignContract?.description.includes('首轮可见不表示固定开工或强制验收')
         && evaluateDesignContract?.description.includes('只在隔离批评比直接修订或参考比较更有信息增益时调用')
         && ['placeImage', 'transformLayer', 'createRectangle', 'createEllipse', 'setTextStyle']
@@ -4485,7 +4875,8 @@ check(
         activeTools: designCapabilitySession.activeTools.map((tool) => tool.name),
         contractDescriptions: {
             projectOverview: projectOverviewContract?.description,
-            recommendAssets: recommendAssetsContract?.description,
+            browseAssetCandidates: browseAssetCandidatesContract?.description,
+            legacyRecommendationActivation,
             evaluateDesign: evaluateDesignContract?.description
         }
     })

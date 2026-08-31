@@ -1353,7 +1353,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'recordDesignVerdict',
-        description: '记录用户对一张成稿的「留 / 改 / 弃」和一句为什么（用户原话）。这条反馈会以当前项目作用域正式发布为评审校准；不会自动升级为全局设计原则。用户说「这张留着，因为留白多主体大」「这张不行，太像模板」时调用。没有「为什么」就先问一句再记。',
+        description: '把用户对一张成稿的「留 / 改 / 弃」和一句为什么（用户原话）记录为当前项目的待审核校准候选。模型 Tool 不能发布候选、改写评审器或升级为全局设计原则；只有独立的用户审核入口能签发正式发布。用户说「这张留着，因为留白多主体大」「这张不行，太像模板」时可记录。没有「为什么」就先问一句再记。',
         inputSchema: objectSchema({
             verdict: { type: 'string', enum: ['keep', 'revise', 'discard'] },
             why: { type: 'string', description: '用户原话的一句理由。' },
@@ -1362,12 +1362,9 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getDesignLearningTimeline',
-        description: '读当前项目的评审学习时间线：模型评审观察与用户留改弃校准，各带出现次数与状态（◐ 候选 / ★ 已发布 / ✕ 已驳回）。在线只允许发布有结构化用户原话的项目校准；参考图提炼走独立的长期知识人工审核队列。用于用户问「你从这些成稿反馈里学到了什么」。',
+        description: '只读当前项目的评审学习时间线：模型评审观察与用户留改弃候选，各带出现次数与状态（◐ 候选 / ◑ 试用 / ★ 已发布 / ✕ 已驳回）。这个模型工具不能发布 /驳回候选，不能改写 Skill 或评审器；用于用户问「你从这些成稿反馈里学到了什么」。',
         inputSchema: objectSchema({
-            limit: { type: 'number' },
-            decideId: { type: 'string' },
-            decision: { type: 'string', enum: ['published', 'rejected'] },
-            note: { type: 'string' }
+            limit: { type: 'number' }
         })
     },
     {
@@ -2020,7 +2017,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'listProjectResources',
-        description: 'List files inside the active project directory. Returns names and paths only — it tells you what exists, not what the images contain. Use it to resolve a path before asking the user for one, or to check whether a given kind of file is present at all. When you already know what you are looking for, searchProjectResources with a keyword (or recommendAssets with the need) gets there in one call instead of listing everything.',
+        description: 'List files inside the active project directory. Returns names and paths only — it tells you what exists, not what the images contain. Use it to resolve a path before asking the user for one, or to check whether a given kind of file is present at all. When you need to compare image pixels, use browseAssetCandidates instead of treating this metadata list as visual evidence.',
         inputSchema: objectSchema({
             directory: { type: 'string', description: '项目内子目录（省略则列项目根目录）' }
         })
@@ -2113,15 +2110,15 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
         }, ['prompt'])
     },
     {
-        name: 'recommendAssets',
-        description: 'Return a bounded, source-diverse numbered candidate sheet to the main Agent for a stated requirement and designRole. In an autonomous multimodal run, this Agent compares the pixels directly; no second model interprets the same sheet. A01/A02 are identity labels only, never rank or priority. Metadata scores are advisory; the Agent chooses after viewing the images. It does not establish the project\'s complete inventory, product identity, use context, intended audience, variant system or shooting coverage, and one selected image is not evidence of project-wide understanding. If missing facts could change direction, inspect broader evidence by expected information gain. Optional guidance, not a required sequence.',
+        name: 'browseAssetCandidates',
+        description: 'Browse a stable neutral candidate page for direct pixel comparison. Harness does not infer category from requirement text, score, rank, select a winner, or auto-place. G0001/G0002 are identities within candidatePage.candidateSetId, never priority; bind both when discussing another page or scope. Follow nextPage only when more coverage has information value; one page or one selected image is not project-wide understanding. The Agent chooses after viewing pixels.',
         inputSchema: objectSchema({
-            requirement: { type: 'string' },
-            maxResults: { type: 'number' },
-            category: { type: 'string' },
+            requirement: { type: 'string', description: 'Comparison objective; it never ranks or filters this page.' },
+            maxResults: { type: 'number', description: 'Page size 1-12.' },
+            page: { type: 'number', description: 'One-based page; follow candidatePage.nextPage.' },
+            category: { type: 'string', enum: ['products', 'backgrounds', 'elements', 'references'], description: 'Optional explicit filter; never inferred.' },
             designRole: { type: 'string', enum: ['hero', 'supporting', 'detail', 'background', 'decoration'] },
-            placementIntent: { type: 'string', enum: ['direct_full_frame', 'clip_to_container', 'matte_and_recompose', 'supporting'] },
-            deterministic: { type: 'boolean' }
+            placementIntent: { type: 'string', enum: ['direct_full_frame', 'clip_to_container', 'matte_and_recompose', 'supporting'] }
         }, ['requirement'])
     },
     {
@@ -2256,7 +2253,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getDesignProjectState',
-        description: 'Read the full shared Design Project State (persistent project memory: goals, fact provenance, governed brand/project rules, target user, material assets already looked at, strategy, layout, review results, versions, learnings). 系统提示里的「当前项目摘要」已经是这份记忆的最新摘要——摘要够用就不必再调；只有摘要没写全、需要看某项的完整内容（如全部素材备注、全部事实条目）时才调用。The user\'s current instruction always overrides stored state. Request review cards for unverified facts or rules; legacy strings and Agent proposals are neither confirmed facts nor executable Policy.',
+        description: 'Read the full shared Design Project State (fact provenance, governed project rules, plus prior material/layout/copy/review/version records). The automatic project summary intentionally contains only confirmed facts, confirmed rules, and counts of prior-attempt records. Call this tool only when the user explicitly continues the same version or a specific historical fact must be checked. Prior selections, layouts, copy, reviews and version reasons are historical attempts—not the current design answer—and must be revalidated against the current instruction, current assets and live Photoshop state. Request review cards for unverified facts or rules; legacy strings and Agent proposals are neither confirmed facts nor executable Policy.',
         inputSchema: objectSchema({
             projectPath: { type: 'string', description: '默认当前项目' },
             includeFactReviewCard: { type: 'boolean', description: '存在待确认商品事实时返回用户复核卡；默认 false' },
@@ -2485,7 +2482,7 @@ Use this only when binding a specific Profile's method knowledge, stage context,
     },
     {
         name: 'proposeSkillImprovement',
-        description: '把你从样板 PSD（analyzePsdDesignSource 深解析含智能对象内部）推理出的工艺差异，提议为业务 Skill 工作法手册的一处修改。提议只进学习候选区，绝不直接生效——用户在学习时间线批准后由系统写入（原子写+备份）。find 必须是手册现有原文的精确片段（先 readSkillPlaybook 读到原文再引用），replace 是新文字，rationale 说清依据哪个样板文件的什么结构。一次提议只改一处；同一手册多处要改就多次提议。',
+        description: '把样板 PSD 中观察到的工艺差异登记为 Skill 手册改进候选。它绝不直接生效；独立的 UI-owned 用户审核与签名发布入口尚未实现，因此当前只能留作待审记录，不能写入手册。find 必须是手册现有原文的精确片段，replace 是候选新文字，rationale 说明来源。',
         inputSchema: objectSchema({
             skillId: { type: 'string', description: '手册 id（如 sku-production）。' },
             file: { type: 'string', description: '目标文件：SKILL.md 或 references/<名>.md。' },
@@ -3300,7 +3297,7 @@ const DEFAULT_AGENT_TOOL_NAMES = [
     'analyzeAssetContent',
     'analyzeProjectContactSheetOverview',
     'prepareSkuRetouchAssets',
-    'recommendAssets',
+    'browseAssetCandidates',
     'generateImage',
     'saveDocument',
     'quickExport',
@@ -3318,7 +3315,6 @@ const DEFAULT_AGENT_TOOL_NAMES = [
     'searchDesignKnowledge',
     'readSkillPlaybook',
     'runSkillScript',
-    'proposeSkillImprovement',
     // 设计知识笔记：用户与 Agent 共写的 Markdown 笔记库（Obsidian 兼容）
     'searchDesignNotes',
     'readDesignNote',

@@ -1600,7 +1600,6 @@ function createExecuteToolWrapper(
         declaredTaskTypeId: string,
         declaredWorkMode?: string
     ) => Promise<RuntimeManifestBindingResult>,
-    shouldUseCallingAgentVisualConsumption?: () => boolean,
     reserveDesignTeamChildExecution?: (input: {
         plannedRoles?: readonly DesignTeammateRole[];
         maxRevisions?: number;
@@ -2481,9 +2480,10 @@ function createExecuteToolWrapper(
             toolName,
             await executeAllowedProviderToolCall(toolName, atomicExecutionParams, {
                 signal,
-                ...(shouldUseCallingAgentVisualConsumption?.()
-                    ? { visualConsumptionOwner: 'calling_agent' as const }
-                    : {})
+                // 该 wrapper 只服务当前主 Agent。Task Profile 绑定会改变能力面和方法
+                // 上下文，不会改变“谁在消费候选像素”的事实；绑定前后都必须走
+                // calling_agent 中性观察路径，不能退回 Skill 内部推荐器。
+                visualConsumptionOwner: 'calling_agent'
             })
         );
         if (getPhotoshopToolSkillSemantics(toolName, toolParams)?.requiresPhotoshopConnection === true) {
@@ -5599,7 +5599,6 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     }
                 },
                 bindDeclaredRuntimeContract,
-                () => !runtimeContractBundle,
                 (reservationInput) => {
                     const currentAgent = activeAutonomousAgent;
                     if (!currentAgent) {

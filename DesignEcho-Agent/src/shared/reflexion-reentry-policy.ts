@@ -335,6 +335,52 @@ export interface WarningOnlyNeedsReviewReflexionBoundaryInput
     hasActionableVlmDiagnosis?: boolean;
     /** 仅指 Manifest 已声明且可确定性补齐的必需检查，不包含审美诊断。 */
     hasActionableRequiredProfileIssue?: boolean;
+    /**
+     * 产物已闭合，且当前 ReviewSet / Photoshop revision 上的可靠 Judge 已形成
+     * 有界、可执行的 completed-aesthetic handoff。它不是失败重放授权。
+     */
+    completedAestheticImprovementEligible?: boolean;
+}
+
+export interface CompletedAestheticImprovementEligibilityInput {
+    summary: {
+        stopReason?: string;
+        blockers: readonly unknown[];
+        taskCompletion?: {
+            status?: string;
+            completion?: { artifactStatus?: string };
+        };
+        designVerdict?: {
+            status?: string;
+            blockers?: readonly unknown[];
+        };
+    };
+    reviewedRevisionMatches: boolean;
+    reliableJudgeComplete: boolean;
+    hasActionableVlmDiagnosis: boolean;
+    hasActionableRequiredProfileIssue: boolean;
+    runtimeDeliveryStageRequired: boolean;
+    deliveryEvidencePassed: boolean;
+}
+
+/**
+ * 判断“产物事实已闭合，但质量仍需改进”的一次有界复入资格。
+ * 这里只组合上游已经验证的事实，不读取任务文案，也不决定怎样修改设计。
+ */
+export function isCompletedAestheticImprovementEligible(
+    input: CompletedAestheticImprovementEligibilityInput
+): boolean {
+    return input.summary.taskCompletion?.status === 'completed'
+        && input.summary.taskCompletion.completion?.artifactStatus === 'artifact_completed'
+        && input.summary.designVerdict?.status === 'needs_review'
+        && input.summary.stopReason === 'final_response'
+        && input.summary.blockers.length === 0
+        && (input.summary.designVerdict.blockers?.length || 0) === 0
+        && input.reviewedRevisionMatches
+        && input.reliableJudgeComplete
+        && input.hasActionableVlmDiagnosis
+        && !input.hasActionableRequiredProfileIssue
+        && (!input.runtimeDeliveryStageRequired || input.deliveryEvidencePassed);
 }
 
 /**
@@ -348,14 +394,16 @@ export function isWarningOnlyNeedsReviewTerminal(input: WarningOnlyNeedsReviewIn
 }
 
 /**
- * warning-only `needs_review` 不授权重放原任务。只有缺少 Manifest 必需检查时，
- * Runtime 才可生成限定在补证阶段的 handoff；审美诊断本身不构成失败恢复授权。
+ * warning-only `needs_review` 不授权重放原任务。只有缺少 Manifest 必需检查，或上游已经
+ * 证明可签发一次有界 completed-aesthetic handoff 时，Runtime 才可继续；普通审美诊断本身
+ * 仍不构成失败恢复授权。
  */
 export function shouldStopWarningOnlyNeedsReviewReflexion(
     input: WarningOnlyNeedsReviewReflexionBoundaryInput
 ): boolean {
     return isWarningOnlyNeedsReviewTerminal(input)
-        && input.hasActionableRequiredProfileIssue !== true;
+        && input.hasActionableRequiredProfileIssue !== true
+        && input.completedAestheticImprovementEligible !== true;
 }
 
 function compact(value: unknown): string {

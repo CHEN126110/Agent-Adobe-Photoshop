@@ -772,10 +772,11 @@ const api = {
         cadence?: string;
     }) => ipcRenderer.invoke('resource:analyzeDesignReference', input),
     
-    // 智能推荐素材
+    // 素材候选：主 Agent 中性联系表；非 Agent 调用兼容内部视觉推荐
     recommendAssets: (params: {
         requirement: string;
         maxResults?: number;
+        page?: number;
         category?: string;
         deterministic?: boolean;
         designRole?: string;

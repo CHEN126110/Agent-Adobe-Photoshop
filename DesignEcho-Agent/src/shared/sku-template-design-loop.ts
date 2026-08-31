@@ -373,7 +373,7 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         'sku-batch',
         'getDesignKnowledge',
         'getDesignPrinciples',
-        'recommendAssets',
+        'browseAssetCandidates',
         'evaluateDesign',
         'delegateToAgent',
         'runDesignTeamPipeline',

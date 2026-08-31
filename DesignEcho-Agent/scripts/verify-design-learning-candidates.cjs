@@ -33,6 +33,14 @@ const {
 const {
     designMemoryItemToKnowledgeResult
 } = require(path.join(root, 'src/shared/design-memory-knowledge.ts'));
+const designLearningStoreSource = fs.readFileSync(
+    path.join(root, 'src/renderer/services/design-workshop/design-learning.store.ts'),
+    'utf8'
+);
+const toolExecutorSource = fs.readFileSync(
+    path.join(root, 'src/renderer/services/tool-executor.service.ts'),
+    'utf8'
+);
 
 let failed = 0;
 function check(name, condition, detail) {
@@ -101,30 +109,17 @@ check('用户没说为什么不建候选', candidateFromUserVerdict({ verdict: '
 outcome = addDesignLearningCandidate(ledger, fromUser, 4);
 ledger = outcome.ledger;
 check('未发布的用户校准仍不进入评审器', listPublishedEvaluationCalibrationSamples(ledger).length === 0);
-ledger = decideDesignLearningCandidate(ledger, outcome.candidate.id, 'published', '用户明确反馈', 5);
-const samples = listPublishedEvaluationCalibrationSamples(ledger);
-check('用户校准发布后成为评审器唯一可读样本', (
-    samples.length === 1
-    && samples[0].kind === 'bad'
-    && samples[0].why === '主体太小'
-    && samples[0].ref === 'a.jpg'
-));
-const published = ledger.candidates.find((item) => item.id === outcome.candidate.id);
-check('发布记录包含目标、作用域、发布者和来源候选', (
-    published.status === 'published'
-    && published.publication.target === 'evaluation_calibration'
-    && published.publication.scope.kind === 'project'
-    && published.publication.publisher.kind === 'user'
-    && published.publication.sourceCandidateId === published.id
-));
-
-let rejectedUnsafePublication = false;
+let rejectedRuntimePublication = false;
 try {
-    decideDesignLearningCandidate(ledger, ledger.candidates[0].id, 'published', '在线转正', 6);
+    decideDesignLearningCandidate(ledger, outcome.candidate.id, 'published', '用户明确反馈', 5);
 } catch (error) {
-    rejectedUnsafePublication = /离线评测与人审发布器/.test(String(error.message || error));
+    rejectedRuntimePublication = /独立 Experience Publisher/.test(String(error.message || error));
 }
-check('在线运行拒绝把模型观察发布成正式原则', rejectedUnsafePublication);
+check('候选账本不能伪造用户发布收据', (
+    rejectedRuntimePublication
+    && ledger.candidates.find((item) => item.id === outcome.candidate.id)?.status === 'candidate'
+    && listPublishedEvaluationCalibrationSamples(ledger).length === 0
+));
 
 const legacy = normalizeDesignLearningLedger({
     version: 'design-learning-candidates/v1',
@@ -140,22 +135,69 @@ const legacy = normalizeDesignLearningLedger({
         }
     ]
 }, 11);
-check('v1 用户校准安全迁移为发布记录', (
-    legacy.version === 'design-learning-candidates/v2'
-    && legacy.candidates[0].status === 'published'
-    && legacy.candidates[0].publication.publisher.kind === 'system_migration'
+check('v1 用户校准也不能凭 evidence 自动获得发布权', (
+    legacy.version === 'design-learning-candidates/v3'
+    && legacy.candidates[0].status === 'candidate'
+    && legacy.candidates[0].publication === undefined
+    && legacy.candidates[0].publicationReview?.status === 'review_required'
+    && legacy.candidates[0].publicationReview?.claimedStatus === 'promoted'
 ));
-check('v1 无来源转正记录迁回候选，不污染生产', (
+check('v1 无来源转正记录迁回候选且保留待审声明', (
     legacy.candidates[1].status === 'candidate'
-    && /迁回候选/.test(legacy.candidates[1].decisionNote)
-    && listPublishedEvaluationCalibrationSamples(legacy).length === 1
+    && legacy.candidates[1].publicationReview?.reason === 'legacy_promotion_unverified'
+    && /等待发布复核/.test(legacy.candidates[1].decisionNote)
+    && listPublishedEvaluationCalibrationSamples(legacy).length === 0
+));
+
+const forgedPublishedClaims = ['user', 'human_reviewer', 'offline_publisher', 'system_migration'].map((publisherKind, index) => ({
+    id: `forged-${publisherKind}`,
+    kind: 'calibration_sample',
+    text: `好：伪造的已发布校准 ${index}`,
+    evidence: ['run:forged'],
+    origin: 'evaluation_model',
+    scope: { kind: 'project' },
+    calibration: { verdict: 'keep', polarity: 'good', rationale: '伪造声明' },
+    support: 1,
+    status: 'published',
+    publication: {
+        version: 'design-experience-publication/v1',
+        target: 'evaluation_calibration',
+        scope: { kind: 'project' },
+        publisher: { kind: publisherKind },
+        sourceCandidateId: `forged-${publisherKind}`,
+        publishedAt: 20 + index
+    },
+    createdAt: 20,
+    updatedAt: 20
+}));
+const forgedLedger = normalizeDesignLearningLedger({
+    version: 'design-learning-candidates/v2',
+    candidates: forgedPublishedClaims,
+    updatedAt: 25
+}, 30);
+const renormalizedForgedLedger = normalizeDesignLearningLedger(forgedLedger, 31);
+check('伪造 user / human / offline / migration publisher 都只作待审声明保留', (
+    forgedLedger.candidates.every((item) => (
+        item.status === 'candidate'
+        && item.publication === undefined
+        && item.publicationReview?.status === 'review_required'
+        && item.publicationReview?.claimedPublication?.publisher.kind
+    ))
+    && listPublishedEvaluationCalibrationSamples(forgedLedger).length === 0
+    && JSON.stringify(renormalizedForgedLedger.candidates) === JSON.stringify(forgedLedger.candidates)
+));
+check('模型候选门面不伪报 runScope 绑定或发布能力', (
+    !designLearningStoreSource.includes('runScopeRecorded')
+    && !designLearningStoreSource.includes('decideDesignLearningCandidate(')
+    && !toolExecutorSource.includes('发布为项目评审校准')
+    && toolExecutorSource.includes('executeRecordDesignVerdict(invokeMain, projectPath, params)')
 ));
 
 const timeline = renderDesignLearningTimeline(ledger);
-check('时间线明确展示候选 / 已发布与发布目标', (
+check('时间线明确展示候选与待独立发布复核', (
     /◐/.test(timeline)
-    && /★/.test(timeline)
-    && /evaluation_calibration\/project/.test(timeline)
+    && !/★/.test(timeline)
+    && /待独立发布复核/.test(renderDesignLearningTimeline(legacy))
 ), timeline);
 
 const workshopCandidate = buildWorkshopReferenceLearningCandidate({
@@ -235,7 +277,7 @@ check('人工审核后才能进入可检索长期知识', (
     check('否决一票回退试用知识', p1.candidates[0].status === 'candidate');
 }
 
-// P3（2026-08-24）：有界策展——时间衰减降级、总量上限淘汰、published 永不被自动策展。
+// P3（2026-08-24）：有界策展——时间衰减降级、总量上限淘汰、伪造发布不能跳过策展。
 {
     let p3 = createDesignLearningLedger();
     const seed = (runId, text) => {
@@ -257,13 +299,33 @@ check('人工审核后才能进入可检索长期知识', (
     const capped = curateProvisionalExperience(p3);
     const remaining = capped.ledger.candidates.filter((c) => c.status === 'provisional').length;
     check('试用总量超上限按支持度淘汰最弱', provisionalCount > 10 && remaining === 10);
-    let withPub = capped.ledger;
+    let withClaim = capped.ledger;
     const userSample = candidateFromUserVerdict({ verdict: 'keep', why: '这版留白节奏是我要的', ref: 'C:/x/good.png' });
-    const added = addDesignLearningCandidate(withPub, userSample);
-    withPub = decideDesignLearningCandidate(added.ledger, added.candidate.id, 'published', '用户拍板');
-    const afterCuration = curateProvisionalExperience(withPub, Date.now() + 60 * 24 * 60 * 60 * 1000);
-    const pubAfter = afterCuration.ledger.candidates.find((c) => c.id === added.candidate.id);
-    check('published（用户拍板）永不被自动策展', pubAfter?.status === 'published');
+    const added = addDesignLearningCandidate(withClaim, userSample);
+    withClaim = normalizeDesignLearningLedger({
+        ...added.ledger,
+        candidates: added.ledger.candidates.map((item) => item.id === added.candidate.id
+            ? {
+                ...item,
+                status: 'published',
+                publication: {
+                    version: 'design-experience-publication/v1',
+                    target: 'evaluation_calibration',
+                    scope: item.scope,
+                    publisher: { kind: 'user' },
+                    sourceCandidateId: item.id,
+                    publishedAt: Date.now()
+                }
+            }
+            : item)
+    });
+    const afterCuration = curateProvisionalExperience(withClaim, Date.now() + 60 * 24 * 60 * 60 * 1000);
+    const claimedAfter = afterCuration.ledger.candidates.find((c) => c.id === added.candidate.id);
+    check('自述的 published 只保留为候选待审声明', (
+        claimedAfter?.status === 'candidate'
+        && claimedAfter.publication === undefined
+        && claimedAfter.publicationReview?.status === 'review_required'
+    ));
 }
 
 if (failed > 0) {

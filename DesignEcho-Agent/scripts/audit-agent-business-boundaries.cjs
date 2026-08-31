@@ -5293,7 +5293,9 @@ async function run() {
       || !secondImprovementIsStopped) {
       aestheticProtocolViolations.push('completed-aesthetic-marker-did-not-preserve-completion-or-bound-reentry');
     }
-    if (!agentRuntimeText.includes('(!runtimeDeliveryStageRequired || deliveryEvidencePassed)')
+    if (!reflexionReentryPolicyText.includes('(!input.runtimeDeliveryStageRequired || input.deliveryEvidencePassed)')
+      || !agentRuntimeText.includes('runtimeDeliveryStageRequired,')
+      || !agentRuntimeText.includes('deliveryEvidencePassed')
       || !agentRuntimeText.includes('deliveryStageEvidence.deliveryEvidencePassed')
       || !agentRuntimeText.includes('deliveryEvidencePassed: false')
       || !agentRuntimeText.includes('deliveryEvidencePassed: true')) {
@@ -9125,8 +9127,8 @@ async function run() {
     || !runtimeMethodKnowledgeText.includes('对象是什么及包含哪些部件或变体')
     || !artifactKnowledgeText.includes('候选短名单只是在一个已声明需求或素材角色下比较可用性')
     || !artifactKnowledgeText.includes('一次候选排序不代表对象与素材角色已经覆盖完整')
-    || !toolSchemasText.includes('one selected image is not evidence of project-wide understanding')
-    || !toolSchemasText.includes('by expected information gain')) {
+    || !toolSchemasText.includes('one page or one selected image is not project-wide understanding')
+    || !toolSchemasText.includes('information value')) {
     autonomousDesignLoopViolations.push('design-knowledge:asset-shortlist-still-impersonates-object-understanding');
   }
   if (!runtimeMethodKnowledgeText.includes('是否检索 Eagle 或其他参考资源由 Agent 按信息增益判断')
@@ -17332,7 +17334,7 @@ async function run() {
         ...(toolExecutorText.includes('function resolveExplicitPlaceImageSource')
           && toolExecutorText.includes('params?.imageData || params?.filePath || params?.fileToken')
           && toolExecutorText.includes('__placeImageSourceBlocked: true')
-          && toolExecutorText.includes("nextTool: 'recommendAssets'")
+          && toolExecutorText.includes("nextTool: 'browseAssetCandidates'")
           && toolSchemasText.includes('This execution tool never scans, ranks, or chooses project assets')
           && !toolSchemasText.includes("autoSelect: { type: 'boolean', description: 'true 时按 requirement/designRole 自动匹配候选置入")
           && !toolExecutorText.includes('autoResolvePlaceImageSource')

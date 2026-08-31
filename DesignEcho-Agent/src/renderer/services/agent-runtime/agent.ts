@@ -204,6 +204,7 @@ import { evaluateCompletionObservationGate } from '../../../shared/completion-ob
 import {
     buildIncomingReflexionObservationSection,
     buildIncomingReflexionPromptSection,
+    isCompletedAestheticImprovementEligible,
     shouldStopWarningOnlyNeedsReviewReflexion
 } from '../../../shared/reflexion-reentry-policy';
 import {
@@ -11433,21 +11434,16 @@ export class Agent {
         const runtimeDeliveryStageRequired = Boolean(
             this.config.runtimeStagePlan?.steps.some((step) => step.stage === 'E2')
         );
-        const completedAestheticImprovementEligible = summary.status === 'completed'
-            && summary.stopReason === 'final_response'
-            && summary.blockers.length === 0
-            && (summary.designVerdict?.blockers.length || 0) === 0
-            && Boolean(
-                visualHistoryStateRef
-                && closedQualityHistoryStateRef
-                && samePhotoshopHistoryStateRef(
-                    visualHistoryStateRef,
-                    closedQualityHistoryStateRef
-                )
-            )
-            && isReliableVlmJudgeBatchComplete(scorecardVlmResults, expectedVlmAssertions)
-            && hasActionableVlmDiagnosis && !hasActionableRequiredProfileIssue
-            && (!runtimeDeliveryStageRequired || deliveryEvidencePassed);
+        const completedAestheticImprovementEligible = isCompletedAestheticImprovementEligible({
+            summary,
+            reviewedRevisionMatches: Boolean(visualHistoryStateRef && closedQualityHistoryStateRef
+                && samePhotoshopHistoryStateRef(visualHistoryStateRef, closedQualityHistoryStateRef)),
+            reliableJudgeComplete: isReliableVlmJudgeBatchComplete(scorecardVlmResults, expectedVlmAssertions),
+            hasActionableVlmDiagnosis,
+            hasActionableRequiredProfileIssue,
+            runtimeDeliveryStageRequired,
+            deliveryEvidencePassed
+        });
         // 取消/停在用户确认点不做 Reflexion。事实交付已 completed 通常也应收尾；但可靠终局 VLM
         // 已给出合法三层诊断时，completed 只证明交付事实闭合，不等于审美已经做好。此处仅生成
         // R4 审美观察；外层可在同一授权 TaskRun 内唤醒 Agent 一次，让 Agent 自主决定是否和如何
@@ -11467,7 +11463,8 @@ export class Agent {
             status: summary.status,
             blockers: summary.blockers,
             hasActionableVlmDiagnosis,
-            hasActionableRequiredProfileIssue
+            hasActionableRequiredProfileIssue,
+            completedAestheticImprovementEligible
         })) {
             return undefined;
         }
@@ -12748,6 +12745,7 @@ export class Agent {
             acceptanceNeedsReview: completionBlockingAcceptanceNeedsReview,
             noDocumentChangeRisks: completionBlockingNoDocumentChangeRisks,
             taskCompletionStatus: taskCompletion?.status,
+            designVerdictStatus: designVerdict?.status,
             designQualityHardBlocked,
             taskProgressMissing,
             terminalSkillOutcomeFailed,

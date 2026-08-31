@@ -93,6 +93,7 @@ const BOUNDARIES = [
       'DesignEcho-Agent/scripts/run-core-validation.cjs',
       'DesignEcho-Agent/scripts/launch-chat-ui-debug-window.cjs',
       'DesignEcho-Agent/scripts/load-photoshop-uxp-plugin.cjs',
+      'DesignEcho-Agent/scripts/validate-maintenance-hygiene.cjs',
       'DesignEcho-Agent/scripts/check-build-warning-boundary.cjs'
     ].includes(entry.filePath)
   },
@@ -101,6 +102,26 @@ const BOUNDARIES = [
     title: '项目记忆与长期状态',
     validation: ['node -e "JSON.parse(require(\'fs\').readFileSync(\'project-memory/project-state.json\',\'utf8\'))"'],
     match: (entry) => entry.filePath.includes('/project-memory/') || entry.filePath === 'DesignEcho-Agent/AGENTS.md' || entry.filePath === 'docs/long-horizon/Collaboration.md'
+  },
+  {
+    id: 'runtime-evidence-firewall',
+    title: '生产 Agent 证据来源、测试隔离与质量终态',
+    validation: [
+      'npm run test:design-authorship-boundary',
+      'npm run test:design-final-comparison-evidence',
+      'node scripts/verify-run-fact-ledger.cjs',
+      'npm run audit:skill-package-contract',
+      'npm run audit:runtime-declaration',
+      'npm run audit:tools',
+      'npm run audit:agent-business-boundaries',
+      'npm run test:debug-window-launcher',
+      'npm run build:typecheck:renderer'
+    ],
+    match: (entry) => /scripts\/(audit-(agent-business-boundaries|photoshop-mcp|runtime-declaration-resolver|skill-package-contract|tool-registry)|verify-(design-authorship-boundary|design-final-comparison-evidence|run-fact-ledger))\.cjs$/.test(entry.filePath)
+      || /src\/main\/(preload\.ts|ipc-handlers\/(design-workshop|resource|skill-package)-handlers\.ts|services\/(resource-manager-service|skill-package-service)\.ts)$/.test(entry.filePath)
+      || /src\/renderer\/(types\.d\.ts|services\/(agent-runtime\/(agent|capability-session|design-final-comparison-evidence|terminal-closure-checkpoint|tool-schemas)|design-workshop\/design-learning\.store|skill-executors\/(design-planner-context|detail-page\.executor)|tool-display-info|tool-executor\.service|tool-result-preview)\.ts)$/.test(entry.filePath)
+      || /src\/shared\/(agent-completion-message-consistency|agent-read-result-cache|agent-run-record|agent-tool-execution-preflight|asset-recommendation-shortlist|design-knowledge-governance|design-memory-knowledge|design-project-state|design-run-tool-log-facts|document-optional-tools|main-image-strategy-input-builder|photoshop-tool-skill|reflexion-reentry-policy|sku-template-design-loop)\.ts$/.test(entry.filePath)
+      || /src\/shared\/(agent-runtime-v5\/design-method-knowledge|knowledge\/main-image-framework|skills\/skill-declarations)\.ts$/.test(entry.filePath)
   },
   {
     id: 'design-reliability-evaluation',
@@ -307,7 +328,7 @@ const BOUNDARIES = [
     id: 'main-process-infra',
     title: '主进程基础设施',
     validation: ['npm run build:main', 'npm run smoke:stream-adapter:http-errors', 'npm run smoke:chat-ui:electron-bridge'],
-    match: (entry) => /src\/main\/(index|preload)\.ts|src\/main\/config\/network-ports\.ts|src\/main\/ipc-handlers\/(config-handlers|index|websocket-handlers|stream-handlers)\.ts|src\/main\/testing\/|provider-adapters|stream-adapter|smoke-stream-adapter-http-errors|verify-(electron-runtime-compatibility|openai-compatible-sdk)/.test(entry.filePath)
+    match: (entry) => /src\/main\/(index|preload|chat-test-environment)\.ts|src\/main\/config\/network-ports\.ts|src\/main\/ipc-handlers\/(config-handlers|index|websocket-handlers|stream-handlers)\.ts|src\/main\/testing\/|provider-adapters|stream-adapter|smoke-stream-adapter-http-errors|verify-(electron-runtime-compatibility|openai-compatible-sdk)/.test(entry.filePath)
   },
   {
     id: 'uxp-bridge-core',
@@ -325,7 +346,7 @@ const BOUNDARIES = [
     id: 'renderer-ui-shell',
     title: 'Renderer UI 与应用状态',
     validation: ['npm run build:typecheck:renderer', 'npm run smoke:settings-modal-tabs-layout', 'npm run smoke:ui:workbench-information-architecture', 'npm run smoke:ui:user-facing-language-boundary', 'npm run smoke:ui:agent-process-inspector', 'npm run smoke:ui:human-review-intake', 'npm run smoke:ui:human-review-record-persistence', 'npm run smoke:ui:asset-gallery-polish', 'npm run smoke:ui:eagle-asset-candidates', 'npm run smoke:ui:design-result-review-panel'],
-    match: (entry) => /src\/renderer\/(App|types)\.(tsx?|d\.ts)$|src\/renderer\/index\.html|src\/renderer\/styles\/index\.css|components\/Header\.tsx|components\/((DesignAgentWorkbench|WorkflowBoard|WorkflowCanvasNodePreview|ProjectManager|WorkspaceTabBar|ThinkingModeControl)\.(tsx|css)|EagleAssetCandidatesPanel\.tsx|AssetGallery\.tsx|asset-gallery-view-model\.ts|workflow-graph-persistence\.ts)|ChatPanel|SettingsModal|SegmentationModelManager|ThinkingProcess|ExecutionStatus|hooks\/(index|useChatActions|useExecution)\.ts|app\.store|components\/message\/MessageRenderer\.(tsx|css)|components\/message\/blocks\/(ThinkingBlock|ToolResultBlock)|components\/message\/parser\.ts|services\/tool-display-info\.ts|services\/(agent-visible-feedback|tool-display-info|memory|eagle-asset-candidates)\.service\.ts|src\/shared\/agent-process-inspector\.ts|src\/shared\/design-result-review-panel\.ts|src\/shared\/eagle-asset-candidates-panel\.ts|src\/shared\/eagle-candidate-visual-handoff\.ts|src\/shared\/human-review-(intake|record)\.ts|src\/shared\/ui-action-tool-params\.ts|smoke-settings-modal-tabs-layout|smoke-ui-(workbench-information-architecture|user-facing-language-boundary|agent-process-inspector|human-review-intake|asset-gallery-polish|eagle-asset-candidates|design-result-review-panel|sock-layout-panel-entry)|smoke-chat-ui-(electron-bridge|execution-chain|running-window)|inspect-chat-ui-running-window|smoke-human-review-record-persistence|public\/webview\/design-library\.js/.test(entry.filePath)
+    match: (entry) => /src\/renderer\/(App|types)\.(tsx?|d\.ts)$|src\/renderer\/index\.html|src\/renderer\/styles\/index\.css|components\/Header\.tsx|components\/((DesignAgentWorkbench|WorkflowBoard|WorkflowCanvasNodePreview|ProjectManager|WorkspaceTabBar|ThinkingModeControl)\.(tsx|css)|EagleAssetCandidatesPanel\.tsx|AssetGallery\.tsx|asset-gallery-view-model\.ts|workflow-graph-persistence\.ts)|ChatPanel|SettingsModal|SegmentationModelManager|ThinkingProcess|ExecutionStatus|hooks\/(index|useChatActions|useExecution)\.ts|app\.store|components\/message\/MessageRenderer\.(tsx|css)|components\/message\/blocks\/(ThinkingBlock|ToolResultBlock|DesignTaskCardBlock)|components\/message\/parser\.ts|services\/tool-display-info\.ts|services\/(agent-visible-feedback|tool-display-info|memory|eagle-asset-candidates)\.service\.ts|src\/shared\/agent-process-inspector\.ts|src\/shared\/design-result-review-panel\.ts|src\/shared\/eagle-asset-candidates-panel\.ts|src\/shared\/eagle-candidate-visual-handoff\.ts|src\/shared\/human-review-(intake|record)\.ts|src\/shared\/ui-action-tool-params\.ts|smoke-settings-modal-tabs-layout|smoke-ui-(workbench-information-architecture|user-facing-language-boundary|agent-process-inspector|human-review-intake|asset-gallery-polish|eagle-asset-candidates|design-result-review-panel|sock-layout-panel-entry)|smoke-chat-ui-(electron-bridge|execution-chain|running-window)|inspect-chat-ui-running-window|smoke-human-review-record-persistence|public\/webview\/design-library\.js/.test(entry.filePath)
   },
   {
     id: 'design-skill-execution-core',

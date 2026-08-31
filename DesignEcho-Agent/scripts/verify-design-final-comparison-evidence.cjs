@@ -52,7 +52,9 @@ function makeObservedToolCall(options) {
         success: options.success !== false,
         ...(options.result || {})
     };
-    if (options.name === 'analyzeProjectContactSheetOverview' || options.name === 'recommendAssets') {
+    if (options.name === 'analyzeProjectContactSheetOverview'
+        || options.name === 'browseAssetCandidates'
+        || options.name === 'recommendAssets') {
         result.sheet = {
             imageData: options.imageData,
             mediaType: 'image/jpeg',
@@ -102,7 +104,7 @@ function makeObservedToolCall(options) {
             mediaType: 'image/jpeg'
         }
     });
-    if (['analyzeProjectContactSheetOverview', 'recommendAssets', 'analyzeEagleReference'].includes(options.name)
+    if (['analyzeProjectContactSheetOverview', 'browseAssetCandidates', 'recommendAssets', 'analyzeEagleReference'].includes(options.name)
         && !presentationCaptured
         && options.allowPresentationCaptureFailure !== true) {
         throw new Error('测试终审 presentation 重放捕获失败');
@@ -270,6 +272,53 @@ function makeRecommendCandidateReplay(options = {}) {
                 }
             }
         });
+    const captured = collectDesignFinalCandidateSetReplays([toolCall])[0];
+    return {
+        toolCall,
+        capturedCoverage: captured?.capturedCoverage,
+        replayImage: {
+            data: imageData,
+            mediaType: 'image/jpeg'
+        }
+    };
+}
+
+function makeBrowseCandidateReplay(options = {}) {
+    const imageData = options.imageData || makeImage('neutral-candidate-page');
+    const paths = options.paths || ['C:\\project\\A.jpg', 'C:\\project\\B.jpg'];
+    const totalCandidates = options.totalCandidates ?? 6;
+    const pageSize = options.pageSize ?? paths.length;
+    const page = options.page ?? 1;
+    const totalPages = options.totalPages ?? Math.ceil(totalCandidates / pageSize);
+    const hasMore = options.hasMore ?? page < totalPages;
+    const toolCall = makeObservedToolCall({
+        name: 'browseAssetCandidates',
+        sourceId: options.id || 'neutral-candidate-page',
+        sourceKind: 'candidate_set',
+        imageData,
+        allowPresentationCaptureFailure: options.allowPresentationCaptureFailure === true,
+        result: {
+            comparisonItems: paths.map((itemPath, index) => ({
+                id: `A${index + 1}`,
+                path: itemPath,
+                status: 'rendered'
+            })),
+            candidatePage: {
+                version: 'asset-candidate-page/v1',
+                candidateSetId: options.candidateSetId || 'candidate-set-v1-1234567890abcdef',
+                page,
+                pageSize,
+                totalCandidates,
+                totalPages,
+                hasMore,
+                ...(hasMore ? { nextPage: page + 1 } : {}),
+                ordering: 'stable_source_aspect_span_round_robin',
+                ranked: false,
+                winnerSelected: false,
+                explicitScope: {}
+            }
+        }
+    });
     const captured = collectDesignFinalCandidateSetReplays([toolCall])[0];
     return {
         toolCall,
@@ -592,13 +641,14 @@ check(
         && contactSheetCase.includes("status: presentationSheet?.imageData ? 'pixels_attached' : 'pixels_unavailable'")
         && contactSheetCase.includes("sourceKind: 'candidate_set'")
         && contactSheetCase.includes("buildCandidateSetObservationSourceId(\n                                'project-contact-sheet'")
-        && autonomousExecutorText.includes('() => !runtimeContractBundle')
-        && autonomousExecutorText.includes("? { visualConsumptionOwner: 'calling_agent' as const }")
+        && !autonomousExecutorText.includes('() => !runtimeContractBundle')
+        && autonomousExecutorText.includes("visualConsumptionOwner: 'calling_agent'")
         && recommendAssetsCaseStart >= 0
         && recommendAssetsCaseEnd > recommendAssetsCaseStart
-        && recommendAssetsCase.includes("options.visualConsumptionOwner === 'calling_agent'")
+        && recommendAssetsCase.includes('resolveToolVisualConsumptionOwner(')
+        && recommendAssetsCase.includes("visualConsumptionOwner === 'calling_agent'")
         && recommendAssetsCase.includes("visualConsumptionOwner: 'calling_agent' as const")
-        && recommendAssetsCase.includes("options.visualConsumptionOwner !== 'calling_agent'")
+        && recommendAssetsCase.includes("visualConsumptionOwner !== 'calling_agent'")
         && recommendAssetsCase.includes("buildCandidateSetObservationSourceId(\n                            'asset-shortlist'")
         && recommendAssetsCase.includes("owner: 'calling_agent'")
         && eagleCaseStart >= 0
@@ -638,6 +688,54 @@ check(
         && !recommendCandidatePlan.contextMessage.includes('matchScore'),
     '上游 advisory 排名不进入终审 payload，覆盖未知保持未知',
     JSON.stringify(recommendCandidatePlan.coverage.candidateSet)
+);
+
+console.log('[16.1] browseAssetCandidates 中性分页保留真实 universe 与单页覆盖');
+const neutralCandidatePagePlan = planDesignFinalComparisonEvidence({
+    candidateSets: [makeBrowseCandidateReplay()],
+    selectedSourcePaths: ['C:\\project\\B.jpg'],
+    availableImageSlots: 1
+});
+check(
+    neutralCandidatePagePlan.evidenceScope.candidateSetCompared
+        && neutralCandidatePagePlan.contentBlocks[0]?.text?.includes('coverage=sampled')
+        && neutralCandidatePagePlan.contentBlocks[0]?.text?.includes('universe=6')
+        && neutralCandidatePagePlan.contentBlocks[0]?.text?.includes('displayed=2')
+        && neutralCandidatePagePlan.contentBlocks[0]?.text?.includes('omitted=4'),
+    '中性候选页只证明 Agent 真看过的本页，同时诚实披露尚未展示的候选数量',
+    JSON.stringify(neutralCandidatePagePlan.coverage.candidateSet)
+);
+const invalidNeutralCandidatePage = makeBrowseCandidateReplay({
+    totalPages: 2,
+    allowPresentationCaptureFailure: true
+});
+const invalidNeutralCandidatePagePlan = planDesignFinalComparisonEvidence({
+    candidateSets: [invalidNeutralCandidatePage],
+    selectedSourcePaths: ['C:\\project\\A.jpg'],
+    availableImageSlots: 1
+});
+check(
+    !invalidNeutralCandidatePagePlan.evidenceScope.candidateSetCompared
+        && invalidNeutralCandidatePagePlan.coverage.candidateSet.reasonCodes
+            .includes('candidate_set_coverage_invalid'),
+    '中性候选页的 page/totalPages 不一致时 fail closed，不能伪造候选比较覆盖',
+    JSON.stringify(invalidNeutralCandidatePagePlan.coverage.candidateSet)
+);
+const invalidNeutralCandidateSetIdentity = makeBrowseCandidateReplay({
+    candidateSetId: 'G0001-is-not-a-set',
+    allowPresentationCaptureFailure: true
+});
+const invalidNeutralCandidateSetIdentityPlan = planDesignFinalComparisonEvidence({
+    candidateSets: [invalidNeutralCandidateSetIdentity],
+    selectedSourcePaths: ['C:\\project\\A.jpg'],
+    availableImageSlots: 1
+});
+check(
+    !invalidNeutralCandidateSetIdentityPlan.evidenceScope.candidateSetCompared
+        && invalidNeutralCandidateSetIdentityPlan.coverage.candidateSet.reasonCodes
+            .includes('candidate_set_coverage_invalid'),
+    '中性候选页缺少集合级身份时 fail closed，裸 G 编号不能跨 scope 冒充同一候选',
+    JSON.stringify(invalidNeutralCandidateSetIdentityPlan.coverage.candidateSet)
 );
 
 console.log('[17] Agent 主动发起的 requirement shortlist 与宽项目总览同时存在时按证据角色消歧');

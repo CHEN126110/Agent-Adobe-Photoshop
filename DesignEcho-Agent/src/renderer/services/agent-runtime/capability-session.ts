@@ -145,9 +145,9 @@ export const DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS: readonly string[] = Obj
     // 只有模型调用后现有 Resolver 才处理声明，绑定成功即将它从能力面退役，避免重复声明。
     'agent.intent.declareDesignTask',
     // 项目级观察与候选比较都在首轮可见，只降低能力发现成本，不规定设计步骤：
-    // 总览用于会改变开放设计方向的库存/商品身份/素材角色未知；推荐只比较具体需求的候选。
+    // 总览用于会改变开放设计方向的库存/商品身份/素材角色未知；候选浏览只提供中性像素页。
     'project.observeAssets',
-    'project.read.recommendAssets',
+    'project.read.browseAssetCandidates',
     // 参考研究是设计师可自行选择的思考资源，不是 Harness 前置流程。首轮直接提供只读
     // 搜索与单图视觉分析，避免模型为了“有没有参考能力”先消耗能力发现回合；是否调用、
     // 查什么、何时停止仍由 Agent 按当前设计问题决定。

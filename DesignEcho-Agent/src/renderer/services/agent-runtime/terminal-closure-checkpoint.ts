@@ -415,11 +415,13 @@ export function resolveAgentExecutionStatus(input: {
     acceptanceNeedsReview: number;
     noDocumentChangeRisks: number;
     taskCompletionStatus?: AgentExecutionSummary['status'];
+    designVerdictStatus?: 'passed' | 'failed' | 'needs_review' | 'passed_unverified' | 'not_applicable';
     designQualityHardBlocked?: boolean;
     taskProgressMissing?: boolean;
     terminalSkillOutcomeFailed?: boolean;
     terminalSkillOutcomeUnverified?: boolean;
 }): AgentExecutionSummary['status'] {
+    const designQualityNeedsReview = input.designVerdictStatus === 'needs_review';
     if (input.stopReason === 'awaiting_user_confirmation'
         || input.stopReason === 'awaiting_user_input') return 'awaiting_confirmation';
     if (input.stopReason === 'cancelled') return 'cancelled';
@@ -435,6 +437,7 @@ export function resolveAgentExecutionStatus(input: {
             && input.acceptanceNeedsReview === 0
             && input.noDocumentChangeRisks === 0
             && input.taskCompletionStatus === 'completed'
+            && !designQualityNeedsReview
             && input.designQualityHardBlocked !== true
             && input.terminalSkillOutcomeUnverified !== true) return 'completed';
         return 'needs_review';
@@ -446,6 +449,7 @@ export function resolveAgentExecutionStatus(input: {
         || input.acceptanceNeedsReview > 0
         || input.noDocumentChangeRisks > 0
         || input.designQualityHardBlocked
+        || designQualityNeedsReview
         || input.terminalSkillOutcomeUnverified
         || input.taskCompletionStatus === 'needs_review') return 'needs_review';
     return 'completed';

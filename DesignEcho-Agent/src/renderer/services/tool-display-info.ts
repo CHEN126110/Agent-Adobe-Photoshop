@@ -145,10 +145,11 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     // project-image-analysis / design-reference-search 等技能 id 不在此登记——
     // 技能显示名单一来源是 SkillDeclaration.displayName（见 getSkillToolDisplayInfo）。
     analyzeProjectForDetailPage: { name: '分析详情页素材', icon: '[A]', description: '为详情页分析项目素材。' },
-    recommendAssets: { name: '推荐素材', icon: '[R]', description: '根据需求推荐合适素材。' },
+    browseAssetCandidates: { name: '浏览候选素材', icon: '[R]', description: '生成中性候选联系表，由 Agent 看图比较。' },
+    recommendAssets: { name: '技能内素材建议', icon: '[R]', description: '供 Skill 内部生成任务相关的建议候选，不替 Agent 选定素材。' },
     getAssetPreview: { name: '读取素材预览', icon: '[R]', description: '读取素材缩略图。' },
     getResourceSummary: { name: '读取资源摘要', icon: '[R]', description: '读取项目资源摘要。' },
-    getDesignProjectState: { name: '读取设计方向', icon: '[A]', description: '读取已确认的设计方向。' },
+    getDesignProjectState: { name: '读取项目记忆', icon: '[A]', description: '按需读取已确认事实、规则与历史设计尝试。' },
     updateDesignProjectState: { name: '更新设计方向', icon: '[A]', description: '更新设计方向状态。' },
     getDesignKnowledge: { name: '读取设计方法论', icon: '[A]', description: '按交付物读取设计方法论。' },
     getMainImageDesignFramework: { name: '读取主图方法论', icon: '[A]', description: '读取主图设计方法论。' },
@@ -160,7 +161,7 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     searchDesignKnowledge: { name: '检索设计参考', icon: '[W]', description: '检索设计参考、规则、趋势与文案框架。' },
     readSkillPlaybook: { name: '读工作法手册', icon: '[K]', description: '读取业务技能的工作法手册与细则。' },
     runSkillScript: { name: '运行技能脚本', icon: '[S]', description: '运行技能包自带的确定性核对脚本。' },
-    proposeSkillImprovement: { name: '提议手册改进', icon: '[P]', description: '把样板推理出的工艺差异提议为手册修改，待用户批准。' },
+    proposeSkillImprovement: { name: '登记手册改进候选', icon: '[P]', description: '只登记待审候选；当前没有生产发布入口。' },
     searchEagleReferences: { name: '检索参考素材', icon: '[W]', description: '从 Eagle 素材库检索参考。' },
     searchDesignNotes: { name: '检索设计笔记', icon: '[A]', description: '检索用户与 Agent 共写的设计知识笔记。' },
     readDesignNote: { name: '阅读设计笔记', icon: '[A]', description: '读取一条设计笔记的完整内容与关联笔记。' },

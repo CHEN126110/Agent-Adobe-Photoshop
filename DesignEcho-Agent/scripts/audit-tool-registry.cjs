@@ -223,7 +223,7 @@ for (const field of ['visualObserved', 'visualRole', 'assetNature', 'backgroundT
         assetRecommendationContractViolations.push(`素材推荐字段未贯通 resource/renderer 类型：${field}`);
     }
 }
-for (const field of ['deterministic', 'designRole', 'placementIntent']) {
+for (const field of ['page', 'deterministic', 'designRole', 'placementIntent']) {
     if (!resourceHandlers.includes(`${field}: params.${field}`)
         || !preload.includes(`${field}?:`)
         || !rendererTypes.includes(`${field}?:`)) {
@@ -258,19 +258,19 @@ if (!detailPageAssetRanker.includes("if (visualRole === 'reference')")
     || !detailPageAssetRanker.includes("if (backgroundType === 'designed_composite')")) {
     assetRecommendationContractViolations.push('参考/设计成品/合成画面仍可能被自动升级为 direct/clip');
 }
-const recommendAssetsSchemaStart = toolSchemasSource.indexOf("name: 'recommendAssets'");
-const recommendAssetsSchemaEnd = recommendAssetsSchemaStart >= 0
-    ? toolSchemasSource.indexOf("name: '", recommendAssetsSchemaStart + 20)
+const browseAssetCandidatesSchemaStart = toolSchemasSource.indexOf("name: 'browseAssetCandidates'");
+const browseAssetCandidatesSchemaEnd = browseAssetCandidatesSchemaStart >= 0
+    ? toolSchemasSource.indexOf("name: '", browseAssetCandidatesSchemaStart + 30)
     : -1;
-let recommendAssetsSchemaBlock = '';
-if (recommendAssetsSchemaStart >= 0) {
-    const blockEnd = recommendAssetsSchemaEnd > recommendAssetsSchemaStart
-        ? recommendAssetsSchemaEnd
-        : recommendAssetsSchemaStart + 2400;
-    recommendAssetsSchemaBlock = toolSchemasSource.slice(recommendAssetsSchemaStart, blockEnd);
+let browseAssetCandidatesSchemaBlock = '';
+if (browseAssetCandidatesSchemaStart >= 0) {
+    const blockEnd = browseAssetCandidatesSchemaEnd > browseAssetCandidatesSchemaStart
+        ? browseAssetCandidatesSchemaEnd
+        : browseAssetCandidatesSchemaStart + 2400;
+    browseAssetCandidatesSchemaBlock = toolSchemasSource.slice(browseAssetCandidatesSchemaStart, blockEnd);
 }
-if (recommendAssetsSchemaBlock.includes('candidateFiles')) {
-    assetRecommendationContractViolations.push('Harness-only 候选库存被暴露进模型 recommendAssets Tool Schema');
+if (browseAssetCandidatesSchemaBlock.includes('candidateFiles')) {
+    assetRecommendationContractViolations.push('Harness-only 候选库存被暴露进模型 browseAssetCandidates Tool Schema');
 }
 const recommendAssetsToolCaseStart = toolExecutor.indexOf("case 'recommendAssets':");
 const recommendAssetsToolCaseEnd = toolExecutor.indexOf("case 'measureReferenceComposition':", recommendAssetsToolCaseStart);
@@ -290,15 +290,46 @@ if (recommendAssetsToolCase.includes('candidateFiles')) {
     assetRecommendationContractViolations.push('模型 recommendAssets 工具分支可伪造 Harness-only 候选库存');
 }
 if (!resourceManager.includes("visualConsumptionOwner?: 'calling_agent'")
-    || !resourceManager.includes("if (visualConsumptionOwner !== 'calling_agent')")
-    || !resourceManager.includes("...(visualConsumptionOwner === 'calling_agent' && comparisonSheet")
-    || resourceManager.includes('...(comparisonSheet ? { sheet: comparisonSheet } : {})')
+    || !resourceManager.includes("if (visualConsumptionOwner === 'calling_agent')")
+    || !resourceManager.includes('return await this.buildCallingAgentCandidateSheet(candidates, {')
+    || !resourceManager.includes("version: 'asset-candidate-page/v1'")
+    || !resourceManager.includes('ranked: false')
+    || !resourceManager.includes('winnerSelected: false')
     || !resourceHandlers.includes("params.visualConsumptionOwner === 'calling_agent'")
-    || !recommendAssetsToolCase.includes("options.visualConsumptionOwner === 'calling_agent'")
-    || recommendAssetsSchemaBlock.includes('visualConsumptionOwner')
+    || !toolExecutor.includes("if (toolName === 'browseAssetCandidates') return 'calling_agent'")
+    || !recommendAssetsToolCase.includes('resolveToolVisualConsumptionOwner(')
+    || !recommendAssetsToolCase.includes("visualConsumptionOwner === 'calling_agent'")
+    || !recommendAssetsToolCase.includes('...(candidatePage ? { candidatePage } : {})')
+    || !recommendAssetsToolCase.includes('candidatePage?.candidateSetId')
+    || !recommendAssetsToolCase.includes('本结果不包含推荐分、推荐理由或赢家')
+    || recommendAssetsToolCase.includes('...result,')
+    || browseAssetCandidatesSchemaBlock.includes('visualConsumptionOwner')
     || preload.includes('visualConsumptionOwner')
     || rendererTypes.includes('visualConsumptionOwner')) {
     assetRecommendationContractViolations.push('recommendAssets 未保持 Host 签发的主 Agent 单消费者边界');
+}
+const callingAgentBranchIndex = resourceManager.indexOf("if (visualConsumptionOwner === 'calling_agent')");
+const heuristicRankingIndex = resourceManager.indexOf('const requirementKeywords = this.getRequirementKeywords');
+const callingAgentProjectionStart = resourceManager.indexOf('private async buildCallingAgentCandidateSheet(');
+const callingAgentProjectionEnd = resourceManager.indexOf(
+    'async recommendAssets(',
+    callingAgentProjectionStart
+);
+const callingAgentProjection = callingAgentProjectionStart >= 0 && callingAgentProjectionEnd > callingAgentProjectionStart
+    ? resourceManager.slice(callingAgentProjectionStart, callingAgentProjectionEnd)
+    : '';
+if (callingAgentBranchIndex < 0
+    || heuristicRankingIndex < 0
+    || callingAgentBranchIndex > heuristicRankingIndex
+    || !callingAgentProjection.includes('buildNeutralAssetCandidatePage(')
+    || /matchScore|matchReason|suggestedUse|heuristicScore|scoreCandidateFile/u.test(callingAgentProjection)
+    || recommendAssetsToolCase.includes('recommendations:')
+    || recommendAssetsToolCase.includes('matchScore')
+    || !browseAssetCandidatesSchemaBlock.includes('does not infer category from requirement text')
+    || !browseAssetCandidatesSchemaBlock.includes('never priority')
+    || !toolSchemasSource.includes("'browseAssetCandidates',")
+    || /const DEFAULT_AGENT_TOOL_NAMES = \[[\s\S]*?'recommendAssets',/.test(toolSchemasSource)) {
+    assetRecommendationContractViolations.push('主 Agent 候选观察仍受 requirement 启发式、推荐字段或首项锚定');
 }
 if (!candidateSetSourceIdHelper.includes('imageHash: sha256Hex(imageData)')
     || !candidateSetSourceIdHelper.includes("path: String(item.path || '')")

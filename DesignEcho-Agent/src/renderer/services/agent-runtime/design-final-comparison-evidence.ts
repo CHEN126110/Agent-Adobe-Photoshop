@@ -28,6 +28,7 @@ export const MAX_FINAL_JUDGE_DECLARED_REFERENCE_IMAGES = 3;
 
 const CANDIDATE_SET_TOOL_NAMES = new Set([
     'analyzeProjectContactSheetOverview',
+    'browseAssetCandidates',
     'recommendAssets'
 ]);
 
@@ -473,15 +474,21 @@ function projectAnalyzeContactSheetCoverage(
     };
 }
 
-function projectRecommendAssetsCoverage(
+function projectAssetCandidateCoverage(
     entry: AgentToolCallLogEntry
 ): CandidateSetCoverageProjection | undefined {
     const comparison = entry.result?.visualComparison;
+    const candidatePage = entry.result?.candidatePage;
     const items = Array.isArray(entry.result?.comparisonItems)
         ? entry.result.comparisonItems
         : [];
-    if (comparison?.rankingIsAdvisory !== true
-        || comparison?.agentSelectsFinalAsset !== true) return undefined;
+    const isNeutralCandidatePage = candidatePage?.version === 'asset-candidate-page/v1'
+        && candidatePage?.ranked === false
+        && candidatePage?.winnerSelected === false
+        && candidatePage?.ordering === 'stable_source_aspect_span_round_robin';
+    const isLegacyAdvisoryShortlist = comparison?.rankingIsAdvisory === true
+        && comparison?.agentSelectsFinalAsset === true;
+    if (!isNeutralCandidatePage && !isLegacyAdvisoryShortlist) return undefined;
     const sourceManifest = items
         .filter((item: any) => item?.status === 'rendered')
         .map((item: any) => ({
@@ -501,6 +508,47 @@ function projectRecommendAssetsCoverage(
     // 主模型 observation/review 为准，不能让内部推荐解析漏一项否决真实视觉比较。
     const displayedCandidateCount = displayedPaths.length;
     if (displayedCandidateCount <= 0) return undefined;
+    if (isNeutralCandidatePage) {
+        const candidateSetId = normalizeSourceId(candidatePage.candidateSetId);
+        const page = Number(candidatePage.page);
+        const pageSize = Number(candidatePage.pageSize);
+        const totalCandidates = Number(candidatePage.totalCandidates);
+        const totalPages = Number(candidatePage.totalPages);
+        const expectedTotalPages = totalCandidates > 0
+            ? Math.ceil(totalCandidates / pageSize)
+            : 0;
+        const expectedAttemptedCount = Math.min(
+            pageSize,
+            Math.max(0, totalCandidates - ((page - 1) * pageSize))
+        );
+        const hasMore = candidatePage.hasMore === true;
+        const nextPage = Number(candidatePage.nextPage);
+        if (!/^candidate-set-v1-[a-f0-9]{16}$/u.test(candidateSetId)
+            || !Number.isSafeInteger(page) || page < 1
+            || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 12
+            || !Number.isSafeInteger(totalCandidates) || totalCandidates < 1
+            || !Number.isSafeInteger(totalPages) || totalPages !== expectedTotalPages
+            || page > totalPages
+            || items.length !== expectedAttemptedCount
+            || displayedCandidateCount > items.length
+            || hasMore !== (page < totalPages)
+            || (hasMore && nextPage !== page + 1)
+            || (!hasMore && candidatePage.nextPage !== undefined)) {
+            return undefined;
+        }
+        return {
+            status: displayedCandidateCount === totalCandidates ? 'complete' : 'sampled',
+            candidateUniverseCount: totalCandidates,
+            attemptedCandidateCount: items.length,
+            displayedCandidateCount,
+            omittedCandidateCount: totalCandidates - displayedCandidateCount,
+            displayedPaths,
+            sourceManifest: sourceManifest.map((item: { slotId: string; path: string }) => ({
+                ...item,
+                slotId: `${candidateSetId}:${item.slotId}`
+            }))
+        };
+    }
     return {
         // recommendAssets 上游只暴露实际显示 shortlist，不披露完整项目候选全集。终审可以
         // 比较这张 Agent 真看过的联系表，但不能把它写成完整 universe 或“未遗漏候选”。
@@ -518,7 +566,9 @@ function projectCandidateSetCoverage(
     if (entry.name === 'analyzeProjectContactSheetOverview') {
         return projectAnalyzeContactSheetCoverage(entry);
     }
-    if (entry.name === 'recommendAssets') return projectRecommendAssetsCoverage(entry);
+    if (entry.name === 'browseAssetCandidates' || entry.name === 'recommendAssets') {
+        return projectAssetCandidateCoverage(entry);
+    }
     return undefined;
 }
 
@@ -542,11 +592,12 @@ function buildCandidateSetScope(input: {
             : [];
     });
     if (matching.length === 0) return unevaluated('candidate_set_binding_missing');
-    // recommendAssets 是 Agent 为某个 requirement / designRole 主动发起的候选比较；
+    // browseAssetCandidates / legacy recommendAssets 是 Agent 主动发起的候选比较；
     // analyzeProjectContactSheetOverview 只是更宽的项目视觉库存。存在精确 shortlist 时只把
     // 同类 shortlist 视为候选集绑定，不让宽总览制造假歧义；多个 shortlist 仍 fail closed。
     const shortlistMatches = matching.filter(({ candidate }) => (
-        candidate.toolCall.name === 'recommendAssets'
+        candidate.toolCall.name === 'browseAssetCandidates'
+        || candidate.toolCall.name === 'recommendAssets'
     ));
     const roleBoundMatches = shortlistMatches.length > 0 ? shortlistMatches : matching;
     if (roleBoundMatches.length > 1) return unevaluated('candidate_set_binding_ambiguous');

@@ -323,10 +323,11 @@ export function registerResourceHandlers(context: IPCContext): void {
         }, visionModelCall);
     });
 
-    // 智能推荐素材
+    // 素材候选：主 Agent 中性联系表；非 Agent 调用兼容内部视觉推荐
     ipcMain.handle('resource:recommendAssets', async (_event: IpcMainInvokeEvent, params: {
         requirement: string;
         maxResults?: number;
+        page?: number;
         category?: string;
         deterministic?: boolean;
         designRole?: string;
@@ -345,6 +346,7 @@ export function registerResourceHandlers(context: IPCContext): void {
             visionModelCall,
             {
                 maxResults: params.maxResults,
+                page: params.page,
                 category: params.category,
                 deterministic: params.deterministic,
                 designRole: params.designRole,

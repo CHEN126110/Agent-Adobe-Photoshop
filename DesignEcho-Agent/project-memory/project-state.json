@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：revision 5 fixed Case 与独立架构审查已证明 Debug 交付状态、上下文因果和 Evaluation 复入首偏差；最终整合树通过 65 阶段完整核心验证，准备提交并在 fresh fixture 复跑。",
+  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：正常程序 Attempt 已证明技术交付可闭合但设计质量仍 needs_review；当前正在闭合测试 /历史状态 /推荐排序 /学习发布对生产 Agent 的污染，随后修正主图真实 5+4 生产结构并做 fresh 正常程序复跑。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -14,14 +14,21 @@
       "Uploaded chat images currently reach the primary model as named pixels but have no request-scoped executable attachment handle for generic placeImage dispatch; project search and arbitrary CLI do not repair that source-binding gap.",
       "Agentic Task Profile binding now defers side effects authored before the bound professional context was visible while preserving same-turn read-only observations and knowledge searches; the Agent must regenerate any write under the current context.",
       "Final Quality acquisition/runtime failures now project unavailable/evaluation_runtime_failed through the existing bounded protocol digest; cached completed evidence is restored only after a fresh exact-revision Host read, while stale and unavailable reentry cannot wake or credit the primary Agent.",
-      "Debug Bridge receipt v5 preserves finalArtifactRefs from the E2/resultRef raw-candidate collector through the sidecar and ChatPanel as absent, valid or invalid; only genuine absence permits a trustworthy empty collection, while unsafe, malformed, overflow, duplicate or contradictory evidence makes the receipt untrusted and cannot create an artifact manifest."
+      "Debug Bridge receipt v5 preserves finalArtifactRefs from the E2/resultRef raw-candidate collector through the sidecar and ChatPanel as absent, valid or invalid; only genuine absence permits a trustworthy empty collection, while unsafe, malformed, overflow, duplicate or contradictory evidence makes the receipt untrusted and cannot create an artifact manifest.",
+      "Neutral asset browsing is tool-identity bound before and after Task Profile activation; candidateSetId plus a set-local cross-page G ordinal and path bind scope and the full candidate file version.",
+      "Benchmark cases are restricted to offline benchmark_seed use, and model/test runtime paths can create review candidates but cannot publish evaluation calibration or rewrite canonical Skills.",
+      "Automatic project-state context no longer expands prior selections, layouts, copy, reviews or version reasons, and persisted legacy task/channel values cannot silently activate scoped rules for a new run.",
+      "Artifact completion and design quality are projected separately: saved editable/raster outputs remain artifact_completed while a needs_review DesignVerdict keeps the overall result needs_review.",
+      "The debug launcher and a pure Main resolver enforce disposable projects, OS-temp userData, project/userData realpath separation, fresh state, unpackaged Bridge ownership and CDP gating before Renderer startup.",
+      "The user-provided main-image skeleton establishes 1500x1500, 1500x2000 and 1440x2160 working canvases with five click slots and four conversion slots per document; current production constants remain mismatched and are tracked as INTAKE-092."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
       "S1 delivery/review root-cause code passed a fresh 65-stage maintenance:validate run plus DeepSeek adapter, receipt, Evaluation authority and r38-shaped delivery regression tests.",
       "INTAKE-090 attribution and visual recovery passed one fresh 65-stage maintenance:validate run, including Runtime ledger, ContextManager, authorship/business boundaries, Agent simplification ratchet, Main/Renderer type checks, Agent/UXP tests and UXP production build.",
       "S1 startup read-only preflight reached Debug Bridge, Photoshop MCP and a real UXP Runtime, but a new matching build, disposable fixture and write authorization must be rechecked before live capture.",
-      "The final integrated revision 5 follow-up tree passed a 65-stage maintenance:validate run covering Debug v5 producer-to-consumer provenance, runtime declaration behavior, TypeScript control-flow boundaries, zero-progress zero-Host behavior, exact/stale/unavailable Final Quality reentry, Design Reliability, design authorship, Main/Renderer type checks, Agent/UXP tests and the UXP production build."
+      "The final integrated revision 5 follow-up tree passed a 65-stage maintenance:validate run covering Debug v5 producer-to-consumer provenance, runtime declaration behavior, TypeScript control-flow boundaries, zero-progress zero-Host behavior, exact/stale/unavailable Final Quality reentry, Design Reliability, design authorship, Main/Renderer type checks, Agent/UXP tests and the UXP production build.",
+      "Pre-commit attack review found and then closed recommendation fallback, legacy fake publication, Main project/CDP bypass and candidate-set file-version drift; the bounded re-review has no remaining P0/P1, and the integrated anti-contamination tree passed a fresh 65-stage maintenance:validate including the Agent simplification ratchet, authorship/business boundaries, Main/Renderer type checks, Agent/UXP tests and UXP production build."
     ],
     "manual": [
       "r31 is the only recorded formal zero-intervention technical pass in the earlier main-image reliability evidence; the current S1 cohort is not complete.",
@@ -29,7 +36,9 @@
       "r35/r38 accounting attributes about 92-93% of wall time to model calls and only 8-10% to physical Tools; those historical records predate call-kind attribution.",
       "Human review has not verified stable commercial design quality; automatic scores have missed copy and composition defects.",
       "Revision 5 main-image profiling used 12 physical model requests over about 319 seconds with model time near 93%; PSD/JPG were created but the canonical run ended error/artifact_incomplete with 0 of 16 visual assertions evaluated.",
-      "The revision 5 output preserved the four socks cleanly but collapsed into a flat-lay catalog/SKU-style image, disabled the more expressive model scene and remained clearly below the user's C-1256 main images and Eagle click-image references."
+      "The revision 5 output preserved the four socks cleanly but collapsed into a flat-lay catalog/SKU-style image, disabled the more expressive model scene and remained clearly below the user's C-1256 main images and Eagle click-image references.",
+      "A normal-app project run at fc6781da completed PSD/JPG delivery and Final Judge in about 703 seconds with 15 model calls and 18 Tools; the artifact completed, but the 88-point verdict remained needs_review with two major findings and the visual result stayed below the user's work and Eagle references.",
+      "That normal run used the old recommendAssets path and then selected A01/A02, so repeated source choice cannot be attributed to model taste alone; retrieval anchoring and persisted project context were active contributors."
     ]
   },
   "unverified": [
@@ -40,7 +49,9 @@
     "Per-Tool duration and nested Skill/Design-Team physical Tool coverage; current AgentRunRecord facts do not justify guessing these values.",
     "Five-case technical success and repeatability for the current production build.",
     "Main-image, SKU and detail-page multi-sample Photoshop E2E with editable source and same-revision export delivery.",
-    "No-Skill cross-scenario design quality comparable with the user's D:\\A1 neveralone旗舰店 work and Eagle references."
+    "No-Skill cross-scenario design quality comparable with the user's D:\\A1 neveralone旗舰店 work and Eagle references.",
+    "A fresh normal-app attempt proving neutral candidate browsing, prior-attempt isolation, honest needs_review projection and no test-state influence improve or at least correctly attribute selection and design behavior.",
+    "The main-image business decision for which of the 5+4 slots are mandatory, whether 1200 conversion slots must be populated, and the final platform upload sizes; the supplied empty skeleton and JSX only prove container and per-nonempty-group export semantics."
   ],
   "topRisks": [
     "The current receipt, context-causality and Evaluation-owner fixes still lack a fresh real sidecar Attempt.",
@@ -48,40 +59,45 @@
     "A dirty or commit-mismatched runtime would make new live evidence non-comparable.",
     "Without a request-scoped attachment provider, uploaded pixels can be visible to the model yet unusable by execution Tools; unrestricted CLI would widen permissions without proving source identity.",
     "Open Photoshop documents with unresolved ownership must not be modified, saved or closed by the S1 test.",
-    "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery."
+    "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery.",
+    "Until INTAKE-092 is fixed, main-image Runtime may create the wrong canvases, omit 1200 conversion containers and emit filenames that do not match the user's production script even when the Agent's visual decisions are correct."
   ],
   "nextActions": [
-    "Commit and push the fully validated receipt, context-causality and Evaluation-owner fixes as a clean rollback baseline.",
-    "Rebuild matching Agent/UXP runtimes and rerun the same frozen Case in a new disposable fixture.",
-    "Use the fresh result to choose one design-quality variable only if the output still collapses into a safe flat-lay composition.",
+    "Commit and push the fully validated anti-contamination slice without unrelated UI changes.",
+    "Fix the INTAKE-092 main-image production-structure owner and UXP sibling-isolated exporter while keeping slot structure separate from Agent-authored design content.",
+    "Rebuild matching normal Agent/UXP runtimes and rerun the same natural request in a new ordinary project without fake or reusable Debug fixture state.",
+    "Use the fresh result to choose one design-quality variable only if the output still collapses into the same safe composition.",
     "Implement request-scoped attachmentRef resolution before the full S1 cohort; then stage scoped external-file and CLI capabilities separately."
   ],
   "activeRequest": {
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
-    "summary": "Preserve the validated final-artifact and Evaluation root fixes, attribute Runtime performance without quality shortcuts, then prove one repeatable isolated Photoshop technical delivery without cross-document effects.",
+    "summary": "Preserve trustworthy delivery and Evaluation ownership, remove test /history /retrieval contamination from the production Agent, align the main-image Skill to the user's real production structure, then prove one repeatable normal-app Photoshop delivery without cross-document effects.",
     "status": "in_progress",
     "mustDo": [
       "Keep serializer-owned visual receipts, Final Judge binding, E2 delivery refs and Debug projection as one task-bound chain.",
       "Preserve the completed observation-only model/context/output/visual attribution and the existing AgentRunRecord Tool owner.",
       "Keep Evaluation protocol validity separate from human aesthetic calibration.",
       "Protect every pre-existing Photoshop document and use only an authorized disposable fixture for live writes.",
-      "Preserve the passed reusable tests and core validation, then obtain one isolated live Case before buying the full S1 cohort."
+      "Preserve the passed reusable tests and core validation, then obtain one normal-app live Case before buying the full S1 cohort.",
+      "Keep main-image production containers deterministic while leaving source choice, slot population, composition, copy and aesthetic revision to the Agent."
     ],
     "mustNotDo": [
       "Do not scan directories or treat every export as an Agent-declared final artifact.",
       "Do not add default scores, a second evaluator or a debug-only success path to hide protocol failure.",
       "Do not add main-image, SKU or detail-page branches to the generic Agent or Harness.",
       "Do not save, close or mutate pre-existing Photoshop documents.",
-      "Do not reduce Case coverage or relax receipts to declare success."
+      "Do not reduce Case coverage or relax receipts to declare success.",
+      "Do not let benchmark fixtures, debug project state or production-structure tests become Agent design answers."
     ]
   },
   "activePlan": {
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
     "source": "project-memory/Plan.md",
     "steps": [
-      "Commit the fully validated trustworthy incomplete-delivery, bound-context write and Evaluation-owner fixes.",
-      "Rebuild matching Agent/UXP runtimes and rerun the same frozen Case in a new path-bound disposable fixture.",
-      "Verify post-binding method consumption, independent Final Judge execution, canonical delivery evidence and human visual comparison before selecting another variable.",
+      "Commit and push the anti-contamination slice that passed the full core gate.",
+      "Align main-image working canvases, 5+4 slot names, exact delivery names and UXP sibling-isolated export with the user-provided production evidence.",
+      "Rebuild matching normal Agent/UXP runtimes and rerun the natural request in a clean ordinary project.",
+      "Verify neutral candidate coverage, model-authored selection rationale, independent Final Judge execution, canonical delivery evidence and human visual comparison before selecting another variable.",
       "Close the generic uploaded-attachment source binding before expanding the S1 cohort; keep scoped CLI as a separate capability-provider phase."
     ]
   },

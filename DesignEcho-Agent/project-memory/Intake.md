@@ -72,6 +72,14 @@
 - 下一步：先实现请求级 `attachmentRef` 注册、不可变字节身份和有限生命周期，让 Agent 显式选择后由 `placeImage` 解析已有字节；再做 `placeImage → removeBackground → 同目标结构 /视觉读回` 的上传、拖拽和剪贴板 E2E。随后支持用户显式路径或选择器授权目录的只读搜索与复制收据，不等待任意 CLI 才解决附件任务。
 - 边界：不把 Base64、绝对路径或原始附件长期写入 Prompt /状态；不复用 UXP session token；不从文件名替 Agent 选图；不全盘扫描；不把详情页现有专属附件注入复制进通用 Agent。
 
+### INTAKE-092 主图生产文档、物料槽位与批量导出规范对齐
+
+- 来源：用户 2026-08-31 提供 800 /750 /1200 Photoshop 空骨架截图与 `4.0主图导出所有主图文档.jsx`。截图确认工作画布分别为 1500×1500、1500×2000、1440×2160，三文档均含「点击图」5 个槽位与「转化图」2–5 四个槽位；脚本对三文档两个父组的所有非空子组逐一导出。
+- 归属层级：Main Image Skill production structure / delivery inventory / UXP exporter / Photoshop readback verification。
+- 状态：triaged
+- 下一步：建立一个 Skill-owned 生产结构真相源，把稳定 5+4 容器与 Agent 当前物料计划分开；同步修正 core、document structure、size aliases、Skill declaration、exact delivery naming 和现有核心回归。UXP 导出前必须先隐藏同父组全部兄弟子组，再单独显示目标并在结束 /失败后恢复原 history。
+- 边界：截图只能证明容器，不能规定子组内部素材、图层、文案、版式或必须填满的数量；1200 的四个转化槽先保留，是否必须生产 /交付需用户规则或真实非空成稿证据。工作画布与平台上传尺寸分字段，不能从当前 JSX 猜 800×800 /750×1000 下采样。测试 fixture 不能反向成为生产 Skill 规则。
+
 ### INTAKE-089 工作流画布、交互 UI 与多 Agent 形态
 
 - 来源：用户关于可创建交互卡、可复用工作流、节点画布和专业设计团队的长期产品设想；合并旧 UI、Workflow、A0–A9 和多 Agent 条目。

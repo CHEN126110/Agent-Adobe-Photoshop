@@ -3,7 +3,7 @@
  *
  * 边界：
  * - Agent / 评审器 / 参考学习只能写 candidate；候选不进入任何生产提示词或评审校准。
- * - 用户明确的留 / 改 / 弃可以发布为当前项目的 evaluation_calibration。
+ * - 用户明确的留 / 改 / 弃可作为 evaluation_calibration 发布候选；只有独立发布器能签发生产收据。
  * - 原则、配方、Skill 草案和事实不能在在线运行里自行发布；新参考学习走既有长期知识人工审核队列，
  *   本账本中的同类只为 v1 历史兼容保留。
  * - Harness 只负责候选的生命周期、版本、作用域与发布记录，不拥有经验正文。
@@ -81,6 +81,21 @@ export interface DesignExperiencePublication {
     publishedAt: number;
 }
 
+/**
+ * 旧账本或非受信调用方声称某条候选已经发布时的隔离记录。
+ *
+ * 这不是发布收据。当前项目尚未实现独立 Experience Publisher 与可验证的完整性证明，
+ * 因此持久化 JSON 中的 publisher.kind / status 只能作为待审声明保留，不能取得生产消费权。
+ */
+export interface DesignExperiencePublicationReview {
+    version: 'design-experience-publication-review/v1';
+    status: 'review_required';
+    reason: 'legacy_promotion_unverified' | 'publication_claim_unverified';
+    claimedStatus: 'promoted' | 'published';
+    claimedPublication?: DesignExperiencePublication;
+    reviewRequiredAt: number;
+}
+
 export interface DesignLearningCandidate {
     id: string;
     kind: DesignLearningCandidateKind;
@@ -96,7 +111,10 @@ export interface DesignLearningCandidate {
     calibration?: DesignEvaluationCalibration;
     /** kind='skill_improvement' 时的结构化提议；批准后由主进程按此执行写入。 */
     improvement?: SkillImprovementProposal;
+    /** 只有独立发布器签发并通过完整性校验后才能存在；当前 Runtime 没有该写入路径。 */
     publication?: DesignExperiencePublication;
+    /** 未验证的旧 / 外部发布声明；保留供迁移审查，但不得被生产 Evaluation 消费。 */
+    publicationReview?: DesignExperiencePublicationReview;
     /** 关联运行的行为结局（导出交付 / 用户否决）；自动晋升规则的验证依据。 */
     outcomes?: DesignLearningRunOutcome[];
     createdAt: number;
@@ -106,7 +124,7 @@ export interface DesignLearningCandidate {
 }
 
 export interface DesignLearningLedger {
-    version: 'design-learning-candidates/v2';
+    version: 'design-learning-candidates/v3';
     candidates: DesignLearningCandidate[];
     updatedAt: number;
 }
@@ -263,9 +281,42 @@ function normalizePublication(value: unknown, candidateId: string): DesignExperi
     };
 }
 
+function normalizePublicationReview(
+    value: unknown,
+    candidateId: string,
+    now: number
+): DesignExperiencePublicationReview | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const raw = value as Record<string, unknown>;
+    if (normalizeText(raw.status) !== 'review_required') return undefined;
+    const reason = normalizeText(raw.reason);
+    if (!['legacy_promotion_unverified', 'publication_claim_unverified'].includes(reason)) return undefined;
+    const claimedStatus = normalizeText(raw.claimedStatus);
+    if (!['promoted', 'published'].includes(claimedStatus)) return undefined;
+    const reviewRequiredAt = Number(raw.reviewRequiredAt);
+    const claimedPublication = normalizePublication(raw.claimedPublication, candidateId);
+    return {
+        version: 'design-experience-publication-review/v1',
+        status: 'review_required',
+        reason: reason as DesignExperiencePublicationReview['reason'],
+        claimedStatus: claimedStatus as DesignExperiencePublicationReview['claimedStatus'],
+        ...(claimedPublication ? { claimedPublication } : {}),
+        reviewRequiredAt: Number.isFinite(reviewRequiredAt) && reviewRequiredAt > 0
+            ? reviewRequiredAt
+            : now
+    };
+}
+
+function appendDecisionNote(existing: string | undefined, note: string): string {
+    if (!existing) return note;
+    if (existing.includes(note)) return existing;
+    return `${existing}；${note}`;
+}
+
 /**
- * 读取边界兼容 v1：旧 `promoted` 不再被无条件信任。
- * 只有能够证明来自用户原话的校准样本迁移为已发布；其余降回候选等待正式发布器。
+ * 读取边界兼容 v1 / v2，但不信任账本自身声称的发布身份。
+ * 当前项目没有独立 Experience Publisher 与可验证发布收据；旧 `promoted`、旧 `published`
+ * 以及伪造 publisher.kind 的记录全部迁回候选，并把原声明保存在 publicationReview 中等待人审。
  */
 export function normalizeDesignLearningLedger(value: unknown, now: number = Date.now()): DesignLearningLedger {
     if (!value || typeof value !== 'object') return createDesignLearningLedger(now);
@@ -289,17 +340,14 @@ export function normalizeDesignLearningLedger(value: unknown, now: number = Date
             ? normalizeSkillImprovement(raw.improvement)
             : undefined;
         if (rawKind === 'skill_improvement' && !improvement) continue;
-        const publication = normalizePublication(raw.publication, id);
+        const publicationClaim = normalizePublication(raw.publication, id);
+        const existingPublicationReview = normalizePublicationReview(raw.publicationReview, id, now);
         const legacyPromoted = raw.status === 'promoted';
-        const userCalibrationCanMigrate = legacyPromoted
-            && rawKind === 'calibration_sample'
-            && origin === 'user_feedback'
-            && Boolean(calibration);
+        const claimedPublished = raw.status === 'published';
+        const hasUntrustedPublicationClaim = legacyPromoted || claimedPublished || Boolean(publicationClaim);
         let status: DesignLearningCandidateStatus = 'candidate';
         if (raw.status === 'rejected') status = 'rejected';
         if (raw.status === 'provisional') status = 'provisional';
-        if (raw.status === 'published' && publication) status = 'published';
-        if (userCalibrationCanMigrate) status = 'published';
         const outcomes: DesignLearningRunOutcome[] = (Array.isArray(raw.outcomes) ? raw.outcomes : [])
             .map((item: any) => ({
                 kind: item?.kind === 'rejected' ? 'rejected' as const : 'delivered' as const,
@@ -310,21 +358,25 @@ export function normalizeDesignLearningLedger(value: unknown, now: number = Date
             .slice(0, 24);
         const createdAt = Number(raw.createdAt);
         const updatedAt = Number(raw.updatedAt);
-        const migratedPublication: DesignExperiencePublication | undefined = userCalibrationCanMigrate
-            ? {
-                version: 'design-experience-publication/v1',
-                target: 'evaluation_calibration',
-                scope,
-                publisher: { kind: 'system_migration' },
-                sourceCandidateId: id,
-                publishedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : now
-            }
-            : undefined;
+        const publicationReview: DesignExperiencePublicationReview | undefined = existingPublicationReview
+            || (hasUntrustedPublicationClaim
+                ? {
+                    version: 'design-experience-publication-review/v1',
+                    status: 'review_required',
+                    reason: legacyPromoted
+                        ? 'legacy_promotion_unverified'
+                        : 'publication_claim_unverified',
+                    claimedStatus: legacyPromoted ? 'promoted' : 'published',
+                    ...(publicationClaim ? { claimedPublication: publicationClaim } : {}),
+                    reviewRequiredAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : now
+                }
+                : undefined);
         let decisionNote = normalizeText(raw.decisionNote) || undefined;
-        if (legacyPromoted && !userCalibrationCanMigrate) {
-            decisionNote = decisionNote
-                ? `${decisionNote}；旧版转正记录缺少可验证发布来源，已迁回候选`
-                : '旧版转正记录缺少可验证发布来源，已迁回候选';
+        if (publicationReview) {
+            decisionNote = appendDecisionNote(
+                decisionNote,
+                '发布声明缺少独立发布者与可验证完整性收据，已迁回候选并等待发布复核'
+            );
         }
         candidates.push({
             id,
@@ -337,7 +389,7 @@ export function normalizeDesignLearningLedger(value: unknown, now: number = Date
             scope,
             ...(calibration ? { calibration } : {}),
             ...(improvement ? { improvement } : {}),
-            ...(publication || migratedPublication ? { publication: publication || migratedPublication } : {}),
+            ...(publicationReview ? { publicationReview } : {}),
             ...(outcomes.length > 0 ? { outcomes } : {}),
             createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : now,
             updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : now,
@@ -346,17 +398,17 @@ export function normalizeDesignLearningLedger(value: unknown, now: number = Date
     }
     const updatedAt = Number(rawLedger.updatedAt);
     return {
-        version: 'design-learning-candidates/v2',
+        version: 'design-learning-candidates/v3',
         candidates,
         updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : now
     };
 }
 
 export function createDesignLearningLedger(now: number = Date.now()): DesignLearningLedger {
-    return { version: 'design-learning-candidates/v2', candidates: [], updatedAt: now };
+    return { version: 'design-learning-candidates/v3', candidates: [], updatedAt: now };
 }
 
-/** 同 kind、同作用域、同文本只在 candidate 状态合并；已发布记录保持不可变。 */
+/** 同 kind、同作用域、同文本只在 candidate / provisional 状态合并；驳回记录不重开。 */
 export function addDesignLearningCandidate(
     sourceLedger: DesignLearningLedger,
     input: DesignLearningCandidateInput,
@@ -413,44 +465,10 @@ export function addDesignLearningCandidate(
     };
 }
 
-function publishUserCalibrationCandidate(
-    ledger: DesignLearningLedger,
-    id: string,
-    note: string | undefined,
-    now: number
-): DesignLearningLedger {
-    const candidate = ledger.candidates.find((item) => item.id === id);
-    if (!candidate) throw new Error(`找不到学习候选 ${id}`);
-    if (candidate.status !== 'candidate') throw new Error(`学习候选 ${id} 当前状态是 ${candidate.status}，不能重复发布`);
-    const isUserCalibration = candidate.kind === 'calibration_sample'
-        && candidate.origin === 'user_feedback'
-        && Boolean(candidate.calibration);
-    // skill 改进提议的发布同样是用户人工拍板（时间线批准点击），与校准同级；写入由主进程另行执行。
-    const isSkillImprovement = candidate.kind === 'skill_improvement' && Boolean(candidate.improvement);
-    if (!isUserCalibration && !isSkillImprovement) {
-        throw new Error('在线运行只允许发布用户明确给出的留 / 改 / 弃校准或用户批准的 skill 改进；原则、配方和模型观察必须经过离线评测与人审发布器');
-    }
-    const published: DesignLearningCandidate = {
-        ...candidate,
-        status: 'published',
-        decisionNote: normalizeText(note) || (isSkillImprovement ? '用户批准，手册改进已写入' : '用户明确反馈，发布为当前项目评审校准'),
-        publication: {
-            version: 'design-experience-publication/v1',
-            target: isSkillImprovement ? 'skill_patch' : 'evaluation_calibration',
-            scope: candidate.scope,
-            publisher: { kind: 'user' },
-            sourceCandidateId: candidate.id,
-            publishedAt: now
-        },
-        updatedAt: now
-    };
-    return {
-        ...ledger,
-        updatedAt: now,
-        candidates: ledger.candidates.map((item) => (item.id === id ? published : item))
-    };
-}
-
+/**
+ * 候选区只拥有驳回权；发布必须由尚未实现的独立 Experience Publisher 完成。
+ * 保留 published / promoted 入参仅用于让旧调用方得到明确失败，不能在纯逻辑账本里造发布收据。
+ */
 export function decideDesignLearningCandidate(
     sourceLedger: DesignLearningLedger,
     id: string,
@@ -460,7 +478,7 @@ export function decideDesignLearningCandidate(
 ): DesignLearningLedger {
     const ledger = normalizeDesignLearningLedger(sourceLedger, now);
     if (decision === 'published' || decision === 'promoted') {
-        return publishUserCalibrationCandidate(ledger, id, note, now);
+        throw new Error('学习候选不能在 Runtime / 模型侧发布：当前缺少独立 Experience Publisher 与可验证完整性收据');
     }
     const found = ledger.candidates.some((item) => item.id === id);
     if (!found) throw new Error(`找不到学习候选 ${id}`);
@@ -565,7 +583,7 @@ export const PROVISIONAL_STALE_MS = 30 * 24 * 60 * 60 * 1000;
  * ① 时间衰减：provisional 超过 30 天无更新 → 降回 candidate（decisionNote 记因）；
  * ② 总量上限：provisional 超过 10 条 → 按 support 升序把最弱的降回 candidate；
  * ③ 劣化回退由 recordDesignRunOutcome 的否决一票回退承担（已有）。
- * 挂在晋升之后调用；只动 provisional，published（用户拍板）永不被自动策展。
+ * 挂在晋升之后调用；只动 provisional。未经独立发布器验证的 published 声明会在更上游归一化为候选待审。
  */
 export function curateProvisionalExperience(
     sourceLedger: DesignLearningLedger,
@@ -624,7 +642,10 @@ export function listPromotableCandidates(sourceLedger: DesignLearningLedger): De
         .sort((a, b) => b.support - a.support || b.updatedAt - a.updatedAt);
 }
 
-/** 生产评审器唯一允许读取的经验出口：已发布到 evaluation_calibration 的结构化样本。 */
+/**
+ * 生产评审器唯一允许读取的经验出口：已发布到 evaluation_calibration 的结构化样本。
+ * 当前没有独立发布器，因此持久化账本中的自述 published 会在 normalize 时被隔离，本出口保持空。
+ */
 export function listPublishedEvaluationCalibrationSamples(
     sourceLedger: DesignLearningLedger,
     limit: number = 10
@@ -703,8 +724,11 @@ export function renderDesignLearningTimeline(sourceLedger: DesignLearningLedger,
     const mark: Record<DesignLearningCandidateStatus, string> = { candidate: '◐', provisional: '◑', published: '★', rejected: '✕' };
     return items.map((item) => {
         const publication = item.publication ? ` → ${item.publication.target}/${item.publication.scope.kind}` : '';
+        const publicationReview = item.publicationReview
+            ? ` → 待独立发布复核/${item.publicationReview.claimedStatus}`
+            : '';
         const note = item.decisionNote ? ` — ${item.decisionNote}` : '';
-        return `${mark[item.status]} [${item.kind}] ${item.text}（×${item.support}）${publication}${note}`;
+        return `${mark[item.status]} [${item.kind}] ${item.text}（×${item.support}）${publication}${publicationReview}${note}`;
     }).join('\n');
 }
 

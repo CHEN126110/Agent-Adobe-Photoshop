@@ -31,6 +31,7 @@ const AGENT_LOCAL_TOOL_NAMES = new Set([
   'matchDetailPageContent',
   'describeImage',
   'analyzeAssetContent',
+  'browseAssetCandidates',
   'recommendAssets',
   'generateImage',
   'getDesignProjectState',

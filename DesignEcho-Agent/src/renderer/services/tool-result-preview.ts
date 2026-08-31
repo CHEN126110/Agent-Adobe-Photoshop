@@ -242,6 +242,12 @@ export function buildToolResultPreview(toolName: string, toolResult: unknown): T
             preview = section ? { sections: [section] } : buildGenericPreview(toolName, data);
             break;
         }
+        case 'browseAssetCandidates': {
+            const candidates = pickArray(record, ['comparisonItems']);
+            const section = listSection('本页候选', candidates);
+            preview = section ? { sections: [section] } : buildGenericPreview(toolName, data);
+            break;
+        }
         default:
             preview = buildGenericPreview(toolName, data);
     }

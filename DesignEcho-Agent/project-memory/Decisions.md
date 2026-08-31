@@ -2,6 +2,38 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-124 测试与 Benchmark 必须处在生产 Runtime 之外的物理隔离信封
+
+- 状态：active；默认调试项目、userData、Main 项目 realpath 与 CDP 信封已实现并通过正负行为回归，fresh 正常程序 Attempt 待验证。
+- Benchmark、fake model、fake Photoshop、Debug fixture、开发验收上下文和测试项目状态只能存在于开发启动器、测试目录与运行档案；不得进入生产 Prompt、Tool 权限、项目状态、完成判定、学习发布或普通用户项目。调试启动器每次创建新的临时项目与 OS-temp userData；Main 最终执行点通过纯 resolver 独立重验项目 /userData realpath、旧 `.designecho`、目录重叠、打包状态、Bridge 与 CDP 信封，不能把启动器检查当成安全 owner。
+- 正面经验：测试不是“更严格的产品配置”，而是独立观察环境。固定输入、Case ID 和评测答案应由测试 Runner 注入并在退出时消失；生产 Agent 只消费当前用户指令、真实项目事实、当前 Photoshop 状态和受审知识。
+- 负面教训：把默认 MCP 调试命令直接指向 `D:\A1 neveralone旗舰店` 会让 `.designecho` 状态、历史选图和测试运行相互污染；随后即使模型每次选择相同素材，也无法区分是模型判断、项目记忆还是测试夹具挂定。不得再用真实用户项目充当可复用 fixture。
+- 回滚边界：若隔离启动器影响实机调试，只能修正一次性项目 /userData 的传递与端口所有权，不能恢复硬编码用户项目或让生产入口接受测试环境变量。
+
+## D-123 Artifact 完成与设计质量终态分轴，文件保存不能抹平 `needs_review`
+
+- 状态：active；终态聚合、用户可见投影和一次有界返修资格已实现并通过行为回归，fresh 正常程序 Attempt 待验证。
+- 可编辑源稿和栅格文件同 revision 保存完成时，Artifact owner 继续记录 `artifact_completed`；Final Judge 返回 `needs_review` 时，Evaluation owner 保留明确问题，整体终态必须是 `needs_review`，不得因文件存在改成 `completed`、可直接使用、可选优化或“不影响交付”。
+- 已闭合 Artifact 的真实保存事实不能被质量失败删除。只有同 TaskRun、同 revision、可靠 ReviewSet、带“视觉发现 → 设计原因 → 修法”且仍有足够模型 /Tool /时间预算时，现有 Reflexion 才可让 Agent 自主返修一次；Harness 不选择修法，也不在预算不足时启动注定无法闭合的新 generation。
+- 正面经验：把“做出来了”和“做得好”分开后，系统既不会丢失真实产物，也不会用技术成功冒充专业完成。
+- 负面教训：`artifact_completed + 88 分 + 两个 major needs_review` 曾被聚合成整体 completed，并在用户文案里软化为建议；这是终态 owner 混淆，不是模型措辞问题，不能只靠提示词要求模型谦虚。
+
+## D-122 生产知识只消费受审用途；模型、测试桥和单次运行不能在线发布经验
+
+- 状态：active；新候选写入、在线发布入口和旧 `published/promoted` 迁移旁路均已关闭并通过伪 publisher 攻击回归。独立用户审核发布 UI 尚未实现，因此正式发布保持 fail closed。
+- `benchmark_case` 无论来自旧持久化、外部 Provider 还是导入文件，都只能作为 `benchmark_seed`；不能伪装 `prompt_context` 或 `user_reference`。真实任务要使用某个案例时，必须以非 benchmark 的明确视觉参考身份重新提供并经过现有来源治理。
+- `recordDesignVerdict`、Skill 改进提案和运行复盘只能产生待审核候选。模型 Tool、测试桥、时间线读取和普通 Renderer IPC 均不能把候选改成 `published`，不能直接改写 `SKILL.md` 或评价校准；正式发布未来必须由独立用户审核、版本、Canary 和回滚 owner 完成。
+- 正面经验：负面样本可以形成缺陷候选，单次成功可以形成待审方法候选，但两者都不是生产知识。先保留来源、用途和生命周期，才能避免“测试通过一次”变成 Agent 的固定答案。
+- 负面教训：历史 H3 /盲评规则、窄样本素材角色和 4 层版式示例曾进入主图方法 /Skill，强模型会因此表现得像在复读旧测试答案；这类污染必须在 Knowledge /Skill 发布边界删除，不能用更多提示词抵消。
+
+## D-121 素材观察提供中性可比较集合；Harness 排序、历史状态和文件顺序都不拥有选定权
+
+- 状态：active；主 Agent 中性分页、候选集合 /文件版本身份、项目摘要隔离与旧推荐能力拒绝已完成限定攻击审计，fresh 正常程序 Attempt 待验证。
+- 主 Agent 只使用 `browseAssetCandidates` 观察显式 scope 下的中性分页：不解析用户 requirement 猜类别、不计算适配分、不返回推荐理由 /赢家、不自动选择第一项、不自动置入。`candidateSetId + G 编号` 共同绑定候选身份，G 只在同一集合内跨页唯一；来源 /画幅与桶内跨度只扩大第一页观察覆盖，不表达优先级。
+- 旧 `recommendAssets` 仅保留给 Skill-owned 非 Agent 兼容路径；不能出现在主 Agent Schema、默认能力或按需 Capability 中。Provider 幻觉旧 Tool 也必须在 `availableTools` 边界失败关闭。
+- 自动项目摘要只投影全局适用的已确认规则、已确认事实、明确标注的待核候选和历史记录数量；旧选图、版式、文案、评审、版本原因及旧 `taskType/platform` 不自动成为当前方案或 scoped rule 的适用上下文。明确续做同一版本时再按需读取并核对当前画面。
+- 正面经验：候选覆盖、身份稳定和来源事实属于 Harness；比较什么、为什么选择、如何用于设计属于 Agent。负面教训是“规则排序第一名 + A01 标签 + 旧项目版式摘要”会共同形成检索诱导，即使没有硬编码 `candidates[0]`，仍能让模型多次做出相同安全选择。
+
 ## D-120 Debug 最终交付引用必须保留来源三态，清洗不能销毁非法事实
 
 - 状态：active；Debug receipt v5、生产投影、consumer 与回归已完成，fresh sidecar Attempt 待验证。

@@ -34,6 +34,7 @@ export const BASE_DOCUMENT_OPTIONAL_TOOL_NAMES: readonly string[] = [
     // 视觉分析
     'analyzeProjectContactSheetOverview',
     'analyzeAssetContent',
+    'browseAssetCandidates',
     'recommendAssets',
     'describeImage',
     // 设计知识

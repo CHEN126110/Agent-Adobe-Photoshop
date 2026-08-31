@@ -13,7 +13,11 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import sharp, { type OverlayOptions } from 'sharp';
 import { readPsd, initializeCanvas } from 'ag-psd';
-import { diversifyAssetRecommendationShortlist } from '../../shared/asset-recommendation-shortlist';
+import {
+    buildNeutralAssetCandidateId,
+    buildNeutralAssetCandidatePage,
+    diversifyAssetRecommendationShortlist
+} from '../../shared/asset-recommendation-shortlist';
 import { buildAgentResourceCacheBudget } from '../../shared/agent-performance-policy';
 import { extractModelJsonObject } from '../../shared/model-json-extract';
 import { measureComposition } from '../../shared/composition-metrics';
@@ -526,6 +530,8 @@ export interface DirectoryScanResult {
 export interface ProjectContactSheetImageInput {
     path: string;
     relativePath?: string;
+    /** 可选的调用方稳定视觉身份；只作为像素标签，不表达排名或推荐。 */
+    idHint?: string;
     labelHint?: string;
     role?: string;
 }
@@ -717,6 +723,8 @@ export interface AssetRecommendation {
 
 export interface AssetRecommendationOptions {
     maxResults?: number;
+    /** 主 Agent 中性候选集页码；不改变非 calling_agent 推荐路径。 */
+    page?: number;
     category?: string;
     deterministic?: boolean;
     /**
@@ -738,9 +746,28 @@ export interface AssetRecommendationOptions {
 export interface AssetRecommendationResult {
     success: boolean;
     recommendations?: AssetRecommendation[];
+    /** 主 Agent 专用的中性候选分页；不存在分数、推荐理由或赢家。 */
+    candidatePage?: {
+        version: 'asset-candidate-page/v1';
+        candidateSetId: string;
+        page: number;
+        pageSize: number;
+        totalCandidates: number;
+        totalPages: number;
+        hasMore: boolean;
+        nextPage?: number;
+        ordering: 'stable_source_aspect_span_round_robin';
+        ranked: false;
+        winnerSelected: false;
+        explicitScope: {
+            category?: string;
+            designRole?: string;
+            placementIntent?: string;
+        };
+    };
     /**
-     * 与 recommendations 使用同一编号的候选联系表。只有 Host 签发 calling_agent owner
-     * 时才跨 IPC 返回像素；默认结构化分析路径已由 Tool 内模型消费，不再重复上返。
+     * 主 Agent 路径的中性候选联系表。只有 Host 签发 calling_agent owner 时才跨 IPC
+     * 返回像素；默认结构化分析路径由 Tool 内模型消费，不重复上返。
      */
     sheet?: ProjectContactSheetOverviewResult['sheet'];
     comparisonItems?: Array<{
@@ -748,6 +775,8 @@ export interface AssetRecommendationResult {
         path: string;
         relativePath?: string;
         status: 'rendered' | 'failed';
+        dimensions?: { width: number; height: number };
+        hasAlpha?: boolean;
     }>;
     warnings?: string[];
     visualComparison?: {
@@ -1542,6 +1571,25 @@ export class ResourceManagerService {
         const thumbHeight = Math.max(32, tileHeight - thumbTop - labelHeight - tilePadding);
         const composites: OverlayOptions[] = [];
         const items: ProjectContactSheetOverviewItem[] = [];
+        const reservedIdHints = new Set(requestedImages
+            .map((input) => String(input.idHint || '').trim().toUpperCase())
+            .filter((id) => /^[A-Z][A-Z0-9-]{1,15}$/u.test(id)));
+        const usedIds = new Set<string>();
+        const resolvedImageIds = requestedImages.map((input, index) => {
+            const idHint = String(input.idHint || '').trim().toUpperCase();
+            if (/^[A-Z][A-Z0-9-]{1,15}$/u.test(idHint) && !usedIds.has(idHint)) {
+                usedIds.add(idHint);
+                return idHint;
+            }
+            let fallbackIndex = index + 1;
+            let fallback = `A${String(fallbackIndex).padStart(2, '0')}`;
+            while (usedIds.has(fallback) || reservedIdHints.has(fallback)) {
+                fallbackIndex += requestedImages.length;
+                fallback = `A${String(fallbackIndex).padStart(2, '0')}`;
+            }
+            usedIds.add(fallback);
+            return fallback;
+        });
 
         // 逐图缩略图生成按批并发：单图是独立的解码→缩放→编码，串行处理 40 张会把
         // 项目总览拖成整个准备阶段最慢的一步（真机 34 秒）。并发上限保持温和，
@@ -1560,7 +1608,7 @@ export class ResourceManagerService {
                 : path.resolve(rootPath || process.cwd(), input.path);
             const relativePath = input.relativePath
                 || (rootPath ? path.relative(rootPath, fullPath) : path.basename(fullPath));
-            const id = `A${String(index + 1).padStart(2, '0')}`;
+            const id = resolvedImageIds[index];
             const tileComposites: OverlayOptions[] = [];
             let tileWarning: string | undefined;
             const column = index % columns;
@@ -2966,9 +3014,7 @@ Return JSON only.`;
             .trim();
     }
 
-    /**
-     * 智能推荐素材（根据设计需求）
-     */
+    /** 非 calling_agent 推荐路径使用的 requirement 关键词。 */
     private getRequirementKeywords(requirement: string): string[] {
         const raw = String(requirement || '')
             .toLowerCase()
@@ -3062,9 +3108,124 @@ Return JSON only.`;
     }
 
     /**
-     * Recommend project assets from one requirement-specific contact-sheet comparison.
-     * The visual model compares the same shortlist in one call; metadata-only fallbacks are
-     * explicitly marked visualObserved=false and must not be treated as auto-placement evidence.
+     * 主 Agent 只取得中性候选观察集：显式 scope、稳定分页、来源 /画幅覆盖和客观文件事实。
+     * requirement 不参与候选筛选或排序；本函数不调用视觉模型，也不生成推荐分或赢家。
+     */
+    private async buildCallingAgentCandidateSheet(
+        candidates: readonly ResourceFile[],
+        options: Pick<AssetRecommendationOptions,
+            'maxResults' | 'page' | 'category' | 'designRole' | 'placementIntent'>,
+        warnings: string[]
+    ): Promise<AssetRecommendationResult> {
+        const neutralPage = buildNeutralAssetCandidatePage(
+            candidates.map((file) => ({ file })),
+            {
+                page: options.page,
+                pageSize: options.maxResults,
+                candidateSetScope: JSON.stringify({
+                    projectRoot: path.resolve(this.projectRoot || ''),
+                    category: String(options.category || '').trim(),
+                    designRole: String(options.designRole || '').trim(),
+                    placementIntent: String(options.placementIntent || '').trim()
+                })
+            }
+        );
+        const explicitScope = {
+            ...(String(options.category || '').trim()
+                ? { category: String(options.category).trim() }
+                : {}),
+            ...(String(options.designRole || '').trim()
+                ? { designRole: String(options.designRole).trim() }
+                : {}),
+            ...(String(options.placementIntent || '').trim()
+                ? { placementIntent: String(options.placementIntent).trim() }
+                : {})
+        };
+        const candidatePage: NonNullable<AssetRecommendationResult['candidatePage']> = {
+            version: 'asset-candidate-page/v1',
+            candidateSetId: neutralPage.candidateSetId,
+            page: neutralPage.page,
+            pageSize: neutralPage.pageSize,
+            totalCandidates: neutralPage.totalCandidates,
+            totalPages: neutralPage.totalPages,
+            hasMore: neutralPage.hasMore,
+            ...(neutralPage.nextPage ? { nextPage: neutralPage.nextPage } : {}),
+            ordering: neutralPage.ordering,
+            ranked: false,
+            winnerSelected: false,
+            explicitScope
+        };
+        const pageFiles = neutralPage.items.map((item) => item.file as ResourceFile);
+        if (pageFiles.length === 0) {
+            return {
+                success: true,
+                comparisonItems: [],
+                candidatePage,
+                warnings
+            };
+        }
+
+        try {
+            const contactSheet = await this.createProjectContactSheetOverview({
+                projectPath: this.projectRoot || undefined,
+                images: pageFiles.map((file, index) => {
+                    const candidateId = buildNeutralAssetCandidateId(neutralPage.itemOrdinals[index]);
+                    return {
+                        path: file.path,
+                        relativePath: file.relativePath,
+                        ...(candidateId ? { idHint: candidateId } : {}),
+                        labelHint: file.name,
+                        role: options.designRole
+                    };
+                }),
+                maxImages: pageFiles.length,
+                columns: Math.min(3, pageFiles.length),
+                tileWidth: 320,
+                tileHeight: 360
+            });
+            if (!contactSheet.success || !contactSheet.sheet?.imageData) {
+                warnings.push(contactSheet.error || '候选联系表生成失败；本页没有可供主 Agent 观察的像素。');
+            }
+            const comparisonItems = contactSheet.items.map((item, index) => {
+                const file = pageFiles[index];
+                return {
+                    id: item.id,
+                    path: file?.path || item.path,
+                    ...(file?.relativePath || item.relativePath
+                        ? { relativePath: file?.relativePath || item.relativePath }
+                        : {}),
+                    status: item.status,
+                    ...(file?.dimensions
+                        ? { dimensions: { ...file.dimensions } }
+                        : {}),
+                    ...(typeof file?.hasAlpha === 'boolean'
+                        ? { hasAlpha: file.hasAlpha }
+                        : {})
+                };
+            });
+            return {
+                success: true,
+                ...(contactSheet.sheet?.imageData ? { sheet: contactSheet.sheet } : {}),
+                comparisonItems,
+                candidatePage,
+                warnings: [...warnings, ...(contactSheet.warnings || [])]
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            warnings.push(`候选联系表生成失败：${message}`);
+            console.warn('[ResourceManager] Neutral asset candidate sheet failed:', message);
+            return {
+                success: true,
+                comparisonItems: [],
+                candidatePage,
+                warnings
+            };
+        }
+    }
+
+    /**
+     * 主 Agent 取得中性候选分页；Skill /非 calling_agent 调用保持既有一次视觉推荐契约。
+     * 两条路径都不自动置入，但只有后者产出 task-relative 推荐字段。
      */
     async recommendAssets(
         requirement: string,
@@ -3073,6 +3234,7 @@ Return JSON only.`;
     ): Promise<AssetRecommendationResult> {
         const {
             maxResults = 5,
+            page = 1,
             category,
             deterministic = false,
             designRole,
@@ -3121,9 +3283,19 @@ Return JSON only.`;
                 .find((item) => item === category);
             if (suppliedCategory && providedCandidates.length > 0) {
                 candidates = candidates.filter((file) => this.fileMatchesCategory(file, suppliedCategory));
-            } else if (category && providedCandidates.length === 0) {
+            } else if (suppliedCategory && providedCandidates.length === 0) {
                 const categories = await this.getResourcesByCategory();
-                candidates = categories[category as keyof typeof categories] || candidates;
+                candidates = categories[suppliedCategory] || [];
+            }
+
+            if (visualConsumptionOwner === 'calling_agent') {
+                return await this.buildCallingAgentCandidateSheet(candidates, {
+                    maxResults: resultLimit,
+                    page,
+                    ...(suppliedCategory ? { category: suppliedCategory } : {}),
+                    designRole,
+                    placementIntent
+                }, warnings);
             }
 
             if (candidates.length === 0) {
@@ -3168,7 +3340,6 @@ Return JSON only.`;
             const visionCandidates = heuristicRanked.slice(0, visionCandidateLimit);
             let visionById = new Map<string, AssetRecommendationVisionCandidate>();
             let modelCallCount: 0 | 1 = 0;
-            let comparisonSheet: ProjectContactSheetOverviewResult['sheet'] | undefined;
             let comparisonItems: AssetRecommendationResult['comparisonItems'];
             if (visionCandidates.length > 0) {
                 try {
@@ -3186,7 +3357,6 @@ Return JSON only.`;
                         tileHeight: 360
                     });
                     if (contactSheet.success && contactSheet.sheet?.imageData) {
-                        comparisonSheet = contactSheet.sheet;
                         comparisonItems = contactSheet.items.map((item, index) => ({
                             id: item.id,
                             path: visionCandidates[index]?.file.path || item.path,
@@ -3201,26 +3371,24 @@ Return JSON only.`;
                         const renderedIds = new Set(comparisonItems
                             .filter((item) => item.status === 'rendered')
                             .map((item) => item.id.toUpperCase()));
-                        if (visualConsumptionOwner !== 'calling_agent') {
-                            const prompt = buildAssetRecommendationComparisonPrompt({
-                                requirement: normalizedRequirement,
-                                designRole,
-                                placementIntent,
-                                items: comparisonItems.map((item, index) => ({
-                                    id: item.id,
-                                    file: visionCandidates[index].file,
-                                    status: item.status
-                                }))
-                            });
-                            modelCallCount = 1;
-                            const response = await this.runWithVisionCallGate(() => visionModelCall(
-                                `data:${contactSheet.sheet!.mediaType};base64,${contactSheet.sheet!.imageData}`,
-                                prompt
-                            ));
-                            visionById = normalizeAssetRecommendationVisionCandidates(response, renderedIds);
-                            if (visionById.size === 0) {
-                                warnings.push('候选总览已完成视觉调用，但没有解析出可绑定到编号的视觉结论；本轮仅返回 metadata-only 候选。');
-                            }
+                        const prompt = buildAssetRecommendationComparisonPrompt({
+                            requirement: normalizedRequirement,
+                            designRole,
+                            placementIntent,
+                            items: comparisonItems.map((item, index) => ({
+                                id: item.id,
+                                file: visionCandidates[index].file,
+                                status: item.status
+                            }))
+                        });
+                        modelCallCount = 1;
+                        const response = await this.runWithVisionCallGate(() => visionModelCall(
+                            `data:${contactSheet.sheet!.mediaType};base64,${contactSheet.sheet!.imageData}`,
+                            prompt
+                        ));
+                        visionById = normalizeAssetRecommendationVisionCandidates(response, renderedIds);
+                        if (visionById.size === 0) {
+                            warnings.push('候选总览已完成视觉调用，但没有解析出可绑定到编号的视觉结论；本轮仅返回 metadata-only 候选。');
                         }
                     } else {
                         warnings.push(contactSheet.error || '候选总览生成失败；本轮仅返回 metadata-only 候选。');
@@ -3300,9 +3468,6 @@ Return JSON only.`;
             return {
                 success: true,
                 recommendations: modelVisibleRecommendations,
-                ...(visualConsumptionOwner === 'calling_agent' && comparisonSheet
-                    ? { sheet: comparisonSheet }
-                    : {}),
                 ...(comparisonItems && comparisonItems.length > 0 ? { comparisonItems } : {}),
                 warnings,
                 visualComparison: {

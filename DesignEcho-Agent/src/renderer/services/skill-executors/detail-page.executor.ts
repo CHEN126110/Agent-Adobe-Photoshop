@@ -491,7 +491,7 @@ const DETAIL_PAGE_CREATE_NEW_HANDOFF_TOOLS = [
     'searchProjectResources',
     'analyzeProjectForDetailPage',
     'analyzeAssetContent',
-    'recommendAssets',
+    'browseAssetCandidates',
     'searchEagleReferences',
     'measureReferenceComposition',
     'generateImage',

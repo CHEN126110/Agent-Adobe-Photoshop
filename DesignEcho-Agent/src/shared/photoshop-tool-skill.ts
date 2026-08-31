@@ -82,6 +82,7 @@ const PROJECT_READ_TOOLS = new Set([
     'createProjectContactSheetOverview',
     'analyzeProjectContactSheetOverview',
     'analyzeAssetContent',
+    'browseAssetCandidates',
     'recommendAssets',
     'analyzeProjectForDetailPage',
     'matchDetailPageContent',
@@ -277,7 +278,8 @@ const USER_INTENT_BOUNDARY_OVERRIDES: Record<string, string> = {
     getSmartObjectLayers: '默认 autoOpen=false，只返回智能对象内部检查入口和安全提示；只有用户明确要求进入智能对象内部时才考虑 autoOpen=true。',
     searchProjectResources: '只搜索当前项目文件；用户提到 CSV、模板、图标或素材但没给路径时先用它找项目资源。',
     analyzeAssetContent: '只分析单个项目图片素材的可见内容、主体、文字和适合用途；不修改 Photoshop 文档。',
-    recommendAssets: '按需求从项目素材中推荐候选图片；只产生候选清单，不自动置入画面。',
+    browseAssetCandidates: '从项目素材中浏览中性候选联系表；只提供编号、路径与像素观察，不排名、不选赢家、不自动置入画面。',
+    recommendAssets: '仅供 Skill 内部生成任务相关的建议候选；建议字段不等于 Agent 或用户已经选定，也不自动置入画面。',
     createTextLayer: '在明确要新增文字并且已有文档/位置/复核目标时创建文字图层。',
     placeImage: '在明确要把某张图片放入当前文档，并已知道素材来源或选择策略时置入图片。',
     convertToSmartObject: '把明确的图层转换为 Photoshop 智能对象；用于保留可编辑源内容或后续智能对象操作。',
@@ -376,8 +378,12 @@ const DO_NOT_USE_OVERRIDES: Record<string, string[]> = {
         '不要把素材分析结果当成已经放入 Photoshop。',
         '不要在没有明确素材路径或素材选择需求时调用。'
     ],
+    browseAssetCandidates: [
+        '不要把候选顺序或 G 编号当成推荐名次、最终选图或已置入画面。',
+        '不要在用户已给出唯一明确素材时重复查看候选。'
+    ],
     recommendAssets: [
-        '不要把推荐结果当成最终选图或已置入画面。',
+        '不要把 Skill 内部建议当成最终选图或已置入画面。',
         '不要在用户已给出唯一明确素材时重复推荐。'
     ],
     getSmartObjectInfo: [
@@ -533,7 +539,8 @@ const VERIFY_OVERRIDES: Record<string, string[]> = {
     getSmartObjectInfo: ['智能对象元数据', 'layerId/isSmartObject 读回'],
     getSmartObjectLayers: ['autoOpen=false 安全检查结果', '必要时后续用户确认'],
     analyzeAssetContent: ['结构化素材分析结果', '后续选图或落位决策'],
-    recommendAssets: ['推荐素材路径和排序理由', '后续 placeImage 或用户确认'],
+    browseAssetCandidates: ['候选联系表像素、编号与路径绑定', 'Agent 后续显式选择的 placeImage 来源或用户确认'],
+    recommendAssets: ['Skill 内部建议候选及来源绑定', 'Agent /用户后续显式选定的来源'],
     createTextLayer: ['getLayerProperties', 'getAcceptanceSnapshot'],
     placeImage: ['getLayerBounds', 'getAcceptanceSnapshot'],
     convertToSmartObject: ['getSmartObjectInfo', 'getLayerHierarchy'],

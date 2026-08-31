@@ -13,6 +13,19 @@ const root = path.resolve(__dirname, '..');
 const runtimeRoot = path.join(root, 'src', 'shared', 'agent-runtime-v5');
 const rendererRuntimeRoot = path.join(root, 'src', 'renderer', 'services', 'agent-runtime');
 const executorRoot = path.join(root, 'src', 'renderer', 'services', 'skill-executors');
+const toolSchemasSource = fs.readFileSync(path.join(rendererRuntimeRoot, 'tool-schemas.ts'), 'utf8');
+const designLearningStoreSource = fs.readFileSync(
+  path.join(root, 'src', 'renderer', 'services', 'design-workshop', 'design-learning.store.ts'),
+  'utf8'
+);
+const skillPackageHandlersSource = fs.readFileSync(
+  path.join(root, 'src', 'main', 'ipc-handlers', 'skill-package-handlers.ts'),
+  'utf8'
+);
+const skillPackageServiceSource = fs.readFileSync(
+  path.join(root, 'src', 'main', 'services', 'skill-package-service.ts'),
+  'utf8'
+);
 
 const { listSkillManifests } = require(path.join(runtimeRoot, 'skill-runtime.ts'));
 const { buildRuntimeContractBundleForAgentTask } = require(path.join(runtimeRoot, 'runtime-contract-bundle.ts'));
@@ -82,6 +95,23 @@ const candidateTools = [
 ];
 const workflowBridgeNames = workflowBridgeTools.map((tool) => tool.name);
 
+const learningTimelineSchemaStart = toolSchemasSource.indexOf("name: 'getDesignLearningTimeline'");
+const learningTimelineSchemaEnd = toolSchemasSource.indexOf(
+  "name: 'evaluateDesign'",
+  learningTimelineSchemaStart
+);
+const learningTimelineSchema = learningTimelineSchemaStart >= 0 && learningTimelineSchemaEnd > learningTimelineSchemaStart
+  ? toolSchemasSource.slice(learningTimelineSchemaStart, learningTimelineSchemaEnd)
+  : '';
+assert(learningTimelineSchema.includes("limit: { type: 'number' }"));
+assert(!learningTimelineSchema.includes('decideId'));
+assert(!learningTimelineSchema.includes("decision: { type: 'string'"));
+assert(!designLearningStoreSource.includes('decideDesignLearningCandidate('));
+assert(!designLearningStoreSource.includes("invoke('skillPackage:applyImprovement'"));
+assert(designLearningStoreSource.includes('requiresUserReview: true'));
+assert(!skillPackageHandlersSource.includes("'skillPackage:applyImprovement'"));
+assert(!skillPackageServiceSource.includes('applySkillImprovement'), 'canonical Skill writes require a future independent reviewed publisher');
+
 const expectedPlaybookBySkillId = new Map([
   ['main-image-design', 'main-image-design'],
   ['detail-page-design', 'detail-page-design'],
@@ -150,7 +180,7 @@ for (const requiredDesignFoundationTool of [
   'readSkillPlaybook',
   'declareDesignIntent',
   'analyzeProjectContactSheetOverview',
-  'recommendAssets',
+  'browseAssetCandidates',
   'composeDesign',
   'evaluateDesign',
   'placeImage',
@@ -591,7 +621,7 @@ assert(
 );
 for (const requiredFirstTurnDesignTool of [
   'analyzeProjectContactSheetOverview',
-  'recommendAssets',
+  'browseAssetCandidates',
   'evaluateDesign',
   'placeImage',
   'transformLayer',

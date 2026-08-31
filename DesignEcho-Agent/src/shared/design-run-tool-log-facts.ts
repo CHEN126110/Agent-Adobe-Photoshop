@@ -824,7 +824,8 @@ export function extractDesignRunToolLogFacts(log: readonly DesignRunToolLogEntry
             continue;
         }
 
-        if ((name === 'recommendAssets'
+        if ((name === 'browseAssetCandidates'
+            || name === 'recommendAssets'
             || name === 'analyzeProjectContactSheetOverview'
             || name === 'createProjectContactSheetOverview') && success) {
             currentCandidateEvidence = readVisualCandidateEvidence(result);

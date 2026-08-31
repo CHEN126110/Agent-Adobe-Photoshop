@@ -191,12 +191,16 @@ function intentForMemoryKind(kind: DesignMemoryKind): DesignKnowledgeIntent {
 }
 
 function defaultAllowedUses(kind: DesignMemoryKind): DesignKnowledgeAllowedUse[] {
-    if (kind === 'benchmark_case') return ['prompt_context', 'benchmark_seed'];
+    // Benchmark 是评测输入，不是生产 Agent 的答案来源。需要把某个案例用于设计时，
+    // 应由用户显式引用为 visual_case / user_reference；不能因为它通过了评测复核就自动
+    // 进入普通任务 Prompt，避免“用测试答案实现测试能力”的泄漏。
+    if (kind === 'benchmark_case') return ['benchmark_seed'];
     if (kind === 'approved_recipe') return ['prompt_context', 'user_reference', 'recipe_hint'];
     return ['prompt_context', 'user_reference'];
 }
 
 function normalizeAllowedUses(kind: DesignMemoryKind, value: unknown): DesignKnowledgeAllowedUse[] {
+    if (kind === 'benchmark_case') return ['benchmark_seed'];
     const allowed: readonly DesignKnowledgeAllowedUse[] = [
         'prompt_context',
         'user_reference',

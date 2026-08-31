@@ -199,12 +199,6 @@ export function applyDesignProjectStatePatch(
     return next;
 }
 
-function basenameOf(value: unknown): string {
-    const normalized = String(value || '').trim().replace(/\\/g, '/');
-    const segments = normalized.split('/').filter(Boolean);
-    return segments.length > 0 ? segments[segments.length - 1] : normalized;
-}
-
 function summaryLine(label: string, value: string | undefined): string | null {
     const text = String(value || '').trim();
     return text ? `- ${label}：${text}` : null;
@@ -215,15 +209,6 @@ function summaryList(label: string, list: string[] | undefined, max = 8): string
     const shown = list.slice(0, max).join('；');
     const suffix = list.length > max ? `（共 ${list.length} 条）` : '';
     return `- ${label}：${shown}${suffix}`;
-}
-
-function formatProductionTaskStatus(status: unknown): string {
-    switch (status) {
-        case 'in_progress': return '进行中';
-        case 'done': return '已完成';
-        case 'blocked': return '受阻';
-        default: return '待做';
-    }
 }
 
 /**
@@ -237,10 +222,11 @@ export function buildTaskStateDisciplineSection(): string {
     return [
         '## 项目记忆怎么用',
         '- 先理解和制作，不要为了记录进度而推迟第一版设计。',
-        '- 看过哪些素材、图上有什么、用了哪个版面、文档和导出文件这些事实会在每次运行结束时自动记进项目记忆，不用你重复记录。',
+        '- 看过哪些素材、图上有什么、历史稿用了哪个版面、文档和导出文件会在每次运行结束时记进项目记忆；它们是可追溯记录，不自动成为下一次设计的答案。',
         '- 只有你才知道的判断请随手记一句：为什么选这张图、这个方向为什么成立、用户拍板了什么、下一步打算做什么（updateDesignProjectState 的 visualDirection / productionTasks / appendLearning）。',
-        '- 系统提示里的「当前项目摘要」已经是最新记忆；只有摘要里没写全、需要细看某项时才调用 getDesignProjectState。',
-        '- 继续任务时先确认当前文档和画面仍是上次保留的内容，然后从未完成处接着做；不要重复已经完成的制作。'
+        '- 系统提示里的「当前项目摘要」只自动提供已确认事实 /规则、明确标注的待核候选和历史记录数量；旧选图、版式、文案、评审和版本原因不会自动注入当前方案。',
+        '- 只有用户明确续做同一版本，或当前任务确实需要核对某项历史记录时，才调用 getDesignProjectState 按需读取；读取后仍要和当前指令、当前素材及 Photoshop 画面核对。',
+        '- 新任务 /新变体不得把历史尝试当模板复用；继续任务也要先确认当前文档和画面仍对应那次记录，再从未完成处接着做。'
     ].join('\n');
 }
 
@@ -260,17 +246,31 @@ export function buildDesignProjectStateSummary(state: DesignProjectState | null 
         && fact.confirmation === 'unverified'
         && fact.sources.some((source) => source.kind === 'project_asset_observation')
     ));
-    const rulePolicy = buildDesignProjectRulePolicy(normalized, {
-        taskType: normalized.taskType,
-        channel: normalized.platform
-    });
+    // 持久化的 taskType / platform 描述的是旧项目尝试，下面也明确把它们标成待核
+    // scope 候选；因此不能同时拿它们激活当前运行的 scoped rule。自动摘要只投影
+    // 全局适用的已确认规则；拥有当前 task/channel 事实的 owner 可按需显式解析。
+    const rulePolicy = buildDesignProjectRulePolicy(normalized);
+    const priorAttemptRecordCount = [
+        normalized.brandStyle,
+        normalized.visualDirection,
+        normalized.layoutPlan,
+        normalized.reviewResult?.verdict,
+        ...(normalized.copywriting || []),
+        ...(normalized.productionTasks || []),
+        ...(normalized.versionHistory || []),
+        ...(normalized.learnings || []),
+        ...(normalized.materialAssets || [])
+    ].filter(Boolean).length;
+    const legacyScopeCandidates = [
+        normalized.taskType ? `任务类型=${normalized.taskType}` : '',
+        normalized.platform ? `渠道=${normalized.platform}` : '',
+        normalized.canvasSize && (normalized.canvasSize.width || normalized.canvasSize.preset)
+            ? `画布=${normalized.canvasSize.preset || `${normalized.canvasSize.width}×${normalized.canvasSize.height}`}`
+            : ''
+    ].filter(Boolean);
 
     const lines: Array<string | null> = [
-        summaryLine('项目', [normalized.projectName, normalized.taskType, normalized.platform].filter(Boolean).join(' / ')),
-        normalized.canvasSize && (normalized.canvasSize.width || normalized.canvasSize.preset)
-            ? `- 画布：${normalized.canvasSize.preset || `${normalized.canvasSize.width}×${normalized.canvasSize.height}`}`
-            : null,
-        normalized.brandStyle ? `- 旧品牌风格参考（未确认）：${normalized.brandStyle}` : null,
+        summaryLine('项目', normalized.projectName),
         rulePolicy.applicableRules.length > 0
             ? `- 已确认项目/品牌规则：${rulePolicy.applicableRules.slice(0, 6).map((rule) => rule.statement).join('；')}`
             : null,
@@ -283,14 +283,16 @@ export function buildDesignProjectStateSummary(state: DesignProjectState | null 
         rulePolicy.requiresApprovalBeforeDelivery
             ? '- 项目要求在正式交付前取得用户确认'
             : null,
-        summaryLine('目标用户', normalized.targetUser),
-        // 素材记忆：看过 / 用过哪些图、图上是什么。没有这一行，Harness 记的账模型看不见，下一轮又要重新看图。
-        Array.isArray(normalized.materialAssets) && normalized.materialAssets.length > 0
-            ? `- 已看过的素材：${normalized.materialAssets.slice(-6).map((asset) => (
-                `${basenameOf(asset.path)}${asset.note ? `（${String(asset.note).slice(0, 60)}）` : ''}`
-            )).join('；')}${normalized.materialAssets.length > 6 ? `（共 ${normalized.materialAssets.length} 张，其余用 getDesignProjectState 查看）` : ''}`
+        legacyScopeCandidates.length > 0
+            ? `- 旧项目规格候选（缺少来源确认，不能据此绑定当前任务）：${legacyScopeCandidates.join('；')}`
             : null,
-        summaryList('产品事实', normalized.productFacts),
+        normalized.targetUser
+            ? `- 旧目标用户候选（未验证）：${normalized.targetUser}`
+            : null,
+        summaryList('旧产品描述候选（未验证）', normalized.productFacts),
+        summaryList('旧用户痛点候选（未验证）', normalized.painPoints),
+        summaryList('旧卖点候选（未验证）', normalized.sellingPoints),
+        summaryList('旧竞品观察候选（未验证）', normalized.competitorNotes, 4),
         trustedFacts.length > 0
             ? `- 已确认事实：${trustedFacts.slice(0, 8).map((fact) => fact.statement).join('；')}${trustedFacts.length > 8 ? `（共 ${trustedFacts.length} 条）` : ''}`
             : null,
@@ -300,33 +302,11 @@ export function buildDesignProjectStateSummary(state: DesignProjectState | null 
         factSummary.needsReview > assetObservedFacts.length
             ? '- 还有一些项目资料尚未确认；涉及关键文案或不可逆决定时不要自行当成确定信息'
             : null,
-        summaryList('用户痛点', normalized.painPoints),
-        summaryList('核心卖点', normalized.sellingPoints),
-        summaryList('竞品观察', normalized.competitorNotes, 4),
-        Array.isArray(normalized.copywriting) && normalized.copywriting.length > 0
-            ? `- 文案方案：${normalized.copywriting.slice(0, 6).map(c => `[${c.slot}] ${c.text}`).join('；')}${normalized.copywriting.length > 6 ? `（共 ${normalized.copywriting.length} 条）` : ''}`
-            : null,
-        summaryLine('视觉方向', normalized.visualDirection),
-        summaryLine('版式规划', normalized.layoutPlan ? normalized.layoutPlan.slice(0, 400) : undefined),
-        // 任务清单是跨轮次的任务真相源（治"续跑轮把上一轮半成品当原有内容重做"）：
-        // 摘要不显示它 = 机制半隐身，模型既不会维护也无法据此续跑。
-        Array.isArray(normalized.productionTasks) && normalized.productionTasks.length > 0
-            ? `- 任务清单：${normalized.productionTasks.slice(0, 8).map(t => `[${formatProductionTaskStatus(t.status)}] ${t.title}${t.note ? `（${String(t.note).slice(0, 60)}）` : ''}`).join('；')}${normalized.productionTasks.length > 8 ? `（共 ${normalized.productionTasks.length} 项）` : ''}`
-            : null,
-        normalized.reviewResult?.verdict
-            ? `- 上次画面反馈：${normalized.reviewResult.issues?.slice(0, 3)
-                .map((issue) => [issue.problem, issue.suggestion].filter(Boolean).join('，'))
-                .filter(Boolean)
-                .join('；') || '继续根据当前画面判断是否需要调整'}`
-            : null,
         Array.isArray(normalized.artifactRefs) && normalized.artifactRefs.length > 0
             ? `- 项目里已有 ${normalized.artifactRefs.length} 项交付内容，使用前按当前项目文件确认`
             : null,
-        Array.isArray(normalized.versionHistory) && normalized.versionHistory.length > 0
-            ? `- 最新版本：${normalized.versionHistory[normalized.versionHistory.length - 1].version}（${normalized.versionHistory[normalized.versionHistory.length - 1].reason}）`
-            : null,
-        Array.isArray(normalized.learnings) && normalized.learnings.length > 0
-            ? `- 历史复盘：${normalized.learnings.slice(-3).map(l => l.note).join('；')}`
+        priorAttemptRecordCount > 0
+            ? `- 项目另有 ${priorAttemptRecordCount} 项历史素材 /选图 /版式 /文案 /版本 /评审记录；它们未自动展开，也不是当前任务答案。只有明确续做同一版本时再用 getDesignProjectState 按需读取。`
             : null
     ];
 
@@ -336,7 +316,7 @@ export function buildDesignProjectStateSummary(state: DesignProjectState | null 
     const summary = [
         '## 当前项目摘要',
         body,
-        '以上是项目之前保留的信息，用户当前要求优先。发现内容已经变化时，更新项目记录。'
+        '以上只自动提供已确认事实 /规则、明确标注的待核候选和历史记录数量。用户当前要求与真实项目 / Photoshop 状态优先；旧设计决定不能冒充当前方案。'
     ].join('\n');
 
     return summary.length > MAX_SUMMARY_CHARS

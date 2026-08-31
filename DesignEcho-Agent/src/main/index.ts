@@ -15,6 +15,7 @@
 
 import crypto from 'crypto';
 import { app, BrowserWindow, ipcMain, shell, type IpcMainEvent } from 'electron';
+import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import http from 'http';
@@ -68,6 +69,7 @@ import { setupIPCHandlers, IPCContext } from './ipc-handlers';
 import { registerEarlyStateStoreHandlers } from './ipc-handlers/early-state-handlers';
 import { registerUXPHandlers, UXPContext } from './uxp-handlers';
 import { cleanupStreams } from './ipc-handlers/stream-handlers';
+import { resolveChatTestEnvironmentEnvelope } from './chat-test-environment';
 import {
     CODEX_SUBSCRIPTION_PROVIDER,
     isCodexSubscriptionModelId
@@ -94,42 +96,35 @@ import {
 
 // ============ 全局变量 ============
 
-function applyRemoteDebuggingPortFromEnv(): void {
-    const raw = process.env.DESIGNECHO_REMOTE_DEBUGGING_PORT?.trim();
-    if (!raw) return;
-
-    const port = Number.parseInt(raw, 10);
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-        throw new Error('DESIGNECHO_REMOTE_DEBUGGING_PORT must be an integer port between 1024 and 65535.');
-    }
-
+function applyRemoteDebuggingPort(port: number | null): void {
+    if (port === null) return;
     app.commandLine.appendSwitch('remote-debugging-port', String(port));
     app.commandLine.appendSwitch('remote-allow-origins', `http://127.0.0.1:${port}`);
-    console.log(`[Main] Remote debugging enabled for running-window acceptance. port=${port}`);
+    console.log(`[Main] Remote debugging enabled for isolated chat-test acceptance. port=${port}`);
 }
-
-applyRemoteDebuggingPortFromEnv();
 
 // ============ 单实例锁（防止多开） ============
 const normalUserDataDir = app.getPath('userData');
-const testUserDataDir = process.env.DESIGNECHO_TEST_USER_DATA_DIR?.trim();
-if (testUserDataDir) {
-    const resolvedTestUserDataDir = path.resolve(testUserDataDir);
-    fs.mkdirSync(resolvedTestUserDataDir, { recursive: true });
-    app.setPath('userData', resolvedTestUserDataDir);
+const chatTestEnvironment = resolveChatTestEnvironmentEnvelope({
+    environment: process.env,
+    isPackaged: app.isPackaged,
+    normalUserDataDir,
+    appPath: app.getAppPath(),
+    tempDir: os.tmpdir()
+});
+const validatedChatTestProjectPath = chatTestEnvironment.projectPath;
+if (chatTestEnvironment.enabled) {
+    process.env.DESIGNECHO_CHAT_TEST_PROJECT_PATH = chatTestEnvironment.projectPath;
+    process.env.DESIGNECHO_TEST_USER_DATA_DIR = chatTestEnvironment.testUserDataDir;
+    app.setPath('userData', chatTestEnvironment.testUserDataDir);
     app.setName('DesignEcho Test');
-    console.log(`[Main] Using isolated test userData directory: ${resolvedTestUserDataDir}`);
+    console.log(`[Main] Using isolated test userData directory: ${chatTestEnvironment.testUserDataDir}`);
+    console.log(`[Main] Using one-time test project directory: ${chatTestEnvironment.projectPath}`);
 }
 
-const reuseNormalCodexSubscriptionSession = process.env.DESIGNECHO_TEST_REUSE_CODEX_SUBSCRIPTION_SESSION === '1';
-if (reuseNormalCodexSubscriptionSession
-    && (!testUserDataDir
-        || process.env.DESIGNECHO_CHAT_TEST_BRIDGE !== '1'
-        || process.env.DESIGNECHO_PORT_OFFSET !== '0')) {
-    throw new Error(
-        'DESIGNECHO_TEST_REUSE_CODEX_SUBSCRIPTION_SESSION requires an isolated chat test bridge on the default runtime ports.'
-    );
-}
+applyRemoteDebuggingPort(chatTestEnvironment.remoteDebuggingPort);
+
+const reuseNormalCodexSubscriptionSession = chatTestEnvironment.reuseNormalCodexSubscriptionSession;
 
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -758,11 +753,11 @@ function createWindow(): void {
     });
 
     // 加载渲染进程页面。ChatPanel 测试桥接只在显式环境变量下启用，默认不暴露给用户会话。
-    const rendererQuery = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
+    const rendererQuery = chatTestEnvironment.enabled && chatTestEnvironment.bridgeEnabled
         ? {
             designechoChatTestBridge: '1',
-            ...(process.env.DESIGNECHO_CHAT_TEST_PROJECT_PATH
-                ? { designechoChatTestProjectPath: process.env.DESIGNECHO_CHAT_TEST_PROJECT_PATH }
+            ...(validatedChatTestProjectPath
+                ? { designechoChatTestProjectPath: validatedChatTestProjectPath }
                 : {}),
             ...(process.env.DESIGNECHO_CHAT_TEST_FAKE_MODEL === '1'
                 ? { designechoChatTestFakeModel: '1' }

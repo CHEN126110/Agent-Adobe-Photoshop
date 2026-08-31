@@ -171,6 +171,7 @@ const CONTEXT_READ_TOOLS = new Set([
     'studyReference',
     // 素材理解 / 推荐：只读分析，不改 Photoshop
     'analyzeAssetContent',
+    'browseAssetCandidates',
     'recommendAssets',
     // 设计源解析（PSD 知识库 P0）：离线读设计师 PSD/PSB 结构，只读不落盘
     'analyzePsdDesignSource',

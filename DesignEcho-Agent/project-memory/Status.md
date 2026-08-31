@@ -29,6 +29,12 @@
 - agentic Task Profile 绑定现在遵守上下文因果一致性：同一响应中的只读观察与知识检索可保留，Photoshop 写入、保存导出、外部生成、状态写入和未知副作用调用必须由绑定后模型轮重新生成。Harness 不改参数、不强制参考，也不把 Brief / Strategy / Plan 变成写入门票。
 - Final Quality 在 Host 事实、ReviewSet 或 Judge 调度形成协议前失败时，现通过既有有界协议摘要记录 `unavailable / evaluation_runtime_failed`；交付复入只有 fresh exact revision 才恢复缓存的 `completed`，已知漂移投影 `stale`，两类失败都不会继承旧信用或唤醒普通 Agent。
 - Design Reliability 已把 Debug 最终交付来源升级为贯穿 E2/resultRef collector、Sidecar、ChatPanel 与 consumer 的 v5 三态：只有确实未声明时 `absent + []` 才是可信但不完整；非空合法集合为 `valid`；项目外路径、目录穿越、畸形、超量、重复或状态矛盾为 `invalid` 并使收据不可信。canonical 生产完成路径保持原 `string[]` owner；空集合不能构造 Artifact manifest，技术交付仍失败。
+- 主 Agent 素材观察已从 requirement 驱动的 `recommendAssets` 收敛为 `browseAssetCandidates` 中性分页：不推断品类、不评分、不返回赢家、不自动选第一项；`candidateSetId + G + path` 绑定 scope、完整候选文件版本与集合内跨页身份。旧推荐入口不再出现在模型 Schema 或 Capability Session，只保留给 Skill-owned 兼容路径。
+- 生产知识治理现在把任何来源的 `benchmark_case` 强制限制为 `benchmark_seed`；模型、测试桥和普通时间线读取只能写 /读待审核学习候选，不能发布评价校准或在线改写 Skill。当前没有独立用户审核发布 UI，因此正式发布保持 fail closed。
+- 自动 Project State 摘要只展开全局适用的已确认规则、已确认事实、待核候选和历史记录数量；旧选图、版式、文案、评审、版本原因与旧 task/channel 不再自动进入当前方案或激活 scoped rule。明确当前 owner 提供 task/channel 时，scoped 已确认规则仍可按需解析。
+- Artifact 与 Evaluation 终态已分轴：PSD/JPG 保存完成继续保留 `artifact_completed`，但 `designVerdict=needs_review` 会让整体终态保持 `needs_review`，用户可见文案不得改称专业完成或“不影响交付”。
+- 测试启动器已不再默认指向用户真实项目，并会创建一次性临时项目和 OS-temp userData；Main 通过纯 resolver 独立重验项目 /userData realpath、旧 `.designecho`、目录重叠、打包 /Bridge 与 CDP 信封，正负行为测试已覆盖启动器旁路。
+- 主图生产结构审计已确认当前 Runtime 与用户真实空骨架不一致：正确工作画布为 1500×1500、1500×2000、1440×2160，三文档均保留 5 个点击槽和 4 个转化槽；现 core 尺寸、1200 禁转化、创意 variant 驱动物料组和导出命名属于 `INTAKE-092`，尚未修复。
 
 ## 已核实（构建与自动检查）
 
@@ -38,6 +44,7 @@
 - S1 交付 /评审根因代码纵切新增后，再次完成一轮 65 阶段 `maintenance:validate`；专项覆盖真实 DeepSeek `chatWithTools(..., tools=[])` 图片出站、OpenAI-compatible receipt、全画布 Final Judge binding、r38 形态 PSD/JPG E2 refs、Evaluation 非法输出和 advisory authority。
 - INTAKE-090 性能归因纵切已通过一轮 fresh 65 阶段完整 `maintenance:validate`，其中包含 Runtime ledger、ContextManager、设计作者权与业务边界、Agent 简化棘轮、Renderer/Main 类型检查、Agent/UXP 测试和 UXP production build；尚无 fixed Case 新样本，因此不能把工程绿色表述为已经提速。
 - revision 5 实机后的最终整合树已通过 65 阶段 `maintenance:validate`；包含 Debug v5 producer→receipt→consumer 三态、Runtime declaration、TypeScript 控制流业务边界、零任务进展时零 Host /零模型调用、exact / stale / unavailable 终审缓存复入、Design Reliability、设计作者权、Renderer/Main 类型检查、Agent/UXP 测试和 UXP production build。Agent 核心简化棘轮由 12826 下调并锁定到 12825 行。
+- 当前防污染切片在首轮局部绿色后接受了独立攻击审计；发现的推荐回落、旧学习伪发布、Main 测试项目 /CDP 旁路、裸 G 集合碰撞和文件版本漂移均已根修。完成态审美复入资格已从主循环下沉到纯逻辑策略，要求产物闭合、`needs_review`、同 revision ReviewSet、完整可靠 Judge、无 blocker 与必需 E2 交付证据同时成立。限定复审已无 P0/P1，fresh 65 阶段 `maintenance:validate` 已通过，含作者权、业务边界、Final Comparison、Learning、Tool、Skill Package、Runtime、Run Ledger、调试信封、Agent 简化棘轮、Main /Renderer 类型检查、Agent /UXP 测试和 UXP production build。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -52,6 +59,7 @@
 - `main-image-pink-coffee-unseen-v1` revision 4 曾有一轮 19 次模型调用、约 539 秒的技术交付样本；其源目录随后缺少 4 张冻结的已处理平铺图且旧 fixture 不在，因此当前已将 64 张现存输入冻结为 revision 5。旧样本不能冒充新 revision 基线。
 - `main-image-pink-coffee-unseen-v1` revision 5 已完成一轮无人工纠正真实运行：Runtime 约 319 秒，12 次模型请求约占 93%，18 次 Tool 约占 7%；PSD/JPG 真实生成但 canonical 运行以 `error / artifact_incomplete / 0 of 16` 结束。首个绑定前 `composeDesign` 没有消费主图方法；最终质量链没有发起 `final_quality_judge`，而是错误启动普通恢复回合后遭遇 Provider capacity。
 - revision 5 成品经真实像素对照只达到“主体完整、色调协调、结构可编辑”的制作底线；最终画面只保留四色平铺图并关闭模特场景，更像 SKU /目录展示，明显弱于用户 C-1256 主图与 Eagle 点击图参考。当前没有证据证明固定模板，较准确归因是 Agent 设计策略塌缩与 Evaluation 未闭合。
+- 提交 `fc6781da` 后的正常程序新项目 Attempt 已真实完成 PSD/JPG 与 Final Judge：15 次模型调用、18 次 Tool、墙钟约 703 秒，模型耗时约 633 秒；Artifact 完成，Evaluation 为 `88 / needs_review`，含两个 major。成品是通用左图右文结构，仍明显低于用户成稿 /Eagle 参考。该运行调用了旧 `recommendAssets` 并选择 A01 /A02，证明重复选图至少受到检索诱导；不能只归因模型审美。
 
 ## 当前未核实
 
@@ -62,19 +70,23 @@
 - 自动 Evaluation 对裁切、图文关系、错字、光学平衡和商业完成度的可靠检出率。
 - 在质量不退化前提下的速度、token 和观察次数改善。
 - 修复后固定 Case 的 call-kind、上下文来源、输出体量和同 revision 重复视觉 presentation 分布。
+- 中性候选、历史状态隔离、学习发布防火墙与诚实质量终态在 fresh 正常程序中的真实行为和设计收益。
+- 主图 5+4 容器中哪些槽位必须填满、1200 转化图是否为必交物，以及最终平台上传尺寸；空骨架与当前 JSX 只能证明容器和逐非空组导出，不能证明这些业务取舍。
 
 ## 当前主要风险
 
-1. 当前三项 revision 5 根因补丁尚无 fresh 真实 sidecar Attempt，运行态闭环和设计效果改善仍未核实。
+1. 当前防污染根修已通过完整核心闸门，但尚无 fresh 正常程序 Attempt；自动检查只能证明旧旁路关闭，不能证明选图或设计质量已经改善。
 2. Evaluation authority 已修复且故障不再转嫁主 Agent；自动高分漏检错字、标题重量、点击目标和商业完成度的校准仍未解决。
 3. 图片内容被压缩成单主体 bbox、矩形目标区和粗锚点，不能完整表达负空间、保护部位、多主体和视觉重量。
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
 5. 历史 Markdown、旧命令和旧模型配置可能再次进入上下文并误导开发。
 6. 已上传图片若没有请求级 `attachmentRef`，Agent 会把 Harness 输入断链误判成“文件不在项目”，产生无效搜索并把路径问题退回用户；直接开放任意 CLI 会扩大权限面但不证明同名文件身份。
+7. 主图 Runtime 仍使用错误工作画布、错误 1200 规则和错误子组命名；在 `INTAKE-092` 修复前，Skill 可能稳定地产出结构错误的交付，即使 Agent 视觉判断正确也无法达成用户格式。
 
 ## 当前下一步
 
-1. 提交并推送已经通过完整核心验证的收据分层、上下文因果和 Evaluation 归属补丁，形成可回滚基线。
-2. 用新一次性 fixture 重跑同一 revision 5 Case；验证绑定前零写、绑定后方法真实消费、独立 Final Judge、诚实交付分类与外部文档零变化，并重新做人工作品对照。
-3. 只有取得新样本后才选择一个设计质量变量；若仍退化为安全平铺图，优先证伪参考上下文供给或 Evaluation 检出，而不是继续堆缩放规则、固定 Eagle 步骤或品类 Prompt。
-4. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。
+1. 排除无关 UI 改动，提交并推送已通过 fresh 65 阶段核心验证的防污染切片。
+2. 修复 `INTAKE-092` 的主图生产结构和 UXP 逐子组隔离导出；稳定容器与 Agent 物料计划分离，工作画布与上传尺寸分离。
+3. 在新的正常项目中重跑自然短提示；不使用 fake /Debug fixture 或用户参考项目作为 active test project，核对候选覆盖、选图说明、参考取舍、真实 Photoshop 结果、诚实 Final Judge 和外部文档零变化。
+4. 只有取得新样本后才选择一个设计质量变量；若仍退化为相同安全构图，优先证伪 Agent 设计认知 /参考信息增益或 Evaluation 检出，不恢复推荐排序、固定 Eagle 步骤或品类 Prompt。
+5. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。

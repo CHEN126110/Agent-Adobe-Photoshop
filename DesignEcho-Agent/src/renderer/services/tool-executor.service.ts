@@ -221,7 +221,7 @@ export const AVAILABLE_TOOLS = [
     
     // === 图像处理 ===
     { name: 'removeBackground', description: '完整智能抠图：绑定当前文档/图层，执行本地检测与分割并写回验真；语义目标、实例选择和可选正负点都由 Agent 明确给出', params: '{ layerId?: number, targetPrompt?: string, outputFormat?: "layer"|"mask"|"selection"|"channel", quality?: "fast"|"balanced"|"quality", semanticGuidance?: { version: "semantic-matting-guidance/v1", instanceSelectionMode?: "refine_detected_candidates"|"exact_guided_instances", sets: [{ foregroundPoints: [{x:number,y:number}], backgroundPoints?: [{x:number,y:number}] }] } }' },
-    { name: 'placeImage', description: 'Place an image that the Agent has explicitly selected. This execution tool never scans, ranks, or chooses project assets. When no source is supplied, inspect candidates with recommendAssets and call placeImage again with filePath/fileToken/imageData.', params: '{ filePath?: string, fileToken?: string, imageData?: string, name?: string, x?: number, y?: number, targetBounds?: { x?: number, y?: number, left?: number, top?: number, right?: number, bottom?: number, width?: number, height?: number }, targetFit?: "contain"|"cover"|"fill", layerOrder?: "front"|"belowText"|"back", center?: boolean, scale?: number, fitToCanvas?: boolean }' },
+    { name: 'placeImage', description: 'Place an image that the Agent has explicitly selected. This execution tool never scans, ranks, or chooses project assets. When no source is supplied, browse neutral candidates with browseAssetCandidates and call placeImage again with filePath/fileToken/imageData.', params: '{ filePath?: string, fileToken?: string, imageData?: string, name?: string, x?: number, y?: number, targetBounds?: { x?: number, y?: number, left?: number, top?: number, right?: number, bottom?: number, width?: number, height?: number }, targetFit?: "contain"|"cover"|"fill", layerOrder?: "front"|"belowText"|"back", center?: boolean, scale?: number, fitToCanvas?: boolean }' },
     { name: 'replaceLayerContent', description: '目标图层和替换文件都明确后，替换图层内容为新图片', params: '{ filePath: string, layerId?: number }' },
     // === 创建工具 ===
     { name: 'createRectangle', description: '创建矩形', params: '{ x: number, y: number, width: number, height: number, name?: string, color?: {r,g,b}, fillColorHex?: string, cornerRadius?: number }' },
@@ -1068,7 +1068,7 @@ const RENDERER_LOCAL_TOOLS = [
     'getResourcesByCategory', 'getResourceSummary', 'getAssetPreview',
     'createProjectContactSheetOverview', 'analyzeProjectContactSheetOverview',
     'prepareSkuRetouchAssets',
-    'analyzeAssetContent', 'recommendAssets', 'openProjectFile',
+    'analyzeAssetContent', 'browseAssetCandidates', 'recommendAssets', 'openProjectFile',
     'describeImage',
     'analyzeProjectForDetailPage',
     'getDesignProjectState', 'updateDesignProjectState',
@@ -2261,7 +2261,7 @@ function resolveExplicitPlaceImageSource(params: any): any {
         return params;
     }
 
-    // placeImage 只执行 Agent 已经作出的选择。素材发现与候选比较由 recommendAssets
+    // placeImage 只执行 Agent 已经作出的选择。主 Agent 的素材发现与候选比较由 browseAssetCandidates
     // 单独完成并返回主循环；Harness 不得在执行工具内部把推荐 Top1 变成设计决定。
     return {
         ...params,
@@ -2271,7 +2271,7 @@ function resolveExplicitPlaceImageSource(params: any): any {
             searchedCandidates: false,
             selectedCandidate: false,
             photoshopWriteAttempted: false,
-            nextTool: 'recommendAssets'
+            nextTool: 'browseAssetCandidates'
         }
     };
 }
@@ -2426,6 +2426,19 @@ export interface ToolCallExecutionOptions {
     visualConsumptionOwner?: 'calling_agent';
     /** 仅正式 disposable Debug 请求签发；模型与 Tool 参数不能创建或覆盖。 */
     guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
+}
+
+/**
+ * `browseAssetCandidates` 本身就是主 Agent 的中性观察工具；它的 owner 不能随着
+ * Task Profile 是否已绑定而变化。旧 `recommendAssets` 只在明确的兼容调用方签发
+ * owner 时才把像素交给 calling Agent，默认仍保留 Skill-owned 行为。
+ */
+export function resolveToolVisualConsumptionOwner(
+    toolName: string,
+    requestedOwner?: ToolCallExecutionOptions['visualConsumptionOwner']
+): ToolCallExecutionOptions['visualConsumptionOwner'] {
+    if (toolName === 'browseAssetCandidates') return 'calling_agent';
+    return requestedOwner;
 }
 
 function readGuardedPhotoshopRuntimeIdentity(
@@ -3020,8 +3033,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             return result;
         }
 
-        // 经验闭环：自动观察只进候选区；用户「留 / 改 / 弃 + 为什么」发布为项目评审校准。
-        // 时间线可读、可驳回；原则 / 配方 / 模型观察不能在在线运行里自行发布。
+        // 经验候选区：模型转述的观察与「留 / 改 / 弃 + 为什么」都只进候选。
+        // 时间线只读；发布必须由独立、可验证的 Experience Publisher 完成，当前工具面没有发布权。
         if (toolName === 'recordDesignVerdict' || toolName === 'getDesignLearningTimeline' || toolName === 'proposeSkillImprovement') {
             const learning = await import('./design-workshop/design-learning.store');
             const invokeMain = (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args);
@@ -3030,7 +3043,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 result = await learning.executeProposeSkillImprovement(invokeMain, projectPath, params);
             } else {
                 result = toolName === 'recordDesignVerdict'
-                    ? await learning.executeRecordDesignVerdict(invokeMain, projectPath, params, options.taskCardScope)
+                    ? await learning.executeRecordDesignVerdict(invokeMain, projectPath, params)
                     : await learning.executeGetDesignLearningTimeline(invokeMain, projectPath, params);
             }
             if (result?.success) executedToolsInSession.push(toolName);
@@ -5875,7 +5888,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     selectedCandidate: decision.selectedCandidate === true,
                     photoshopWriteAttempted: decision.photoshopWriteAttempted === true,
                     nextTool: decision.nextTool,
-                    suggestion: '先用 recommendAssets 查看候选，再由 Agent 选择并把明确的 filePath 传给 placeImage。'
+                    suggestion: '先用 browseAssetCandidates 查看中性候选，再由 Agent 选择并把明确的 filePath 传给 placeImage。'
                 };
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
@@ -6958,21 +6971,31 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                 // describeImage 与 analyzeAssetContent 功能一致，参数名不同
                 return await window.designEcho.invoke('resource:analyzeAsset', params.filePath || params.imagePath || params.path || '');
 
-            case 'recommendAssets': {
+            case 'recommendAssets':
+            case 'browseAssetCandidates': {
+                const visualConsumptionOwner = resolveToolVisualConsumptionOwner(
+                    toolName,
+                    options.visualConsumptionOwner
+                );
                 const result = await window.designEcho.invoke('resource:recommendAssets', {
                     requirement: params.requirement || params.query || '',
                     maxResults: params.maxResults || 5,
+                    page: params.page || 1,
                     category: params.category,
                     designRole: params.designRole,
                     placementIntent: params.placementIntent,
                     deterministic: params.deterministic === true,
-                    ...(options.visualConsumptionOwner === 'calling_agent'
+                    ...(visualConsumptionOwner === 'calling_agent'
                         ? { visualConsumptionOwner: 'calling_agent' as const }
                         : {})
                 });
-                if (options.visualConsumptionOwner !== 'calling_agent') return result;
+                if (visualConsumptionOwner !== 'calling_agent') return result;
 
                 const sheet = result?.sheet;
+                const candidatePage = result?.candidatePage;
+                const comparisonItems = Array.isArray(result?.comparisonItems)
+                    ? result.comparisonItems
+                    : [];
                 const presentationSheet = sheet?.imageData
                     ? {
                         ...sheet,
@@ -6980,13 +7003,23 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                         sourceId: buildCandidateSetObservationSourceId(
                             'asset-shortlist',
                             sheet.imageData,
-                            result?.comparisonItems
+                            comparisonItems
                         ),
                         sourceName: '素材候选联系表'
                     }
                     : undefined;
+                const pageLabel = candidatePage?.totalPages > 0
+                    ? `第 ${candidatePage.page}/${candidatePage.totalPages} 页`
+                    : '当前页';
+                const continuation = candidatePage?.hasMore && candidatePage?.nextPage
+                    ? `如需扩大观察范围，可继续调用 page=${candidatePage.nextPage}；`
+                    : '';
                 return {
-                    ...result,
+                    success: result?.success === true,
+                    ...(result?.error ? { error: result.error } : {}),
+                    comparisonItems,
+                    ...(candidatePage ? { candidatePage } : {}),
+                    ...(Array.isArray(result?.warnings) ? { warnings: result.warnings } : {}),
                     ...(presentationSheet ? { sheet: presentationSheet } : {}),
                     visualObservationHandoff: {
                         owner: 'calling_agent',
@@ -6994,8 +7027,8 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                         sourceKind: 'candidate_set'
                     },
                     summary: presentationSheet?.imageData
-                        ? `候选联系表已交给当前多模态 Agent 直接比较；内部模型调用为 0。请按 A 编号与 comparisonItems 的路径绑定你自己的选图判断，不要把 metadata 排序当成视觉结论。`
-                        : '候选联系表生成失败或没有可用像素；当前只返回 metadata-only 候选，不能据此自动置入。'
+                        ? `${pageLabel}中性候选联系表已交给当前多模态 Agent 直接比较；内部模型调用为 0。候选集合身份为 ${candidatePage?.candidateSetId || 'unknown'}，G 编号只在该集合内跨分页稳定，不表示顺序、排名或优先级；本结果不包含推荐分、推荐理由或赢家。${continuation}由你看图后选择，不能自动取第一项。`
+                        : `${pageLabel}候选联系表没有可用像素；当前 metadata 只证明候选身份，不能据此自动置入。${continuation}`
                 };
             }
 

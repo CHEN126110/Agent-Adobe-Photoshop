@@ -194,6 +194,16 @@ const {
   'terminal-closure-checkpoint.ts'
 ));
 const {
+  isCompletedAestheticImprovementEligible,
+  shouldStopWarningOnlyNeedsReviewReflexion
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'reflexion-reentry-policy.ts'
+));
+const {
   guardRuntimeInteractiveReentryResult
 } = require(path.resolve(
   __dirname,
@@ -5026,11 +5036,11 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
 async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
   const identity = createPlanNeutralIdentity('same-turn-compatible-reads');
   const declarationTool = requireAgentTool('declareDesignIntent');
-  const recommendTool = requireAgentTool('recommendAssets');
+  const candidateBrowseTool = requireAgentTool('browseAssetCandidates');
   const eagleTool = requireAgentTool('searchEagleReferences');
   const documentTool = requireAgentTool('getDocumentInfo');
   const writeTool = requireAgentTool('createRectangle');
-  const tools = [declarationTool, recommendTool, eagleTool, documentTool, writeTool];
+  const tools = [declarationTool, candidateBrowseTool, eagleTool, documentTool, writeTool];
   const executedToolNames = [];
   const modelPromptSnapshots = [];
   let modelCallCount = 0;
@@ -5055,7 +5065,7 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
         return {
           stopReason: 'tool_use',
           toolCalls: [
-            { id: 'same-turn-recommend', name: 'recommendAssets', arguments: { limit: 6 } },
+            { id: 'same-turn-candidates', name: 'browseAssetCandidates', arguments: { requirement: '主图素材', maxResults: 6 } },
             { id: 'same-turn-eagle', name: 'searchEagleReferences', arguments: { query: '袜子 主图' } },
             { id: 'same-turn-document', name: 'getDocumentInfo', arguments: {} },
             {
@@ -5092,7 +5102,7 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
           maxIterations: 3
         });
       }
-      if (toolName === 'recommendAssets') {
+      if (toolName === 'browseAssetCandidates') {
         return { success: true, candidates: [{ path: 'E:/project/product.jpg' }] };
       }
       if (toolName === 'searchEagleReferences') {
@@ -5134,10 +5144,10 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
     'regenerated Agent write did not actually consume the post-binding main-image method context');
   assert.deepStrictEqual(
     executedToolNames.slice(0, 4),
-    ['declareDesignIntent', 'recommendAssets', 'searchEagleReferences', 'getDocumentInfo'],
+    ['declareDesignIntent', 'browseAssetCandidates', 'searchEagleReferences', 'getDocumentInfo'],
     'Harness did not preserve the model-authored agentic declaration and prerequisite reads'
   );
-  const recommendEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-recommend');
+  const candidateBrowseEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-candidates');
   const eagleEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-eagle');
   const writeEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-write');
   const reboundWriteEntry = agent.toolCallLog.find((entry) => entry.callId === 'bound-context-write');
@@ -5145,9 +5155,9 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
     executedToolNames.includes('createRectangle'),
     `Agent did not regenerate the write after bound context became visible: ${JSON.stringify({ executedToolNames, writeResult: reboundWriteEntry?.result, runResult })}`
   );
-  assert.strictEqual(recommendEntry?.result?.success, true);
+  assert.strictEqual(candidateBrowseEntry?.result?.success, true);
   assert.strictEqual(eagleEntry?.result?.success, true);
-  assert.notStrictEqual(recommendEntry?.failureDisposition, 'control_turn_deferred');
+  assert.notStrictEqual(candidateBrowseEntry?.failureDisposition, 'control_turn_deferred');
   assert.notStrictEqual(eagleEntry?.failureDisposition, 'control_turn_deferred');
   assert.strictEqual(writeEntry?.result?.code, 'tool_deferred_after_runtime_declaration');
   assert.strictEqual(writeEntry?.failureDisposition, 'control_turn_deferred');
@@ -5163,7 +5173,7 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
   ));
   const expectedCallIds = [
     'same-turn-declare',
-    'same-turn-recommend',
+    'same-turn-candidates',
     'same-turn-eagle',
     'same-turn-document',
     'same-turn-write'
@@ -5263,8 +5273,8 @@ async function assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed() 
 async function assertStagedDeclarationUsesTruePostBindingToolSurface() {
   const identity = createPlanNeutralIdentity('staged-hidden-sibling');
   const declarationTool = requireAgentTool('declareDesignIntent');
-  const recommendTool = requireAgentTool('recommendAssets');
-  const tools = [declarationTool, recommendTool];
+  const candidateBrowseTool = requireAgentTool('browseAssetCandidates');
+  const tools = [declarationTool, candidateBrowseTool];
   const executed = [];
   let modelCalls = 0;
   let agent;
@@ -5281,7 +5291,7 @@ async function assertStagedDeclarationUsesTruePostBindingToolSurface() {
         return {
           stopReason: 'tool_use',
           toolCalls: [
-            { id: 'staged-hidden-recommend', name: 'recommendAssets', arguments: { limit: 4 } },
+            { id: 'staged-hidden-candidates', name: 'browseAssetCandidates', arguments: { requirement: 'SKU 素材', maxResults: 4 } },
             {
               id: 'staged-hidden-declaration',
               name: 'declareDesignIntent',
@@ -5301,14 +5311,14 @@ async function assertStagedDeclarationUsesTruePostBindingToolSurface() {
         tools,
         arguments: arguments_,
         maxIterations: 2,
-        nextTools: [recommendTool]
+        nextTools: [candidateBrowseTool]
       });
     }
   );
   await agent.run('完成 SKU 生产');
   assert.deepStrictEqual(executed, ['declareDesignIntent']);
   assert.strictEqual(
-    agent.toolCallLog.find((entry) => entry.callId === 'staged-hidden-recommend')?.failureDisposition,
+    agent.toolCallLog.find((entry) => entry.callId === 'staged-hidden-candidates')?.failureDisposition,
     'control_turn_deferred'
   );
 }
@@ -7703,8 +7713,71 @@ function assertExecutionSupplyReservePureAccounting() {
     designQualityHardBlocked: false,
     taskProgressMissing: false,
     terminalSkillOutcomeFailed: false,
-    terminalSkillOutcomeUnverified: false
+    terminalSkillOutcomeUnverified: false,
+    designVerdictStatus: 'passed'
   }), 'completed', 'soft budget must not downgrade already verified completion');
+  assert.strictEqual(resolveAgentExecutionStatus({
+    stopReason: 'final_response',
+    toolCallCount: 8,
+    successfulToolCalls: 8,
+    failedToolCalls: 0,
+    acceptanceFailed: 0,
+    acceptanceNeedsReview: 0,
+    noDocumentChangeRisks: 0,
+    taskCompletionStatus: 'completed',
+    designVerdictStatus: 'needs_review',
+    designQualityHardBlocked: false,
+    taskProgressMissing: false,
+    terminalSkillOutcomeFailed: false,
+    terminalSkillOutcomeUnverified: false
+  }), 'needs_review', 'artifact completion must not upgrade a needs_review DesignVerdict to overall completed');
+  assert.strictEqual(shouldStopWarningOnlyNeedsReviewReflexion({
+    status: 'needs_review',
+    blockers: [],
+    hasActionableVlmDiagnosis: true,
+    hasActionableRequiredProfileIssue: false
+  }), true, 'an ordinary warning-only needs_review must not replay the original task');
+  assert.strictEqual(shouldStopWarningOnlyNeedsReviewReflexion({
+    status: 'needs_review',
+    blockers: [],
+    hasActionableVlmDiagnosis: true,
+    hasActionableRequiredProfileIssue: false,
+    completedAestheticImprovementEligible: true
+  }), false, 'a fully qualified completed-aesthetic handoff must retain its one bounded Agent reentry');
+  const completedAestheticFacts = {
+    summary: {
+      stopReason: 'final_response',
+      blockers: [],
+      taskCompletion: {
+        status: 'completed',
+        completion: { artifactStatus: 'artifact_completed' }
+      },
+      designVerdict: { status: 'needs_review', blockers: [] }
+    },
+    reviewedRevisionMatches: true,
+    reliableJudgeComplete: true,
+    hasActionableVlmDiagnosis: true,
+    hasActionableRequiredProfileIssue: false,
+    runtimeDeliveryStageRequired: true,
+    deliveryEvidencePassed: true
+  };
+  assert.strictEqual(isCompletedAestheticImprovementEligible(completedAestheticFacts), true,
+    'all independently verified artifact, review, revision and delivery facts must allow one bounded reentry');
+  assert.strictEqual(isCompletedAestheticImprovementEligible({
+    ...completedAestheticFacts,
+    reviewedRevisionMatches: false
+  }), false, 'stale review evidence must not authorize completed-aesthetic reentry');
+  assert.strictEqual(isCompletedAestheticImprovementEligible({
+    ...completedAestheticFacts,
+    deliveryEvidencePassed: false
+  }), false, 'a required current delivery stage without evidence must not authorize reentry');
+  assert.strictEqual(isCompletedAestheticImprovementEligible({
+    ...completedAestheticFacts,
+    summary: {
+      ...completedAestheticFacts.summary,
+      designVerdict: { status: 'needs_review', blockers: ['unresolved-quality-blocker'] }
+    }
+  }), false, 'a quality blocker must not authorize completed-aesthetic reentry');
 }
 
 /**
@@ -10164,7 +10237,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
     expectedTargets: [{ sourceKind: 'project_asset', sourceId: 'flat-lay-source' }],
     items: [{
       identity: {
-        outer: 'recommendAssets',
+        outer: 'browseAssetCandidates',
         resultPath: '$.visualObservationBundle.items[0]',
         document: String(documentId),
         history: String(historyStateId),
@@ -10188,7 +10261,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
       version: 'visual-observation-receipt/v1',
       document: String(documentId),
       history: String(historyStateId),
-      sourceTool: 'recommendAssets'
+      sourceTool: 'browseAssetCandidates'
     },
     sourceOutput: {}
   };

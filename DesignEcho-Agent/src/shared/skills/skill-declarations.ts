@@ -1680,7 +1680,7 @@ export const MainImageSkill: SkillDeclaration = {
     playbookId: 'main-image-design',
     name: 'Main Image Design',
     displayName: '主图设计',
-    userFacingSummary: '电商主图从想法到成稿：定方向、构图、文案与光影精修，一次交付可用主图',
+    userFacingSummary: '电商主图从目标理解到可编辑交付：由 Agent 选图、定方向、构图并根据真实质量结论修订',
     category: 'ecommerce',
     kind: 'workflow',
     visibility: 'user-facing',
@@ -1692,7 +1692,7 @@ export const MainImageSkill: SkillDeclaration = {
     routeClass: 'business-workflow',
     // 模型路由不得直执：主图生产必须经 Agent 自主 ReAct 循环（看素材/看文档/逐步推进）。
     modelDirectExecution: 'forbidden',
-    description: '开工先用 readSkillPlaybook("main-image-design") 读工作法手册（店铺规格分文档体系/点击图分层/摄影优先）。Runtime owner for e-commerce main-image delivery. Open creative main-image work stays in the autonomous design loop with Manifest-scoped atomic capabilities; specification work also covers white-background images, click/conversion documents, and multi-size (800/750/1200) export. The legacy id is not an executable workflow entry.',
+    description: '开工先用 readSkillPlaybook("main-image-design") 读取主图用途、店铺规格分文档体系和交付边界。手册不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. Open creative main-image work stays in the autonomous design loop with Manifest-scoped atomic capabilities; specification work also covers white-background images, click/conversion documents, and multi-size (800/750/1200) export. The legacy id is not an executable workflow entry.',
     whenToUse: [
         'User explicitly delegates a main-image, cover, or first-image design deliverable',
         'User asks for a white background image (白底图)',

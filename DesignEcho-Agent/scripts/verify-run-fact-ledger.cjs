@@ -10,6 +10,7 @@ require('ts-node').register({ transpileOnly: true, project: path.join(root, 'tsc
 const { buildDesignRunFactLedgerPatch } = require(path.join(root, 'src/shared/design-run-fact-ledger.ts'));
 const { extractDesignRunToolLogFacts, describeDesignRunToolLogFacts } = require(path.join(root, 'src/shared/design-run-tool-log-facts.ts'));
 const { applyDesignProjectStatePatch, buildDesignProjectStateSummary, createEmptyDesignProjectState } = require(path.join(root, 'src/shared/design-project-state.ts'));
+const { buildDesignProjectRulePolicy } = require(path.join(root, 'src/shared/design-project-rule-governance.ts'));
 const {
     buildAgentRunRecord,
     validateAgentRunRecordForPersist
@@ -903,10 +904,88 @@ check(Boolean(modelWroteState.patch && !modelWroteState.patch.appendVersion), '�
 console.log('[4] 真实合并 + 摘要可见');
 const applied = applyDesignProjectStatePatch(createEmptyDesignProjectState(), patch);
 const summary = buildDesignProjectStateSummary(applied);
-check(/已看过的素材/.test(summary) && /中筒袜-模特上身\.jpg/.test(summary), '摘要有「已看过的素材」', summary);
 check(/素材上看到的卖点线索/.test(summary) && /双层罗纹/.test(summary), '摘要有「素材上看到的卖点线索」');
 check(!/防滑硅胶/.test(summary), '摘要里没有成品文字');
-check(/最新版本/.test(summary), '摘要有最新版本');
+check(
+    /历史素材 \/选图 \/版式 \/文案 \/版本 \/评审记录/.test(summary)
+        && !/中筒袜-模特上身\.jpg/.test(summary)
+        && !/Agent 版面签名/.test(summary)
+        && !/最新版本/.test(summary),
+    '自动摘要只披露历史尝试数量，不把旧选图、版式或版本原因注入下一次设计',
+    summary
+);
+const confirmedProjectState = applyDesignProjectStatePatch(createEmptyDesignProjectState(), {
+    upsertFacts: [{
+        claimType: 'product_fact',
+        statement: '商品为加厚木耳边中筒袜',
+        source: {
+            kind: 'product_document',
+            sourceRef: 'brief:confirmed-product',
+            supportRefs: ['artifact:confirmed-product-brief']
+        },
+        requestedConfirmation: 'source_supported'
+    }],
+    factWriteAuthority: 'trusted_system',
+    upsertRules: [{
+        ruleKind: 'delivery',
+        statement: '主图交付画布为 800×800',
+        enforcement: 'guidance',
+        source: {
+            kind: 'project_brief',
+            sourceRef: 'brief:confirmed-canvas',
+            supportRefs: ['artifact:confirmed-canvas-brief']
+        },
+        requestedConfirmation: 'source_supported'
+    }],
+    ruleWriteAuthority: 'trusted_system',
+    updatedBy: 'trusted-system-fixture'
+});
+const confirmedProjectSummary = buildDesignProjectStateSummary(confirmedProjectState);
+check(
+    confirmedProjectSummary.includes('商品为加厚木耳边中筒袜')
+        && confirmedProjectSummary.includes('主图交付画布为 800×800'),
+    '已确认商品事实与画布交付规则继续进入自动摘要，状态隔离不能造成项目事实失忆',
+    confirmedProjectSummary
+);
+const legacyScopedRuleStatement = '只对旧主图任务使用 800×800 画布';
+const legacyScopedProjectState = applyDesignProjectStatePatch(createEmptyDesignProjectState(), {
+    set: {
+        taskType: 'ecommerce.main_image.v1',
+        platform: 'tmall'
+    },
+    upsertRules: [{
+        ruleKind: 'delivery',
+        statement: legacyScopedRuleStatement,
+        enforcement: 'guidance',
+        applicability: {
+            taskTypes: ['ecommerce.main_image.v1'],
+            channels: ['tmall']
+        },
+        source: {
+            kind: 'project_brief',
+            sourceRef: 'brief:legacy-main-image-canvas',
+            supportRefs: ['artifact:legacy-main-image-brief']
+        },
+        requestedConfirmation: 'source_supported'
+    }],
+    ruleWriteAuthority: 'trusted_system',
+    updatedBy: 'trusted-system-fixture'
+});
+const legacyScopedSummary = buildDesignProjectStateSummary(legacyScopedProjectState);
+check(
+    legacyScopedSummary.includes('旧项目规格候选')
+        && !legacyScopedSummary.includes(legacyScopedRuleStatement),
+    '旧 state 的 taskType/platform 只能作为待核范围候选，不能让 scoped 规则自动污染新任务',
+    legacyScopedSummary
+);
+const explicitlyScopedPolicy = buildDesignProjectRulePolicy(legacyScopedProjectState, {
+    taskType: 'ecommerce.main_image.v1',
+    channel: 'tmall'
+});
+check(
+    explicitlyScopedPolicy.applicableRules.some((rule) => rule.statement === legacyScopedRuleStatement),
+    '当前运行由 owner 明确提供 task/channel 后，scoped 已确认规则仍可按需解析'
+);
 
 console.log('[5] 运行档案 designSummary + 续跑摘要');
 const conversationScope = { conversationId: 'conv-ledger-test', branchId: 'branch-1' };
@@ -1572,33 +1651,33 @@ check(
     '产物完成但质量未评价时保留设计说明，移除质量误报，也不把检查缺口伪装成人工复核终态',
     unverifiedQualityMessage
 );
-const deliverableSoftQualityMessage = alignUserVisibleCompletionMessage({
+const artifactNeedsReviewQualityMessage = alignUserVisibleCompletionMessage({
     message: 'PSD 与 JPEG 已保存，质量通过，这版已经可以直接用了。',
     executionStatus: 'completed',
     requirements: [],
-    designVerdict: { status: 'needs_review' }
+    designVerdict: { status: 'needs_review', contractStatus: 'completed' }
 });
 check(
-    /PSD 与 JPEG 已保存/.test(deliverableSoftQualityMessage)
-        && !/质量通过|可以直接用/.test(deliverableSoftQualityMessage.split('\n\n')[0])
-        && /可继续优化的建议/.test(deliverableSoftQualityMessage)
-        && /不影响本次交付/.test(deliverableSoftQualityMessage)
-        && !/仍需复核|仍待复核|结果需要复核/.test(deliverableSoftQualityMessage),
-    '已闭合交付上的非阻断质量 finding 只投影为可选改进，不重新制造待复核终态',
-    deliverableSoftQualityMessage
+    /PSD 与 JPEG 已保存/.test(artifactNeedsReviewQualityMessage)
+        && !/质量通过|可以直接用|不影响(?:本次)?交付|可选优化/.test(artifactNeedsReviewQualityMessage)
+        && /当前产物已经保存并形成交付结果/.test(artifactNeedsReviewQualityMessage)
+        && /设计质量尚未通过/.test(artifactNeedsReviewQualityMessage)
+        && /不能把这版称为专业完成/.test(artifactNeedsReviewQualityMessage),
+    '已闭合的 Artifact 与 needs_review Evaluation 分层呈现，不把质量问题降级为不影响交付的建议',
+    artifactNeedsReviewQualityMessage
 );
 const needsReviewQualityMessage = alignUserVisibleCompletionMessage({
     message: 'PSD 已保存到“E:/project/主图/候选稿.psd”，已完成最终画面复核，质量通过，这版已经可以直接用了。',
     executionStatus: 'needs_review',
     requirements: [],
-    designVerdict: { status: 'needs_review' }
+    designVerdict: { status: 'needs_review', contractStatus: 'completed' }
 });
 const needsReviewQualityBody = needsReviewQualityMessage.split('\n\n')[0];
 check(
     needsReviewQualityMessage.includes('PSD 已保存到“E:/project/主图/候选稿.psd”')
         && !/已完成最终画面复核|质量通过|可以直接用/.test(needsReviewQualityBody)
-        && /当前设计质量仍待复核/.test(needsReviewQualityMessage)
-        && /尚不能据此确认画面质量通过或可直接使用/.test(needsReviewQualityMessage),
+        && /当前产物已经保存并形成交付结果/.test(needsReviewQualityMessage)
+        && /设计质量尚未通过/.test(needsReviewQualityMessage),
     'needs_review 保留真实保存事实，移除无依据的终审/质量/直接使用声明并给出中性说明',
     needsReviewQualityMessage
 );
@@ -1665,7 +1744,7 @@ const colonNeedsReviewQualityMessage = alignUserVisibleCompletionMessage({
 check(
     !/已完成视觉复核/.test(colonNeedsReviewQualityMessage)
         && /PSD 和 JPG 已保存/.test(colonNeedsReviewQualityMessage)
-        && /当前设计质量仍待复核/.test(colonNeedsReviewQualityMessage),
+        && /当前设计质量尚未通过/.test(colonNeedsReviewQualityMessage),
     'needs_review 能清理中文冒号后的无依据复核声明，同时保留真实文件事实',
     colonNeedsReviewQualityMessage
 );
@@ -1673,13 +1752,13 @@ const deliveredNeedsReviewQualityMessage = alignUserVisibleCompletionMessage({
     message: '主图已完成复核并交付：可编辑 PSD 与高质量 JPEG 均已保存。',
     executionStatus: 'needs_review',
     requirements: [],
-    designVerdict: { status: 'needs_review' }
+    designVerdict: { status: 'needs_review', contractStatus: 'completed' }
 });
 check(
     deliveredNeedsReviewQualityMessage.includes('主图已交付：可编辑 PSD 与高质量 JPEG 均已保存')
         && !deliveredNeedsReviewQualityMessage.includes('完成复核')
-        && /当前设计质量仍待复核/.test(deliveredNeedsReviewQualityMessage),
-    'needs_review 对齐“完成复核并交付”，只保留真实交付事实并说明质量仍待复核',
+        && /设计质量尚未通过/.test(deliveredNeedsReviewQualityMessage),
+    'needs_review 对齐“完成复核并交付”，只保留真实交付事实并说明质量未通过',
     deliveredNeedsReviewQualityMessage
 );
 for (const unrecognizedCompletionClaim of [
@@ -1695,20 +1774,23 @@ for (const unrecognizedCompletionClaim of [
         designVerdict: { status: 'needs_review' }
     });
     check(
-        /当前设计质量仍待复核/.test(alignedUnknownClaim)
-            && /尚不能据此确认画面质量通过或可直接使用/.test(alignedUnknownClaim),
+        /当前设计质量尚未通过/.test(alignedUnknownClaim)
+            && /不能把这版称为专业完成/.test(alignedUnknownClaim),
         '未被正则枚举的新完成措辞仍必须附带结构化待复核事实',
         alignedUnknownClaim
     );
 }
 const alreadyHonestNeedsReviewMessage = 'PSD 已保存，当前设计质量仍待复核。';
+const alignedHonestNeedsReviewMessage = alignUserVisibleCompletionMessage({
+    message: alreadyHonestNeedsReviewMessage,
+    executionStatus: 'needs_review',
+    designVerdict: { status: 'needs_review' }
+});
 check(
-    alignUserVisibleCompletionMessage({
-        message: alreadyHonestNeedsReviewMessage,
-        executionStatus: 'needs_review',
-        designVerdict: { status: 'needs_review' }
-    }) === alreadyHonestNeedsReviewMessage,
-    'needs_review 正文已经诚实时不重复追加质量说明'
+    alignedHonestNeedsReviewMessage.includes(alreadyHonestNeedsReviewMessage)
+        && alignedHonestNeedsReviewMessage.includes('设计质量尚未通过')
+        && alignedHonestNeedsReviewMessage.includes('不能把这版称为专业完成'),
+    'needs_review 即使模型已说待复核，仍须投影结构化质量未通过事实'
 );
 const alreadyHonestQualityMessage = '商品主图已经形成，但专业设计质量尚未评价，不可直接商用。';
 check(
@@ -1886,13 +1968,14 @@ const completedSoftQualityUnderclaimMessage = alignUserVisibleCompletionMessage(
     message: 'PSD 已保存，当前设计质量仍待复核。',
     executionStatus: 'completed',
     requirements: [],
-    designVerdict: { status: 'needs_review' }
+    designVerdict: { status: 'needs_review', contractStatus: 'completed' }
 });
 check(
     completedSoftQualityUnderclaimMessage.includes('PSD 已保存')
-        && completedSoftQualityUnderclaimMessage.includes('本次结果已经完成')
-        && !completedSoftQualityUnderclaimMessage.includes('质量仍待复核'),
-    'completed + 非阻断质量 finding 不再把已交付结果少报成待复核终态',
+        && !completedSoftQualityUnderclaimMessage.includes('本次结果已经完成')
+        && completedSoftQualityUnderclaimMessage.includes('设计质量尚未通过')
+        && completedSoftQualityUnderclaimMessage.includes('不能把这版称为专业完成'),
+    'Artifact completed 不能把 needs_review 少报成可选建议或专业完成',
     completedSoftQualityUnderclaimMessage
 );
 const completedUnverifiedGenericReviewMessage = alignUserVisibleCompletionMessage({
@@ -1905,7 +1988,7 @@ check(
     completedUnverifiedGenericReviewMessage.includes('本轮质量检查没有取得完整结论')
         && completedUnverifiedGenericReviewMessage.includes('本次结果已经完成')
         && !completedUnverifiedGenericReviewMessage.includes('可选优化'),
-    'passed_unverified 的 generic 结果复核少报不能被包装成可选优化，必须保留质量未知事实',
+    'passed_unverified 保留已完成的产物事实与质量未验证事实，不包装成可选优化',
     completedUnverifiedGenericReviewMessage
 );
 const preciseTerminalClosureSummary = '当前画面已完成写后检查；导出文件收据仍缺失。';

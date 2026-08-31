@@ -101,7 +101,7 @@ export function registerDesignWorkshopHandlers(context?: Pick<IPCContext, 'matti
 
     /**
      * 学习候选区落盘：项目 .designecho/learning-candidates.json（人可读、可删改）。
-     * 读写边界统一升级 / 校验 v2，写入使用同目录临时文件 + rename，避免进程中断留下半份 JSON。
+     * 读写边界统一升级 / 校验当前账本版本，写入使用同目录临时文件 + rename，避免进程中断留下半份 JSON。
      */
     ipcMain.handle('designWorkshop:readLearningLedger', async (_event, params: { projectPath: string }) => {
         const projectPath = String(params?.projectPath || '').trim();

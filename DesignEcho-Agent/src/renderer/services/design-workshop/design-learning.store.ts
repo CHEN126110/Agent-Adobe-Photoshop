@@ -1,6 +1,7 @@
 /**
  * 学习候选区的渲染进程门面：读 / 合并 / 写项目 .designecho/learning-candidates.json。
- * 自动观察只写候选；用户明确的「留 / 改 / 弃」立即发布为当前项目评审校准。
+ * 自动观察与模型转述的「留 / 改 / 弃」都只写候选。生产发布必须由独立、可验证的
+ * 用户审核入口完成；模型 Tool 与测试桥不能在这层签发 published 或改写 Skill 文件。
  */
 
 import {
@@ -11,7 +12,6 @@ import {
     candidateFromUserVerdict,
     candidatesFromEvaluation,
     createDesignLearningLedger,
-    decideDesignLearningCandidate,
     listPromotableCandidates,
     normalizeDesignLearningLedger,
     recordDesignRunOutcome,
@@ -124,8 +124,8 @@ export async function recordDesignRunDeliveryOutcome(
 }
 
 /**
- * skill 手册改进提议入候选区（2026-08-24 自我改进闭环）：Agent 从样板 PSD 推理出的
- * 工艺差异只进候选、绝不直接写手册；用户在学习时间线批准（published）后才由主进程写入。
+ * Skill 手册改进提议只进入候选区，绝不直接写手册。独立的 UI-owned 审核与签名发布
+ * 通道尚未实现；当前模型工具面不会暴露此能力，候选只能等待后续受审迁移。
  */
 export async function executeProposeSkillImprovement(invoke: Invoke, projectPath: string | undefined, params: any): Promise<any> {
     if (!projectPath) return { success: false, error: 'proposeSkillImprovement：当前没有打开的项目，提议无处登记。' };
@@ -157,11 +157,11 @@ export async function executeProposeSkillImprovement(invoke: Invoke, projectPath
         candidateId: outcome.candidate.id,
         merged: outcome.merged,
         filePath,
-        message: `手册改进提议已登记候选区（${improvement.skillId}/${improvement.file}）。它不会自动生效：用户在学习时间线批准后才写入手册。你可以继续当前任务。`
+        message: `手册改进提议已登记候选区（${improvement.skillId}/${improvement.file}）。它不会自动生效；独立用户审核入口尚未实现，当前不能发布或写入手册。`
     };
 }
 
-export async function executeRecordDesignVerdict(invoke: Invoke, projectPath: string | undefined, params: any, runScope?: string): Promise<any> {
+export async function executeRecordDesignVerdict(invoke: Invoke, projectPath: string | undefined, params: any): Promise<any> {
     const verdict = String(params?.verdict || '').trim() as 'keep' | 'revise' | 'discard';
     if (!['keep', 'revise', 'discard'].includes(verdict)) {
         return { success: false, error: 'recordDesignVerdict：verdict 取 keep（留）/ revise（改）/ discard（弃）' };
@@ -173,52 +173,22 @@ export async function executeRecordDesignVerdict(invoke: Invoke, projectPath: st
     }
     let ledger = await readLedger(invoke, projectPath);
     const outcome = addDesignLearningCandidate(ledger, candidate);
-    ledger = decideDesignLearningCandidate(
-        outcome.ledger,
-        outcome.candidate.id,
-        'published',
-        '用户明确给出的留 / 改 / 弃反馈'
-    );
-    // 否决 = 负向行为结局：本次运行关联的观察候选记 rejected，试用知识一票回退（自主沉淀 P1）。
-    if (verdict === 'discard' && runScope) {
-        ledger = recordDesignRunOutcome(ledger, runScope, 'rejected').ledger;
-    }
+    ledger = outcome.ledger;
     const filePath = await writeLedger(invoke, projectPath, ledger);
-    const published = ledger.candidates.find((item) => item.id === outcome.candidate.id);
+    const recorded = ledger.candidates.find((item) => item.id === outcome.candidate.id);
     return {
         success: true,
-        candidate: published,
+        candidate: recorded,
         merged: outcome.merged,
         filePath,
-        message: `已记下并发布为当前项目的评审校准：${outcome.candidate.text}`
+        requiresUserReview: true,
+        message: `已把这条留 / 改 / 弃反馈记入候选区，尚未发布为评审校准：${outcome.candidate.text}`
     };
 }
 
 export async function executeGetDesignLearningTimeline(invoke: Invoke, projectPath: string | undefined, params: any): Promise<any> {
     if (!projectPath) return { success: false, error: 'getDesignLearningTimeline：当前没有打开的项目' };
-    let ledger = await readLedger(invoke, projectPath);
-    const decisionId = String(params?.decideId || '').trim();
-    const decision = String(params?.decision || '').trim();
-    if (decisionId && ['published', 'promoted', 'rejected'].includes(decision)) {
-        try {
-            const normalizedDecision = decision === 'promoted' ? 'published' : decision as 'published' | 'rejected';
-            // skill 改进提议的批准 = 真实写入手册（主进程原子写+备份）；写入失败则不落 published，如实报错。
-            const target = ledger.candidates.find((item) => item.id === decisionId);
-            if (normalizedDecision === 'published' && target?.kind === 'skill_improvement' && target.improvement) {
-                const applied = await invoke('skillPackage:applyImprovement', target.improvement);
-                if (!applied?.success) {
-                    return { success: false, error: `手册改进未生效：${applied?.error || '写入失败'}` };
-                }
-            }
-            ledger = decideDesignLearningCandidate(ledger, decisionId, normalizedDecision, params?.note);
-            await writeLedger(invoke, projectPath, ledger);
-        } catch (error: any) {
-            return {
-                success: false,
-                error: `学习候选处理失败：${error?.message || String(error)}`
-            };
-        }
-    }
+    const ledger = await readLedger(invoke, projectPath);
     const reviewable = listPromotableCandidates(ledger);
     return {
         success: true,
@@ -227,6 +197,7 @@ export async function executeGetDesignLearningTimeline(invoke: Invoke, projectPa
         /** 兼容旧调用方；含义已收紧为「值得送审」，不是可直接进入生产。 */
         promotable: reviewable.slice(0, 10),
         total: ledger.candidates.length,
-        message: `学习候选区共 ${ledger.candidates.length} 条，${reviewable.length} 条值得送审；只有已发布的用户校准会进入评审器。`
+        readOnly: true,
+        message: `学习候选区共 ${ledger.candidates.length} 条，${reviewable.length} 条值得送审；这个模型工具只读，不能发布 /驳回候选或改写 Skill。`
     };
 }

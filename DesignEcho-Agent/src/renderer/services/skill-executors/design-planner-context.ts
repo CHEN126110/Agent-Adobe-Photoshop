@@ -361,7 +361,38 @@ export function buildDesignMemoryKnowledgeResultsForSkill(input: {
         sourceTypes: ['local_case'],
         limit: input.limit || 6
     }, { scope: memoryScope });
-    return dedupeKnowledgeResults([...explicitResults, ...memoryResults]);
+    return selectDesignKnowledgeResultsForSkillUse({
+        explicitResults,
+        memoryResults,
+        query
+    });
+}
+
+export function selectDesignKnowledgeResultsForSkillUse(input: {
+    explicitResults?: DesignKnowledgeResult[];
+    memoryResults?: DesignKnowledgeResult[];
+    query?: string;
+}): DesignKnowledgeResult[] {
+    const explicitResults = Array.isArray(input.explicitResults) ? input.explicitResults : [];
+    const memoryResults = Array.isArray(input.memoryResults) ? input.memoryResults : [];
+    const query = cleanString(input.query);
+    const explicitPromptResults = selectDesignKnowledgeResultsForUse(explicitResults, {
+        query,
+        purpose: 'prompt_context'
+    }).usableResults;
+    const explicitReferenceResults = selectDesignKnowledgeResultsForUse(explicitResults, {
+        query,
+        purpose: 'user_reference'
+    }).usableResults;
+    const memoryPromptResults = selectDesignKnowledgeResultsForUse(memoryResults, {
+        query,
+        purpose: 'prompt_context'
+    }).usableResults;
+    return dedupeKnowledgeResults([
+        ...explicitPromptResults,
+        ...explicitReferenceResults,
+        ...memoryPromptResults
+    ]);
 }
 
 /**

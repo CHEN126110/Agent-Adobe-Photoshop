@@ -11,6 +11,7 @@ interface CompletionRequirementLike {
 
 interface DesignVerdictLike {
     status?: unknown;
+    contractStatus?: unknown;
 }
 
 interface TerminalClosureOutcomeLike {
@@ -18,10 +19,9 @@ interface TerminalClosureOutcomeLike {
 }
 
 const UNVERIFIED_DESIGN_QUALITY_NOTICE = '文件已经交付；本轮质量检查没有取得完整结论，因此没有把它标为“质量已通过”。';
-const DELIVERABLE_SOFT_QUALITY_NOTICE = '文件已经交付；质量检查记录了可继续优化的建议，但不影响本次交付。';
-const NEEDS_REVIEW_DESIGN_QUALITY_NOTICE = '已有执行结果可以保留，但当前设计质量仍待复核，尚不能据此确认画面质量通过或可直接使用。';
+const DELIVERED_NEEDS_REVIEW_DESIGN_QUALITY_NOTICE = '当前产物已经保存并形成交付结果；设计质量尚未通过，仍有明确问题需要调整，不能把这版称为专业完成。';
+const NEEDS_REVIEW_DESIGN_QUALITY_NOTICE = '已有执行结果可以保留，但当前设计质量尚未通过，仍有明确问题需要调整，不能把这版称为专业完成。';
 const COMPLETED_RESULT_ALIGNMENT = '本次结果已经完成。';
-const COMPLETED_RESULT_WITH_OPTIONAL_QUALITY_ALIGNMENT = '本次结果已经完成；质量建议仅作为可选优化。';
 
 const INLINE_PROTECTED_SPAN_PATTERN = /`[^`\n]*`|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|《[^》\n]*》|【[^】\n]*】|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|!?\[[^\]\n]*\](?:\([^\n)]*\))?|https?:\/\/[^\s]+/gu;
 
@@ -120,6 +120,14 @@ function alignUnverifiedClaimsInEditableSpan(value: string): { text: string; cha
         );
         replaceClaim(
             /(?:专业)?(?:设计|视觉|审美|成品|画面|效果)?质量(?:已经|已)?(?:检查)?(?:通过|达标|合格|符合(?:要求|标准)?)/gu,
+            ''
+        );
+        replaceClaim(
+            /(?:质量检查(?:记录了)?[ \t]*)?(?:可继续优化的建议|质量建议(?:仅作为可选优化)?)/gu,
+            ''
+        );
+        replaceClaim(
+            /(?:但[ \t]*)?不影响(?:本次)?交付(?:状态)?/gu,
             ''
         );
         replaceClaim(
@@ -332,20 +340,24 @@ function alignUnprovenDesignQualityClaims(
     // 正则只能清理已知的冲突措辞，不能穷举“审核完毕 / 检查结束 / 已看过”等自然语言。
     // 结构化 verdict 才是事实源：只要正文没有诚实说明质量仍待确认，就追加一次状态事实。
     // 这样新措辞最多形成“模型说完成 + 系统明确待复核”的可见冲突，不会继续静默假完成。
-    if (!changed && textExplicitlyStatesDesignQualityUncertainty(String(message || ''))) return message;
+    const requiresExplicitQualityNonPass = notice === DELIVERED_NEEDS_REVIEW_DESIGN_QUALITY_NOTICE
+        || notice === NEEDS_REVIEW_DESIGN_QUALITY_NOTICE;
+    if (!changed
+        && !requiresExplicitQualityNonPass
+        && textExplicitlyStatesDesignQualityUncertainty(String(message || ''))) return message;
     return [aligned, notice].filter(Boolean).join('\n\n');
 }
 
 function resolveUnprovenDesignQualityNotice(
     status: unknown,
-    executionStatus: string
+    contractStatus: unknown
 ): string | undefined {
     if (status === 'passed_unverified') return UNVERIFIED_DESIGN_QUALITY_NOTICE;
     if (status === 'needs_review') {
-        // `completed + needs_review` 表示结构化交付已经闭合，质量层只有非阻断 finding。
-        // 旧投影仍统一追加“结果待复核”，会把可选改进重新伪装成任务终态。
-        return executionStatus === 'completed'
-            ? DELIVERABLE_SOFT_QUALITY_NOTICE
+        // Artifact 完成只证明文件交付闭合；Evaluation needs_review 仍表示设计质量
+        // 没有通过。两个 owner 必须同时诚实投影，不能用“不影响交付”把质量问题降级。
+        return contractStatus === 'completed'
+            ? DELIVERED_NEEDS_REVIEW_DESIGN_QUALITY_NOTICE
             : NEEDS_REVIEW_DESIGN_QUALITY_NOTICE;
     }
     return undefined;
@@ -423,7 +435,7 @@ export function alignUserVisibleCompletionMessage(input: {
     const unprovenDesignQualityNotice = canProjectDesignQuality
         ? resolveUnprovenDesignQualityNotice(
             input.designVerdict?.status,
-            input.executionStatus
+            input.designVerdict?.contractStatus
         )
         : undefined;
     const rawTerminalClosureSummary = readTerminalClosurePublicSummary(input.terminalClosureOutcome);
@@ -455,13 +467,14 @@ export function alignUserVisibleCompletionMessage(input: {
         const status = String(requirement.status || '').trim();
         return status !== 'passed' && status !== 'not_applicable';
     });
-    const message = input.executionStatus === 'completed' && !hasUnresolvedStructuredRequirement
+    const designQualityNeedsReview = input.designVerdict?.status === 'needs_review';
+    const message = input.executionStatus === 'completed'
+        && !hasUnresolvedStructuredRequirement
+        && !designQualityNeedsReview
         ? alignCompletedResultUnderclaim(
             qualityAlignedMessage,
-            input.designVerdict?.status === 'needs_review',
-            input.designVerdict?.status === 'needs_review'
-                ? COMPLETED_RESULT_WITH_OPTIONAL_QUALITY_ALIGNMENT
-                : COMPLETED_RESULT_ALIGNMENT
+            false,
+            COMPLETED_RESULT_ALIGNMENT
         )
         : qualityAlignedMessage;
     if (input.executionStatus === 'completed'

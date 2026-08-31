@@ -755,6 +755,7 @@ export interface DesignEchoAPI {
     recommendAssets: (params: {
         requirement: string;
         maxResults?: number;
+        page?: number;
         category?: string;
         deterministic?: boolean;
         designRole?: string;
@@ -800,6 +801,24 @@ export interface DesignEchoAPI {
             sourceTreatment: 'direct_full_frame' | 'clip_to_container' | 'matte_and_recompose' | 'supporting_only' | 'reject' | 'requires_visual_review';
             visualEvidenceId?: string;
         }>;
+        candidatePage?: {
+            version: 'asset-candidate-page/v1';
+            candidateSetId: string;
+            page: number;
+            pageSize: number;
+            totalCandidates: number;
+            totalPages: number;
+            hasMore: boolean;
+            nextPage?: number;
+            ordering: 'stable_source_aspect_span_round_robin';
+            ranked: false;
+            winnerSelected: false;
+            explicitScope: {
+                category?: string;
+                designRole?: string;
+                placementIntent?: string;
+            };
+        };
         warnings?: string[];
         sheet?: {
             imageData: string;
@@ -816,6 +835,8 @@ export interface DesignEchoAPI {
             path: string;
             relativePath?: string;
             status: 'rendered' | 'failed';
+            dimensions?: { width: number; height: number };
+            hasAlpha?: boolean;
         }>;
         visualComparison?: {
             status: 'observed' | 'metadata_only';

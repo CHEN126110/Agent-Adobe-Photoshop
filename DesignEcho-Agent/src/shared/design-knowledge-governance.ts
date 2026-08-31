@@ -146,13 +146,17 @@ export function governDesignKnowledgeResult(
     result: DesignKnowledgeResult,
     options: GovernDesignKnowledgeOptions
 ): DesignKnowledgeResult {
+    const normalizedResult: DesignKnowledgeResult = {
+        ...result,
+        allowedUses: normalizeAllowedUsesForSourceLevel(result.sourceLevel, result.allowedUses)
+    };
     const retrievedAt = normalizeIsoTime(options.retrievedAt || result.updatedAt);
     const lifecycleStatus = normalizeLifecycleStatus(options.lifecycleStatus);
     const sourceRevision = sanitizeRevision(options.sourceRevision)
         || createStableFingerprint('knowledge-revision', `${result.sourceType}:${result.id}:${retrievedAt}`);
     const governanceCore: Omit<DesignKnowledgeGovernanceRecord, 'integrityFingerprint'> = {
         version: GOVERNANCE_VERSION,
-        contentFingerprint: createDesignKnowledgeContentFingerprint(result),
+        contentFingerprint: createDesignKnowledgeContentFingerprint(normalizedResult),
         sourceRevision,
         provenance: options.provenance,
         lifecycleStatus,
@@ -168,7 +172,7 @@ export function governDesignKnowledgeResult(
         integrityFingerprint: createGovernanceIntegrity(governanceCore)
     };
     return {
-        ...result,
+        ...normalizedResult,
         updatedAt: result.updatedAt || retrievedAt,
         governance
     };
@@ -236,7 +240,7 @@ export function selectDesignKnowledgeResultsForUse(
 
     for (const result of normalizedResults) {
         const freshness = assessDesignKnowledgeFreshness(result, input.now);
-        const allowedUses = normalizeAllowedUses(result.allowedUses);
+        const allowedUses = normalizeAllowedUsesForSourceLevel(result.sourceLevel, result.allowedUses);
         const currentUseAllowed = freshness === 'current' && isPurposeAllowed(purpose, allowedUses);
         if (currentUseAllowed) usableResults.push(result);
         else if (freshness === 'stale' || freshness === 'legacy_unversioned') reviewResults.push(result);
@@ -373,7 +377,7 @@ export function createDesignKnowledgeContentFingerprint(result: DesignKnowledgeR
         summary: sanitizeText(result.summary, 40000),
         sourceNotes: normalizeStrings(result.sourceNotes, 40, 500),
         tags: normalizeStrings(result.tags, 40, 120).sort(),
-        allowedUses: normalizeAllowedUses(result.allowedUses).sort(),
+        allowedUses: normalizeAllowedUsesForSourceLevel(result.sourceLevel, result.allowedUses).sort(),
         sourceLevel: result.sourceLevel,
         sourceLocation: normalizeSourceLocation(result.sourceUrl)
     }));
@@ -402,6 +406,19 @@ function normalizeAllowedUses(value: unknown): DesignKnowledgeAllowedUse[] {
     const allowed: DesignKnowledgeAllowedUse[] = ['prompt_context', 'user_reference', 'recipe_hint', 'benchmark_seed'];
     if (!Array.isArray(value)) return [];
     return Array.from(new Set(value.filter((item): item is DesignKnowledgeAllowedUse => allowed.includes(item as DesignKnowledgeAllowedUse))));
+}
+
+/**
+ * Benchmark 条目只拥有离线评测种子用途。即使外部 Provider、旧持久化数据或导入文件
+ * 声称允许 prompt_context / user_reference，也不能把评测答案升级成生产 Agent 上下文。
+ * 需要在真实设计中使用某个案例时，应显式发布为非 benchmark 的 visual_case。
+ */
+function normalizeAllowedUsesForSourceLevel(
+    sourceLevel: DesignKnowledgeResult['sourceLevel'],
+    value: unknown
+): DesignKnowledgeAllowedUse[] {
+    if (sourceLevel === 'benchmark_case') return ['benchmark_seed'];
+    return normalizeAllowedUses(value);
 }
 
 function normalizeLifecycleStatus(value: unknown): DesignKnowledgeLifecycleStatus {

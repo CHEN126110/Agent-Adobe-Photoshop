@@ -67,6 +67,7 @@ import type {
 import type { MainImageStrategyInputKey } from './main-image-strategy-contract';
 import type { MainImageVisionSignal } from './main-image-visual-loop';
 import type { DesignKnowledgeResult } from './design-knowledge-search';
+import { selectDesignKnowledgeResultsForUse } from './design-knowledge-governance';
 import type { DesignPlacementIntelligencePlan } from './design-placement-intelligence';
 import {
     buildMainImageMemoryContext,
@@ -228,9 +229,22 @@ function mapKnowledgeResultToReferenceHint(result: DesignKnowledgeResult): MainI
 }
 
 function buildReferenceHints(input: MainImageStrategyInputBuilderInput): MainImageReferenceHint[] {
+    const rawKnowledgeResults = Array.isArray(input.knowledgeResults) ? input.knowledgeResults : [];
+    const promptKnowledgeResults = selectDesignKnowledgeResultsForUse(
+        rawKnowledgeResults,
+        { purpose: 'prompt_context' }
+    ).usableResults;
+    const explicitReferenceResults = selectDesignKnowledgeResultsForUse(
+        rawKnowledgeResults,
+        { purpose: 'user_reference' }
+    ).usableResults;
+    const governedKnowledgeResults = Array.from(new Map(
+        [...promptKnowledgeResults, ...explicitReferenceResults]
+            .map((result) => [`${result.sourceType}:${result.id}`, result])
+    ).values());
     const hints = [
         ...(Array.isArray(input.referenceHints) ? input.referenceHints : []).map(normalizeReferenceHint),
-        ...(Array.isArray(input.knowledgeResults) ? input.knowledgeResults : []).map(mapKnowledgeResultToReferenceHint)
+        ...governedKnowledgeResults.map(mapKnowledgeResultToReferenceHint)
     ].filter((hint): hint is MainImageReferenceHint => Boolean(hint));
     const seen = new Set<string>();
     const deduped: MainImageReferenceHint[] = [];
