@@ -45,15 +45,16 @@ const numParam = (
 const arrParam = (
     name: string,
     description: string,
-    required = false,
-    extra: Partial<{
+    required: boolean,
+    extra: {
+        items: SkillParameterSchema;
+    } & Partial<{
         examples: any[];
         default: any[];
-        items: SkillParameterSchema;
         minItems: number;
         maxItems: number;
         uniqueItems: boolean;
-    }> = {}
+    }>
 ) => ({
     name,
     type: 'array' as const,
@@ -523,11 +524,33 @@ export const SKUSkill: SkillDeclaration = {
         boolParam('onlyNotes', 'Generate note images only without SKU layout', false),
         strParam('templateKeyword', 'Optional template keyword for combo layout'),
         strParam('skuFileKeyword', 'Keyword for SKU source files', false, { default: 'SKU' }),
-        arrParam('specifiedColors', 'Optional explicit color combinations, as an array of color-name arrays: [["双层边","木耳边"],["水晶丝","花苞"]] (each inner array is one combo). NOT objects like {size,colors}. Usually leave this unset: when resuming after the user confirmed combos on the card, combos are parsed automatically from the task text.'),
-        arrParam('sources', 'stage=color-card only: 色卡源清单 [{filePath,colorName}]，顺序 = 色卡顺序。filePath 可以只写文件名或项目内相对路径（项目里唯一同名图会自动解析成完整路径）——别写 20 条盘符绝对路径，会把调用撑到输出上限被截断。'),
+        arrParam('specifiedColors', 'Optional explicit color combinations, as an array of color-name arrays: [["双层边","木耳边"],["水晶丝","花苞"]] (each inner array is one combo). NOT objects like {size,colors}. Usually leave this unset: when resuming after the user confirmed combos on the card, combos are parsed automatically from the task text.', false, {
+            items: {
+                type: 'array',
+                description: 'One combo: a non-empty list of color names.',
+                minItems: 1,
+                items: { type: 'string' }
+            }
+        }),
+        arrParam('sources', 'stage=color-card only: 色卡源清单 [{filePath,colorName}]，顺序 = 色卡顺序。filePath 可以只写文件名或项目内相对路径（项目里唯一同名图会自动解析成完整路径）——别写 20 条盘符绝对路径，会把调用撑到输出上限被截断。', false, {
+            items: {
+                type: 'object',
+                description: '单个色卡源条目。',
+                properties: [
+                    strParam('filePath', '源素材路径；可以只写文件名或项目内相对路径。', true),
+                    strParam('colorName', '该源的权威颜色名；缺省时按色名来源规则回退。'),
+                    strParam('relativePath', '可选的项目内相对路径。'),
+                    strParam('assetId', '可选的项目素材身份。')
+                ]
+            }
+        }),
         strParam('sourceDirectory', 'stage=color-card：不递归扫描目录；文件名只作待确认色名，同名素材要求 Agent 改用 sources 选定。'),
-        arrParam('sourcePaths', 'stage=color-card only: ordered local image paths when sources is not provided.'),
-        arrParam('colorNames', 'stage=color-card only: ordered authoritative color names aligned with sourcePaths.'),
+        arrParam('sourcePaths', 'stage=color-card only: ordered local image paths when sources is not provided.', false, {
+            items: { type: 'string' }
+        }),
+        arrParam('colorNames', 'stage=color-card only: ordered authoritative color names aligned with sourcePaths.', false, {
+            items: { type: 'string' }
+        }),
         strParam('projectPath', 'stage=color-card only: active project root; defaults to current project context.'),
         strParam('outputPath', 'stage=color-card only: explicit absolute PSB output path.'),
         strParam('outputRelativePath', 'stage=color-card only: project-relative output path.', false, { default: 'PSD/SKU.psb' }),
@@ -716,7 +739,9 @@ export const ShapeMorphingSkill: SkillDeclaration = {
     ],
     parameters: [
         numParam('targetShapeLayerId', 'Reference shape layer id', true),
-        arrParam('sourceLayerIds', 'Source product layer ids for batch morphing', false),
+        arrParam('sourceLayerIds', 'Source product layer ids for batch morphing', false, {
+            items: { type: 'number' }
+        }),
         numParam('sourceLayerId', 'Single source product layer id', false),
         numParam('edgeBandWidth', 'Edge-band warp width in pixels', false, { default: 50 }),
         numParam('transitionWidth', 'Transition band width in pixels', false, { default: 30 }),
@@ -1086,7 +1111,9 @@ export const ProjectImageAnalysisSkill: SkillDeclaration = {
             enum: ['content', 'inventory'],
             default: 'content'
         }),
-        arrParam('directories', 'Optional project directories to prioritize when selecting images'),
+        arrParam('directories', 'Optional project directories to prioritize when selecting images', false, {
+            items: { type: 'string' }
+        }),
         strParam('userIntent', 'Original user request')
     ],
     output: {
@@ -1176,7 +1203,9 @@ export const LayerManagementSkill: SkillDeclaration = {
         }),
         numParam('documentId', 'Optional opened Photoshop document id to switch before inspecting or editing layers'),
         numParam('layerId', 'Target layer id'),
-        arrParam('layerIds', 'Target layer ids'),
+        arrParam('layerIds', 'Target layer ids', false, {
+            items: { type: 'number' }
+        }),
         strParam('layerName', 'Target layer name'),
         strParam('targetDescription', 'Natural-language target layer description'),
         strParam('newName', 'New layer name for rename or duplicate'),
@@ -1454,8 +1483,12 @@ export const AgentPanelBridgeSkill: SkillDeclaration = {
         strParam('goal', 'Primary goal to implement or debug', true),
         strParam('symptom', 'Observed issue or failure symptom'),
         strParam('expectedResult', 'Expected successful outcome'),
-        arrParam('reproSteps', 'Minimal reproduction steps'),
-        arrParam('constraints', 'Restrictions and guardrails'),
+        arrParam('reproSteps', 'Minimal reproduction steps', false, {
+            items: { type: 'string' }
+        }),
+        arrParam('constraints', 'Restrictions and guardrails', false, {
+            items: { type: 'string' }
+        }),
         boolParam('needMcpTools', 'Whether to retrieve MCP tool list first', true),
         strParam('mcpToolName', 'Optional MCP tool name to call directly'),
         objParam('mcpArguments', 'Arguments for mcpToolName')
@@ -1597,7 +1630,9 @@ export const SaveCurrentTemplateSkill: SkillDeclaration = {
             default: 'other'
         }),
         strParam('description', 'Optional template description for reuse'),
-        arrParam('tags', 'Optional tags for template retrieval'),
+        arrParam('tags', 'Optional tags for template retrieval', false, {
+            items: { type: 'string' }
+        }),
         strParam('templateIntent', 'Original user intent used for template type inference')
     ],
     output: {
@@ -1650,7 +1685,9 @@ export const TextFontReplaceSkill: SkillDeclaration = {
     },
     parameters: [
         strParam('fontName', 'Target font family or PostScript name', true),
-        arrParam('layerIds', 'Optional explicit text layer ids to update'),
+        arrParam('layerIds', 'Optional explicit text layer ids to update', false, {
+            items: { type: 'number' }
+        }),
         boolParam('includeHidden', 'Include hidden text layers', false),
         strParam('userIntent', 'Original user request')
     ],
@@ -1755,7 +1792,9 @@ export const EcommerceSocksDesignSkill: SkillDeclaration = {
     },
     parameters: [
         strParam('userIntent', 'Original user request'),
-        arrParam('deliverables', 'Requested child deliverables: main-image, detail-page, sku'),
+        arrParam('deliverables', 'Requested child deliverables: main-image, detail-page, sku', false, {
+            items: { type: 'string' }
+        }),
         strParam('projectPath', 'Optional project path for socks assets'),
         boolParam('executeChildren', 'Whether parent skill may dispatch child skills; default is false', false),
         boolParam('confirmChildDispatch', 'Explicit confirmation that child skill dispatch is allowed', false),
@@ -1765,7 +1804,12 @@ export const EcommerceSocksDesignSkill: SkillDeclaration = {
         // 现在缺省即 undefined，由执行器 resolveChildDispatchEnabled 决定默认放行；显式 false 仍可关闭。
         boolParam('enableChildDispatch', 'Switch for real child executor calls; omit to use the executor default (enabled), pass false to disable'),
         boolParam('dryRunChildDispatch', 'Report child dispatch order without calling child executors', false),
-        arrParam('childReports', 'Optional existing child reports for parent aggregation')
+        arrParam('childReports', 'Optional existing child reports for parent aggregation', false, {
+            items: {
+                type: 'object',
+                description: 'One child dispatch report object produced by a previous child skill run.'
+            }
+        })
     ],
     output: {
         type: 'data',
@@ -1871,7 +1915,9 @@ export const MainImageSkill: SkillDeclaration = {
         strParam('mainImageCapability', 'Stable main-image business capability id'),
         strParam('whiteBackgroundSourceDocumentPath', 'White background source document path'),
         strParam('whiteBackgroundOutputRelativePath', 'White background export relative path'),
-        arrParam('sizes', 'Batch output sizes list'),
+        arrParam('sizes', 'Batch output sizes list; each entry is a size preset key such as "800", "750", "1200" or a delivery ratio key', false, {
+            items: { type: 'string' }
+        }),
         strParam('mainImageExecutionMode', 'Controlled execution mode for the main-image executor', false, {
             enum: ['strategy-only', 'product-disposable-live']
         }),

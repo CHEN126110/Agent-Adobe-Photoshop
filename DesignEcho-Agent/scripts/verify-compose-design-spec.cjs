@@ -70,6 +70,12 @@ const {
     parseCodexDirectToolArgumentsOutput,
     parseCodexStructuredAssistantOutput
 } = require(path.join(root, 'src/main/services/codex-subscription-service.ts'));
+const {
+    SKILL_REGISTRY
+} = require(path.join(root, 'src/shared/skills/skill-declarations.ts'));
+const {
+    buildSkillWorkflowToolSchema
+} = require(path.join(root, 'src/shared/skills/skill-tool-schema.ts'));
 
 const toolExecutorSource = fs.readFileSync(
     path.join(root, 'src/renderer/services/tool-executor.service.ts'),
@@ -110,6 +116,16 @@ function collectStrictOutputSchemaIssues(schema, currentPath = '$') {
         if (Object.prototype.hasOwnProperty.call(schema, unsupported)) {
             issues.push(`${currentPath}.${unsupported}`);
         }
+    }
+    // OpenAI strict Structured Outputs：每个 schema 节点必须有 type，
+    // 只有 anyOf 联合与 $ref 引用可以省略（真机 invalid_json_schema:
+    // "schema must have a type key"，曾由 Skill 数组的空 items 触发）。
+    if (
+        !Object.prototype.hasOwnProperty.call(schema, 'type')
+        && !Array.isArray(schema.anyOf)
+        && typeof schema.$ref !== 'string'
+    ) {
+        issues.push(`${currentPath}.<missing type key>`);
     }
     if (schema.type === 'object') {
         const properties = schema.properties && typeof schema.properties === 'object'
@@ -450,6 +466,11 @@ check(
         }).colorHex === undefined
 );
 const allAgentTools = generateToolSchemas();
+// 生产循环的 Codex 联合 = 原子工具 + Skill workflow bridge 工具（autonomous-agent.executor 合并后
+// 一起进入 buildCodexStructuredToolOutputSchema）。这里按注册表全集构建（含 system-only），
+// 比运行时按设置过滤后的集合更严格；任何声明缺陷都会在此暴露而不是等真机 invalid_json_schema。
+const allSkillWorkflowTools = SKILL_REGISTRY.map((skill) => buildSkillWorkflowToolSchema(skill));
+const allLoopTools = [...allAgentTools, ...allSkillWorkflowTools];
 const composeDesignTool = allAgentTools.find((tool) => tool.name === 'composeDesign');
 const composeDesignToolSchema = composeDesignTool?.inputSchema;
 const composeTypographySchema = composeDesignToolSchema
@@ -465,7 +486,7 @@ const composeStrictOutputSchema = buildCodexStrictOutputSchema({
     additionalProperties: false
 });
 const composeStrictOutputSchemaIssues = collectStrictOutputSchemaIssues(composeStrictOutputSchema);
-const allToolStrictProjectionFailures = allAgentTools.flatMap((tool) => {
+const allToolStrictProjectionFailures = allLoopTools.flatMap((tool) => {
     try {
         const projected = buildCodexStrictOutputSchema({
             ...tool.inputSchema,
@@ -478,16 +499,16 @@ const allToolStrictProjectionFailures = allAgentTools.flatMap((tool) => {
     }
 });
 check(
-    'Codex strict wire projection 覆盖当前全部 Agent Tool schema',
+    'Codex strict wire projection 覆盖当前全部 Agent Tool 与 Skill workflow bridge schema',
     allToolStrictProjectionFailures.length === 0,
     JSON.stringify(allToolStrictProjectionFailures.slice(0, 8))
 );
-const productionNativeOutputSchema = buildCodexStructuredToolOutputSchema(allAgentTools);
+const productionNativeOutputSchema = buildCodexStructuredToolOutputSchema(allLoopTools);
 const productionNativeWireSchema = buildCodexStrictOutputSchema(productionNativeOutputSchema);
 const productionNativeSchemaIssues = collectStrictOutputSchemaIssues(productionNativeWireSchema);
 const productionNativeSchemaMetrics = measureStructuredOutputLimits(productionNativeWireSchema);
 const productionHostEnvelopeValidator = new Ajv({ allErrors: true, strict: false }).compile(
-    buildCodexHostEnvelopeOutputSchema(allAgentTools)
+    buildCodexHostEnvelopeOutputSchema(allLoopTools)
 );
 const validProductionEnvelope = {
     content: '',
@@ -559,9 +580,9 @@ try {
     embeddedReferenceProductionToolRejected = true;
 }
 check(
-    'Codex 生产输出 schema 直接覆盖全部 Tool、保留轻量 Host 校验且不重复工具描述',
+    'Codex 生产输出 schema 直接覆盖全部 Tool（含 Skill 工具）、保留轻量 Host 校验且不重复工具描述',
     productionNativeSchemaIssues.length === 0
-        && productionNativeOutputSchema.properties?.toolCalls?.items?.anyOf?.length === allAgentTools.length
+        && productionNativeOutputSchema.properties?.toolCalls?.items?.anyOf?.length === allLoopTools.length
         && productionNativeOutputSchema.properties.toolCalls.items.anyOf.every((branch) => (
             !Object.prototype.hasOwnProperty.call(branch, 'description')
         ))
@@ -598,6 +619,48 @@ check(
         ...productionNativeSchemaMetrics,
         serializedBytes: Buffer.byteLength(JSON.stringify(productionNativeWireSchema), 'utf8')
     })
+);
+check(
+    'strict schema 审计能发现 array items 缺 type（真机 sizes.anyOf[0].items 故障形态）',
+    collectStrictOutputSchemaIssues({
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+            sizes: { anyOf: [{ type: 'array', items: {} }, { type: 'null' }] }
+        },
+        required: ['sizes']
+    }).some((issue) => issue.includes('sizes.anyOf[0].items'))
+);
+let skillArrayWithoutItemsRejected = false;
+try {
+    buildSkillWorkflowToolSchema({
+        id: 'schema-fixture-skill',
+        name: 'Schema Fixture',
+        category: 'analysis',
+        kind: 'operation',
+        visibility: 'system-only',
+        description: 'array-without-items fixture',
+        whenToUse: [],
+        parameters: [{ name: 'values', type: 'array', description: 'no items declared', required: false }],
+        output: { type: 'data', description: 'none' },
+        requiredTools: [],
+        examples: []
+    });
+} catch (error) {
+    skillArrayWithoutItemsRejected = String(error?.message || error).includes('schema-fixture-skill.values');
+}
+check(
+    'Skill 数组参数缺少 items 时转换层 fail closed，并点名技能与参数路径',
+    skillArrayWithoutItemsRejected
+);
+const mainImageWorkflowTool = allSkillWorkflowTools.find((tool) => tool.name === 'main-image-design');
+const mainImageSizesSchema = mainImageWorkflowTool?.inputSchema?.properties?.sizes;
+check(
+    'main-image-design 的 sizes 数组带真实元素类型，且全部 Skill 工具数组不再出现空 items',
+    mainImageSizesSchema?.type === 'array'
+        && mainImageSizesSchema?.items?.type === 'string'
+        && !JSON.stringify(allSkillWorkflowTools).includes('"items":{}'),
+    JSON.stringify(mainImageSizesSchema)
 );
 check(
     'Codex 直修 schema 递归封闭 composeDesign 全部对象且不携带 strict 不支持的条件关键字',
@@ -824,7 +887,7 @@ try {
 } catch {
     duplicateDiscriminatorRejected = true;
 }
-const schemasWithEmbeddedRefs = allAgentTools.filter((tool) => (
+const schemasWithEmbeddedRefs = allLoopTools.filter((tool) => (
     /"(?:\$ref|\$defs|definitions)"\s*:/.test(JSON.stringify(tool.inputSchema))
 ));
 check(

@@ -41,11 +41,9 @@ import {
     attachSkillExecutionEffectReceipt,
     type SkillExecutionRuntimeLineage
 } from '../../../shared/skill-execution-effect';
-import type {
-    SkillDeclaration,
-    SkillParameterSchema
-} from '../../../shared/types/skill.types';
+import type { SkillDeclaration } from '../../../shared/types/skill.types';
 import { SKILL_REGISTRY, getSkillById } from '../../../shared/skills/skill-declarations';
+import { buildSkillWorkflowToolSchema } from '../../../shared/skills/skill-tool-schema';
 import { useAppStore } from '../../stores/app.store';
 import { applySharedSkillParamDefaults } from '../../../shared/skill-param-defaults';
 import {
@@ -93,106 +91,16 @@ function isSkillExposableToLoop(skill: SkillDeclaration): boolean {
     return true;
 }
 
-/** SkillParameterSchema → JSON Schema；递归处理 array items 与 object properties。 */
-function skillParamToSchema(param: SkillParameterSchema): Record<string, any> {
-    const schema: Record<string, any> = {};
-    if (param.description) {
-        schema.description = param.description;
-    }
-
-    switch (param.type) {
-        case 'number':
-            schema.type = 'number';
-            break;
-        case 'integer':
-            schema.type = 'integer';
-            break;
-        case 'boolean':
-            schema.type = 'boolean';
-            break;
-        case 'array':
-            schema.type = 'array';
-            schema.items = param.items
-                ? skillParamToSchema(param.items)
-                : {};
-            break;
-        case 'object': {
-            schema.type = 'object';
-            if (param.properties) {
-                const properties: Record<string, any> = {};
-                const required: string[] = [];
-                for (const property of param.properties) {
-                    properties[property.name] = skillParamToSchema(property);
-                    if (property.required) {
-                        required.push(property.name);
-                    }
-                }
-                schema.properties = properties;
-                if (required.length > 0) {
-                    schema.required = required;
-                }
-            }
-            break;
-        }
-        case 'image':
-            schema.type = 'string';
-            schema.description = `${param.description}（图片 base64 或本地文件路径）`;
-            break;
-        case 'string':
-        default:
-            schema.type = 'string';
-    }
-    if (param.enum && param.enum.length > 0) schema.enum = param.enum;
-    if (param.default !== undefined) schema.default = param.default;
-    if (param.additionalProperties !== undefined) {
-        schema.additionalProperties = param.additionalProperties;
-    }
-    if (param.minimum !== undefined) schema.minimum = param.minimum;
-    if (param.maximum !== undefined) schema.maximum = param.maximum;
-    if (param.minLength !== undefined) schema.minLength = param.minLength;
-    if (param.minItems !== undefined) schema.minItems = param.minItems;
-    if (param.maxItems !== undefined) schema.maxItems = param.maxItems;
-    if (param.uniqueItems !== undefined) schema.uniqueItems = param.uniqueItems;
-    return schema;
-}
-
 /**
  * 构建当前可暴露给自主循环的技能工具 schema 列表。
  * 每次调用时重新评估（技能开关可能在设置中变化）。
+ * 转换实现在 shared/skills/skill-tool-schema.ts（数组缺 items 会 fail closed），
+ * 与 verify-compose-design-spec.cjs 的 Codex strict schema 审计共用同一份代码。
  */
 export function buildSkillToolSchemas(): ToolSchema[] {
     return SKILL_REGISTRY
         .filter(isSkillExposableToLoop)
-        .map(skill => {
-            const properties: Record<string, any> = {};
-            const required: string[] = [];
-            for (const param of skill.parameters) {
-                properties[param.name] = skillParamToSchema(param);
-                if (param.required) required.push(param.name);
-            }
-
-            const descriptionLines = [
-                `【设计方法】${skill.description}`,
-                skill.playbookId
-                    ? `工作法包: ${skill.playbookId}；需要正文时调用 readSkillPlaybook("${skill.playbookId}")。`
-                    : '',
-                '这是可以直接完成一组相关工作的专业方法，不是单个 Photoshop 动作。使用后根据实际结果继续设计、调整或交付。',
-                skill.whenToUse.length > 0 ? `适合: ${skill.whenToUse.join('；')}` : '',
-                skill.whenNotToUse && skill.whenNotToUse.length > 0 ? `不适合: ${skill.whenNotToUse.join('；')}` : '',
-                `完成后: ${skill.output.description}`
-            ].filter(Boolean);
-
-            return {
-                name: skill.id,
-                description: descriptionLines.join('\n'),
-                inputSchema: {
-                    type: 'object' as const,
-                    properties,
-                    ...(required.length > 0 ? { required } : {}),
-                    additionalProperties: false
-                }
-            };
-        });
+        .map(buildSkillWorkflowToolSchema);
 }
 
 /** 判断某个 legacy workflow bridge 名称是否对应一个已注册 Skill。 */
