@@ -1,4 +1,4 @@
-import Ajv, { type ValidateFunction } from 'ajv';
+import Ajv, { type ErrorObject, type ValidateFunction } from 'ajv';
 import fs from 'fs';
 import path from 'path';
 import sharp, { type Metadata } from 'sharp';
@@ -268,6 +268,9 @@ const DIRECT_TOOL_ARGUMENT_REPAIR_ERROR_CODES = new Set([
     'codex_subscription_tool_arguments_invalid_shape',
     'codex_subscription_tool_arguments_schema_mismatch'
 ]);
+// 单个失败 call 最多 2 次定点修复；整批硬上限 = 3 call × 2 次，是循环的绝对边界。
+const MAX_DIRECT_TOOL_ARGUMENT_REPAIRS_PER_CALL = 2;
+const MAX_DIRECT_TOOL_ARGUMENT_REPAIRS_PER_BATCH = 6;
 
 function createSubscriptionError(message: string, code: string): Error {
     const error = new Error(message) as Error & { code?: string };
@@ -306,6 +309,155 @@ export function buildCodexStructuredOutputRepairInput(error: unknown): unknown[]
     }];
 }
 
+// ---------------------------------------------------------------------------
+// 结构化 schema 失败诊断：mismatch 只带 failure code 时，模型在
+// repair turn 里无从得知违反的是哪条条件约束，只能盲猜。这里携带脱敏、长度受限
+// 的 AJV 结构诊断（instancePath/schemaPath/keyword/params/message），绝不包含
+// 实际参数值、文件路径或正文——字段全部来自 schema 侧信息，且逐项截断。
+// ---------------------------------------------------------------------------
+
+const MAX_SCHEMA_DIAGNOSTIC_ERROR_ENTRIES = 6;
+const MAX_REPAIR_PROMPT_DIAGNOSTIC_CHARS = 1600;
+const CODEX_FAILING_CALL_INDEX_PROP = 'codexFailingToolCallIndex';
+const CODEX_SCHEMA_DIAGNOSTIC_PROP = 'codexToolArgumentsSchemaDiagnostic';
+
+export interface CodexToolArgumentsSchemaDiagnosticEntry {
+    instancePath: string;
+    schemaPath: string;
+    keyword: string;
+    params: string;
+    message: string;
+}
+
+export interface CodexToolArgumentsSchemaDiagnostic {
+    toolName: string;
+    failingCallIndex: number;
+    callCount: number;
+    errors: CodexToolArgumentsSchemaDiagnosticEntry[];
+}
+
+const SAFE_AJV_DIAGNOSTIC_PARAM_KEYS = new Set([
+    'additionalProperty',
+    'allowedValues',
+    'comparison',
+    'failingKeyword',
+    'i',
+    'j',
+    'limit',
+    'maxContains',
+    'minContains',
+    'missingProperty',
+    'multipleOf',
+    'propertyName',
+    'type'
+]);
+
+function sanitizeAjvDiagnosticParamScalar(value: unknown): string | number | boolean | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'boolean' || value === null) return value;
+    if (typeof value !== 'string') return '[redacted]';
+    return /^[A-Za-z0-9_.$/#~\-\[\]]{1,160}$/.test(value)
+        ? value
+        : '[redacted]';
+}
+
+function sanitizeAjvDiagnosticParams(value: unknown): string {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return '{}';
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, paramValue] of Object.entries(value)) {
+        if (!SAFE_AJV_DIAGNOSTIC_PARAM_KEYS.has(key)) continue;
+        sanitized[key] = Array.isArray(paramValue)
+            ? paramValue.slice(0, 8).map(sanitizeAjvDiagnosticParamScalar)
+            : sanitizeAjvDiagnosticParamScalar(paramValue);
+    }
+    return JSON.stringify(sanitized).slice(0, 240);
+}
+
+function sanitizeAjvDiagnosticPath(value: unknown, maxLength: number): string {
+    const pathValue = String(value || '').slice(0, maxLength);
+    return pathValue === '' || /^[A-Za-z0-9_.$/#~:\-\[\]]+$/.test(pathValue)
+        ? pathValue
+        : '[redacted]';
+}
+
+export function buildCodexToolArgumentsSchemaDiagnostic(input: {
+    toolName: string;
+    failingCallIndex: number;
+    callCount: number;
+    ajvErrors: Partial<ErrorObject>[] | null | undefined;
+}): CodexToolArgumentsSchemaDiagnostic {
+    const errors = (input.ajvErrors || [])
+        .slice(0, MAX_SCHEMA_DIAGNOSTIC_ERROR_ENTRIES)
+        .map((ajvError): CodexToolArgumentsSchemaDiagnosticEntry => {
+            return {
+                instancePath: sanitizeAjvDiagnosticPath(ajvError?.instancePath, 120),
+                schemaPath: sanitizeAjvDiagnosticPath(ajvError?.schemaPath, 160),
+                keyword: String(ajvError?.keyword || '').slice(0, 40),
+                params: sanitizeAjvDiagnosticParams(ajvError?.params),
+                message: String(ajvError?.message || '').slice(0, 200)
+            };
+        });
+    return {
+        toolName: String(input.toolName || '').slice(0, 80),
+        failingCallIndex: Math.max(0, Math.floor(Number(input.failingCallIndex) || 0)),
+        callCount: Math.max(1, Math.floor(Number(input.callCount) || 1)),
+        errors
+    };
+}
+
+export function attachCodexToolArgumentsFailureDiagnostic<T>(
+    error: T,
+    diagnostic: CodexToolArgumentsSchemaDiagnostic
+): T {
+    if (error && typeof error === 'object') {
+        (error as Record<string, unknown>)[CODEX_SCHEMA_DIAGNOSTIC_PROP] = diagnostic;
+        (error as Record<string, unknown>)[CODEX_FAILING_CALL_INDEX_PROP] = diagnostic.failingCallIndex;
+    }
+    return error;
+}
+
+function attachCodexFailingToolCallIndex<T>(error: T, failingCallIndex: number): T {
+    if (
+        error
+        && typeof error === 'object'
+        && (error as Record<string, unknown>)[CODEX_FAILING_CALL_INDEX_PROP] === undefined
+    ) {
+        (error as Record<string, unknown>)[CODEX_FAILING_CALL_INDEX_PROP] = failingCallIndex;
+    }
+    return error;
+}
+
+export function readCodexToolArgumentsSchemaDiagnostic(
+    error: unknown
+): CodexToolArgumentsSchemaDiagnostic | undefined {
+    if (!error || typeof error !== 'object') return undefined;
+    const candidate = (error as Record<string, unknown>)[CODEX_SCHEMA_DIAGNOSTIC_PROP];
+    return candidate && typeof candidate === 'object'
+        ? candidate as CodexToolArgumentsSchemaDiagnostic
+        : undefined;
+}
+
+export function readCodexFailingToolCallIndex(error: unknown): number | undefined {
+    if (!error || typeof error !== 'object') return undefined;
+    const candidate = (error as Record<string, unknown>)[CODEX_FAILING_CALL_INDEX_PROP];
+    return typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0
+        ? candidate
+        : undefined;
+}
+
+function renderRepairPromptDiagnostics(error: unknown): string {
+    const diagnostic = readCodexToolArgumentsSchemaDiagnostic(error);
+    if (!diagnostic || diagnostic.errors.length === 0) return '';
+    const lines = [
+        'Host AJV validation diagnostics (sanitized; argument values are never echoed):',
+        ...diagnostic.errors.map((entry, index) => (
+            `${index + 1}. at "${entry.instancePath || '/'}" [${entry.keyword}] ${entry.message}`
+            + ` (schemaPath: ${entry.schemaPath}; params: ${entry.params})`
+        ))
+    ];
+    return lines.join('\n').slice(0, MAX_REPAIR_PROMPT_DIAGNOSTIC_CHARS);
+}
+
 export function buildCodexDirectToolArgumentsRepairInput(
     toolName: string,
     error: unknown,
@@ -313,20 +465,102 @@ export function buildCodexDirectToolArgumentsRepairInput(
     callCount: number
 ): unknown[] {
     const code = readSubscriptionErrorCode(error) || 'codex_subscription_tool_arguments_invalid';
+    const baseText = [
+        `The previous outer decision selected DesignEcho function "${toolName}"`,
+        `(${callIndex + 1} of ${callCount}), but its arguments failed host validation.`,
+        `Failure code: ${code}.`,
+        'Return only that function\'s arguments as one complete JSON object matching the supplied output schema.',
+        'Do not return content, toolCalls, an arguments wrapper, Markdown, or commentary.',
+        'On this strict wire optional fields are nullable; send null for any field the host conditions require to be absent.',
+        'The previous decision remains in this same thread. Preserve its design intent where schema-compatible,',
+        'but resolve mutually incompatible fields yourself; the host will not choose a design tradeoff for you.',
+        'Do not simulate the function result.'
+    ].join(' ');
+    const diagnosticsText = renderRepairPromptDiagnostics(error);
     return [{
         type: 'text',
-        text: [
-            `The previous outer decision selected DesignEcho function "${toolName}"`,
-            `(${callIndex + 1} of ${callCount}), but its arguments failed host validation.`,
-            `Failure code: ${code}.`,
-            'Return only that function\'s arguments as one complete JSON object matching the supplied output schema.',
-            'Do not return content, toolCalls, an arguments wrapper, Markdown, or commentary.',
-            'The previous decision remains in this same thread. Preserve its design intent where schema-compatible,',
-            'but resolve mutually incompatible fields yourself; the host will not choose a design tradeoff for you.',
-            'Do not simulate the function result.'
-        ].join(' '),
+        text: diagnosticsText ? `${baseText}\n${diagnosticsText}` : baseText,
         text_elements: []
     }];
+}
+
+// ---------------------------------------------------------------------------
+// Direct argument repair 编排（纯控制流，测试可注入 runner）：只重生成真正失败的
+// call，保留其余合法 sibling 的 name/id/arguments；每次修复后重新校验整批，发现
+// 下一个失败 call 再修它。每个 call 最多 maxAttemptsPerCall 次，整批共享
+// maxAttemptsPerBatch 硬上限（单轮最多 3 个 tool call，不存在无限循环）。超限时
+// 抛出最近一次真实校验错误——不吞错、不伪造成功；全部合法前不返回任何可执行 call。
+// ---------------------------------------------------------------------------
+
+export interface CodexToolCallBatchFailure {
+    failingCallIndex: number;
+    error: Error;
+}
+
+export type CodexToolCallBatchVerdict<TNormalized> =
+    | { ok: true; normalized: TNormalized }
+    | { ok: false; failingCallIndex: number; error: Error };
+
+export async function repairCodexToolCallBatch<TCall, TNormalized>(input: {
+    initialCalls: TCall[];
+    initialFailure: CodexToolCallBatchFailure;
+    maxAttemptsPerCall: number;
+    maxAttemptsPerBatch: number;
+    validateBatch: (calls: TCall[]) => CodexToolCallBatchVerdict<TNormalized>;
+    repairCall: (repair: {
+        callIndex: number;
+        attempt: number;
+        failure: Error;
+        currentCall: TCall;
+    }) => Promise<TCall>;
+    isRetryableRepairError?: (error: unknown) => boolean;
+}): Promise<{ normalized: TNormalized; calls: TCall[]; repairAttempts: number }> {
+    const rawPerCallLimit = Number(input.maxAttemptsPerCall);
+    const rawBatchLimit = Number(input.maxAttemptsPerBatch);
+    const maxAttemptsPerCall = Number.isFinite(rawPerCallLimit)
+        ? Math.max(1, Math.floor(rawPerCallLimit))
+        : 1;
+    const maxAttemptsPerBatch = Number.isFinite(rawBatchLimit)
+        ? Math.max(1, Math.floor(rawBatchLimit))
+        : 1;
+    let calls = [...input.initialCalls];
+    let failure: CodexToolCallBatchFailure = input.initialFailure;
+    const attemptsByCallIndex = new Map<number, number>();
+    let totalAttempts = 0;
+    for (;;) {
+        const failingCallIndex = failure.failingCallIndex;
+        if (failingCallIndex < 0 || failingCallIndex >= calls.length) throw failure.error;
+        const priorAttempts = attemptsByCallIndex.get(failingCallIndex) || 0;
+        if (priorAttempts >= maxAttemptsPerCall || totalAttempts >= maxAttemptsPerBatch) {
+            throw failure.error;
+        }
+        attemptsByCallIndex.set(failingCallIndex, priorAttempts + 1);
+        totalAttempts += 1;
+        let replacement: TCall;
+        try {
+            replacement = await input.repairCall({
+                callIndex: failingCallIndex,
+                attempt: priorAttempts + 1,
+                failure: failure.error,
+                currentCall: calls[failingCallIndex]
+            });
+        } catch (repairError) {
+            if (!input.isRetryableRepairError?.(repairError)) throw repairError;
+            failure = {
+                failingCallIndex,
+                error: repairError instanceof Error
+                    ? repairError
+                    : new Error(String(repairError))
+            };
+            continue;
+        }
+        calls = calls.map((call, index) => (index === failingCallIndex ? replacement : call));
+        const verdict = input.validateBatch(calls);
+        if (verdict.ok) {
+            return { normalized: verdict.normalized, calls, repairAttempts: totalAttempts };
+        }
+        failure = { failingCallIndex: verdict.failingCallIndex, error: verdict.error };
+    }
 }
 
 function buildDirectToolArgumentsOutputSchema(tool: ToolSchema): Record<string, unknown> {
@@ -1381,46 +1615,93 @@ export class CodexSubscriptionService {
                 if (!isRepairableCodexStructuredOutputError(error) || signal?.aborted) throw error;
                 const firstUsage = completed.usage;
                 if (structured && isDirectToolArgumentsRepairError(error)) {
+                    // 定点修复：只重生成校验失败的那一个 call，保留其余
+                    // 合法 sibling 的 name/id/arguments；修复后整批重校验，全部合法前
+                    // 不返回任何可执行 call。超出上限时抛出最近一次真实校验错误。
+                    const initialFailingCallIndex = readCodexFailingToolCallIndex(error);
+                    if (initialFailingCallIndex === undefined) throw error;
                     console.warn(
-                        `[CodexSubscription] repairing ${structured.toolCalls.length} tool argument object(s) directly after ${readSubscriptionErrorCode(error)}`
+                        `[CodexSubscription] repairing tool call ${initialFailingCallIndex + 1}/${structured.toolCalls.length} directly after ${readSubscriptionErrorCode(error)}`
                     );
                     const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
-                    const repairedCalls: ToolCall[] = [];
+                    const proposedCalls = structured.toolCalls;
                     let repairedUsage: TokenUsageBreakdown | undefined;
                     let lastRepairTurn = completed;
-                    for (let index = 0; index < structured.toolCalls.length; index += 1) {
-                        const proposedCall = structured.toolCalls[index];
-                        const tool = toolsByName.get(proposedCall.name);
-                        if (!tool) {
-                            throw createSubscriptionError(
-                                `GPT 订阅模型请求了本轮不可见的工具「${proposedCall.name || '未知'}」。`,
-                                'codex_subscription_unknown_tool'
-                            );
+                    const repairOutcome = await repairCodexToolCallBatch<
+                        StructuredAssistantOutput['toolCalls'][number],
+                        ToolCall[]
+                    >({
+                        initialCalls: proposedCalls,
+                        initialFailure: {
+                            failingCallIndex: initialFailingCallIndex,
+                            error: error as Error
+                        },
+                        maxAttemptsPerCall: MAX_DIRECT_TOOL_ARGUMENT_REPAIRS_PER_CALL,
+                        maxAttemptsPerBatch: MAX_DIRECT_TOOL_ARGUMENT_REPAIRS_PER_BATCH,
+                        isRetryableRepairError: (repairError) => (
+                            !signal?.aborted
+                            && isRepairableCodexStructuredOutputError(repairError)
+                        ),
+                        validateBatch: (calls) => {
+                            try {
+                                return {
+                                    ok: true,
+                                    normalized: this.validateAndNormalizeToolCalls(
+                                        calls,
+                                        tools,
+                                        lastRepairTurn.turnId
+                                    )
+                                };
+                            } catch (validationError) {
+                                const failingCallIndex = readCodexFailingToolCallIndex(validationError);
+                                if (
+                                    !isDirectToolArgumentsRepairError(validationError)
+                                    || failingCallIndex === undefined
+                                ) {
+                                    throw validationError;
+                                }
+                                return {
+                                    ok: false,
+                                    failingCallIndex,
+                                    error: validationError as Error
+                                };
+                            }
+                        },
+                        repairCall: async (repair) => {
+                            const failingCall = repair.currentCall;
+                            const tool = toolsByName.get(failingCall.name);
+                            if (!tool) {
+                                throw createSubscriptionError(
+                                    `GPT 订阅模型请求了本轮不可见的工具「${failingCall.name || '未知'}」。`,
+                                    'codex_subscription_unknown_tool'
+                                );
+                            }
+                            const repaired = await this.runStructuredTurn({
+                                threadId,
+                                apiModelId,
+                                // repair.failure 始终是最近一次整批校验的结构化诊断错误：
+                                // 第二次修复看到的是第一次修复后的最新 AJV 结论。
+                                currentInput: buildCodexDirectToolArgumentsRepairInput(
+                                    tool.name,
+                                    repair.failure,
+                                    repair.callIndex,
+                                    proposedCalls.length
+                                ),
+                                outputSchema: buildDirectToolArgumentsOutputSchema(tool),
+                                effort: normalizeReasoningEffort(rawModel, options?.reasoningEffort),
+                                timeoutMs: options?.timeoutMs,
+                                signal,
+                                workerGeneration
+                            });
+                            repairedUsage = combineTokenUsage(repairedUsage, repaired.usage);
+                            lastRepairTurn = repaired;
+                            return {
+                                ...failingCall,
+                                arguments: parseCodexDirectToolArgumentsOutput(repaired.text, tool)
+                            };
                         }
-                        const repaired = await this.runStructuredTurn({
-                            threadId,
-                            apiModelId,
-                            currentInput: buildCodexDirectToolArgumentsRepairInput(
-                                tool.name,
-                                error,
-                                index,
-                                structured.toolCalls.length
-                            ),
-                            outputSchema: buildDirectToolArgumentsOutputSchema(tool),
-                            effort: normalizeReasoningEffort(rawModel, options?.reasoningEffort),
-                            timeoutMs: options?.timeoutMs,
-                            signal,
-                            workerGeneration
-                        });
-                        const [repairedCall] = this.validateAndNormalizeToolCalls([{
-                            ...proposedCall,
-                            arguments: parseCodexDirectToolArgumentsOutput(repaired.text, tool)
-                        }], [tool], repaired.turnId);
-                        repairedCalls.push(repairedCall);
-                        repairedUsage = combineTokenUsage(repairedUsage, repaired.usage);
-                        lastRepairTurn = repaired;
-                    }
-                    toolCalls = repairedCalls;
+                    });
+                    toolCalls = repairOutcome.normalized;
                     completed = {
                         ...lastRepairTurn,
                         usage: combineTokenUsage(firstUsage, repairedUsage)
@@ -1997,70 +2278,93 @@ export class CodexSubscriptionService {
         }
         const byName = new Map(tools.map((tool) => [tool.name, tool]));
         return proposed.map((call, index) => {
-            const tool = byName.get(String(call?.name || ''));
-            if (!tool) {
-                throw createSubscriptionError(
-                    `GPT 订阅模型请求了本轮不可见的工具「${String(call?.name || '未知')}」。`,
-                    'codex_subscription_unknown_tool'
-                );
-            }
-            const args: unknown = call.arguments;
-            if (!args || typeof args !== 'object' || Array.isArray(args)) {
-                throw createSubscriptionError(
-                    `GPT 订阅模型为工具「${tool.name}」返回的参数不是对象。`,
-                    'codex_subscription_tool_arguments_invalid_shape'
-                );
-            }
-            let argumentsText: string;
             try {
-                argumentsText = JSON.stringify(args);
+                return this.normalizeSingleToolCall(call, index, proposed.length, byName, turnId);
+            } catch (error) {
+                // 失败 call 的位置随错误结构化携带，让定点修复只重写这一个 call。
+                throw attachCodexFailingToolCallIndex(error, index);
+            }
+        });
+    }
+
+    private normalizeSingleToolCall(
+        call: StructuredAssistantOutput['toolCalls'][number],
+        index: number,
+        callCount: number,
+        byName: Map<string, ToolSchema>,
+        turnId: string
+    ): ToolCall {
+        const tool = byName.get(String(call?.name || ''));
+        if (!tool) {
+            throw createSubscriptionError(
+                `GPT 订阅模型请求了本轮不可见的工具「${String(call?.name || '未知')}」。`,
+                'codex_subscription_unknown_tool'
+            );
+        }
+        const args: unknown = call.arguments;
+        if (!args || typeof args !== 'object' || Array.isArray(args)) {
+            throw createSubscriptionError(
+                `GPT 订阅模型为工具「${tool.name}」返回的参数不是对象。`,
+                'codex_subscription_tool_arguments_invalid_shape'
+            );
+        }
+        let argumentsText: string;
+        try {
+            argumentsText = JSON.stringify(args);
+        } catch {
+            throw createSubscriptionError(
+                `GPT 订阅模型为工具「${tool.name}」返回了无法序列化的参数。`,
+                'codex_subscription_tool_arguments_invalid_shape'
+            );
+        }
+        if (argumentsText.length > MAX_TOOL_ARGUMENTS_JSON_LENGTH) {
+            throw createSubscriptionError(
+                `GPT 订阅模型为工具「${tool.name}」返回的参数超过安全上限。`,
+                'codex_subscription_tool_arguments_too_large'
+            );
+        }
+        if (containsForbiddenObjectKey(args)) {
+            throw createSubscriptionError(
+                `GPT 订阅模型为工具「${tool.name}」返回了不安全的对象键或过深结构。`,
+                'codex_subscription_tool_arguments_unsafe'
+            );
+        }
+        let validator = this.toolValidators.get(tool);
+        if (!validator) {
+            try {
+                validator = this.ajv.compile({
+                    ...tool.inputSchema,
+                    additionalProperties: false
+                });
             } catch {
                 throw createSubscriptionError(
-                    `GPT 订阅模型为工具「${tool.name}」返回了无法序列化的参数。`,
-                    'codex_subscription_tool_arguments_invalid_shape'
+                    `DesignEcho 工具「${tool.name}」的输入 schema 无法编译。`,
+                    'codex_subscription_tool_schema_invalid'
                 );
             }
-            if (argumentsText.length > MAX_TOOL_ARGUMENTS_JSON_LENGTH) {
-                throw createSubscriptionError(
-                    `GPT 订阅模型为工具「${tool.name}」返回的参数超过安全上限。`,
-                    'codex_subscription_tool_arguments_too_large'
-                );
-            }
-            if (containsForbiddenObjectKey(args)) {
-                throw createSubscriptionError(
-                    `GPT 订阅模型为工具「${tool.name}」返回了不安全的对象键或过深结构。`,
-                    'codex_subscription_tool_arguments_unsafe'
-                );
-            }
-            let validator = this.toolValidators.get(tool);
-            if (!validator) {
-                try {
-                    validator = this.ajv.compile({
-                        ...tool.inputSchema,
-                        additionalProperties: false
-                    });
-                } catch {
-                    throw createSubscriptionError(
-                        `DesignEcho 工具「${tool.name}」的输入 schema 无法编译。`,
-                        'codex_subscription_tool_schema_invalid'
-                    );
-                }
-                this.toolValidators.set(tool, validator);
-            }
-            if (!validator(args)) {
-                const detail = this.ajv.errorsText(validator.errors, { separator: '；' }).slice(0, 320);
-                throw createSubscriptionError(
+            this.toolValidators.set(tool, validator);
+        }
+        if (!validator(args)) {
+            const detail = this.ajv.errorsText(validator.errors, { separator: '；' }).slice(0, 320);
+            throw attachCodexToolArgumentsFailureDiagnostic(
+                createSubscriptionError(
                     `GPT 订阅模型为工具「${tool.name}」返回的参数不符合 schema：${detail}`,
                     'codex_subscription_tool_arguments_schema_mismatch'
-                );
-            }
-            const safeTurnId = String(turnId || 'turn').replace(/[^a-zA-Z0-9_-]/g, '').slice(-48);
-            return {
-                id: `codex_${safeTurnId}_${index}`,
-                name: tool.name,
-                arguments: args as Record<string, any>
-            };
-        });
+                ),
+                buildCodexToolArgumentsSchemaDiagnostic({
+                    toolName: tool.name,
+                    failingCallIndex: index,
+                    callCount,
+                    ajvErrors: validator.errors
+                })
+            );
+        }
+        const safeTurnId = String(turnId || 'turn').replace(/[^a-zA-Z0-9_-]/g, '').slice(-48);
+        return {
+            id: `codex_${safeTurnId}_${index}`,
+            name: tool.name,
+            arguments: args as Record<string, any>
+        };
     }
 
     private handleNotification(notification: CodexAppServerNotification): void {

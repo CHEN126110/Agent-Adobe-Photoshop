@@ -110,6 +110,227 @@ function copySupportedScalarKeywords(source: JsonSchema): JsonSchema {
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// strict wire 丢弃的条件约束不能静默消失：allOf/if/then/else/not
+// 与对象级 oneOf 被投影删除后，模型只看得到字段、看不到互斥关系，会产出被主机
+// AJV 拒绝的组合。这里把被丢弃的条件转译成简洁、确定、长度受限的英文提示，附在
+// 投影节点 description 上。提示只是信息补偿：原 AJV schema 仍是唯一执行校验，
+// 提示不授予权限、不当完成依据、也绝不复制整份 JSON。
+// ---------------------------------------------------------------------------
+
+const MAX_STRICT_CONSTRAINT_HINT_NODE_CHARS = 600;
+// 总量上限覆盖“全部工具拼成一个联合 schema”的一次投影：预算按节点顺序消费，
+// 必须容得下位于联合后段的条件工具（如 placeImage），同时保持总量有界。
+const MAX_STRICT_CONSTRAINT_HINT_TOTAL_CHARS = 6000;
+const MIN_STRICT_CONSTRAINT_HINT_CHARS = 80;
+const HOST_CHECKED_CONDITION = 'a host-checked condition';
+
+export interface StrictConstraintHintBudget {
+    remainingChars: number;
+}
+
+export function createStrictConstraintHintBudget(): StrictConstraintHintBudget {
+    return { remainingChars: MAX_STRICT_CONSTRAINT_HINT_TOTAL_CHARS };
+}
+
+function formatConstraintValue(value: unknown): string {
+    if (typeof value === 'string') {
+        return value.length > 24 ? `${value.slice(0, 24)}…` : value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+        return String(value);
+    }
+    return '…';
+}
+
+function formatConstraintEnum(values: unknown[]): string {
+    const rendered = values.slice(0, 5).map(formatConstraintValue);
+    const suffix = values.length > 5 ? ',…' : '';
+    return `{${rendered.join(',')}${suffix}}`;
+}
+
+function readStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === 'string')
+        : [];
+}
+
+function describeConstraintPropertyCondition(
+    name: string,
+    propSchema: JsonSchema,
+    depth: number
+): string {
+    if (Array.isArray(propSchema.enum)) {
+        return `${name} in ${formatConstraintEnum(propSchema.enum)}`;
+    }
+    if (propSchema.const !== undefined) {
+        return `${name}=${formatConstraintValue(propSchema.const)}`;
+    }
+    const negated = propSchema.not;
+    if (isRecord(negated) && Array.isArray(negated.enum)) {
+        return `${name} not in ${formatConstraintEnum(negated.enum)}`;
+    }
+    if (isRecord(negated)) {
+        return `${name} fails ${HOST_CHECKED_CONDITION}`;
+    }
+    if (isRecord(propSchema.properties) || Array.isArray(propSchema.required)) {
+        const inner = describeConstraintCondition(propSchema, depth + 1);
+        return inner === HOST_CHECKED_CONDITION
+            ? `${name} matches ${HOST_CHECKED_CONDITION}`
+            : `${name}(${inner})`;
+    }
+    return `${name} matches ${HOST_CHECKED_CONDITION}`;
+}
+
+function describeConstraintCondition(schema: JsonSchema, depth: number): string {
+    if (depth > 4) return HOST_CHECKED_CONDITION;
+    const parts: string[] = [];
+    const required = readStringArray(schema.required);
+    const properties = isRecord(schema.properties) ? schema.properties : undefined;
+    const refined = new Set(properties ? Object.keys(properties) : []);
+    const bareRequired = required.filter((name) => !refined.has(name));
+    if (bareRequired.length > 0) parts.push(`non-null ${bareRequired.join(' & ')}`);
+    if (properties) {
+        for (const [name, propSchema] of Object.entries(properties)) {
+            if (!isRecord(propSchema)) continue;
+            parts.push(describeConstraintPropertyCondition(name, propSchema, depth));
+        }
+    }
+    if (Array.isArray(schema.anyOf)) {
+        const branches = schema.anyOf
+            .filter(isRecord)
+            .map((branch) => describeConstraintCondition(branch, depth + 1));
+        if (branches.length > 0) parts.push(`any of [${branches.join(' | ')}]`);
+    }
+    if (isRecord(schema.not)) {
+        parts.push(`not(${describeConstraintCondition(schema.not, depth + 1)})`);
+    }
+    return parts.length > 0 ? parts.join(' and ') : HOST_CHECKED_CONDITION;
+}
+
+function describeConstraintForbiddenFields(negated: JsonSchema, depth: number): string {
+    const required = readStringArray(negated.required);
+    const hasOnlyRequired = !isRecord(negated.properties) && !Array.isArray(negated.anyOf);
+    if (required.length === 1 && hasOnlyRequired) {
+        return `forbid non-null ${required[0]}`;
+    }
+    if (required.length > 1 && hasOnlyRequired) {
+        return `never combine non-null ${required.join(' & ')}`;
+    }
+    if (Array.isArray(negated.anyOf)) {
+        const forbiddenNames: string[] = [];
+        let simple = true;
+        for (const branch of negated.anyOf) {
+            const branchRequired = isRecord(branch) ? readStringArray(branch.required) : [];
+            if (isRecord(branch) && branchRequired.length === 1 && !isRecord(branch.properties)) {
+                forbiddenNames.push(branchRequired[0]);
+            } else {
+                simple = false;
+                break;
+            }
+        }
+        if (simple && forbiddenNames.length > 0) {
+            return `forbid non-null: ${forbiddenNames.join(', ')}`;
+        }
+    }
+    return `never(${describeConstraintCondition(negated, depth + 1)})`;
+}
+
+function describeConstraintRequirement(schema: JsonSchema, depth: number): string {
+    if (depth > 4) return `satisfy ${HOST_CHECKED_CONDITION}`;
+    const parts: string[] = [];
+    const required = readStringArray(schema.required);
+    if (required.length > 0) parts.push(`require non-null: ${required.join(', ')}`);
+    const properties = isRecord(schema.properties) ? schema.properties : undefined;
+    if (properties) {
+        for (const [name, propSchema] of Object.entries(properties)) {
+            if (!isRecord(propSchema)) continue;
+            parts.push(describeConstraintPropertyCondition(name, propSchema, depth));
+        }
+    }
+    if (isRecord(schema.not)) parts.push(describeConstraintForbiddenFields(schema.not, depth));
+    if (Array.isArray(schema.anyOf)) {
+        const branches = schema.anyOf
+            .filter(isRecord)
+            .map((branch) => describeConstraintRequirement(branch, depth + 1));
+        if (branches.length > 0) parts.push(`satisfy any of [${branches.join(' | ')}]`);
+    }
+    return parts.length > 0 ? parts.join('; ') : `satisfy ${HOST_CHECKED_CONDITION}`;
+}
+
+function collectDroppedConstraintClauses(source: JsonSchema): string[] {
+    const clauses: string[] = [];
+    const conditionalNodes: JsonSchema[] = [];
+    if (isRecord(source.if)) conditionalNodes.push(source);
+    if (Array.isArray(source.allOf)) {
+        for (const branch of source.allOf) {
+            if (isRecord(branch)) conditionalNodes.push(branch);
+        }
+    }
+    for (const node of conditionalNodes) {
+        if (isRecord(node.if)) {
+            const condition = describeConstraintCondition(node.if, 0);
+            let clause = isRecord(node.then)
+                ? `if(${condition}) then(${describeConstraintRequirement(node.then, 0)})`
+                : '';
+            if (isRecord(node.else)) {
+                const alternative = describeConstraintRequirement(node.else, 0);
+                clause = clause
+                    ? `${clause} else(${alternative})`
+                    : `if not(${condition}) then(${alternative})`;
+            }
+            if (clause) clauses.push(clause);
+        } else if (isRecord(node.not)) {
+            clauses.push(describeConstraintForbiddenFields(node.not, 0));
+        } else if (node !== source) {
+            clauses.push(describeConstraintRequirement(node, 0));
+        }
+    }
+    if (isRecord(source.not) && !isRecord(source.if)) {
+        clauses.push(describeConstraintForbiddenFields(source.not, 0));
+    }
+    const oneOfDroppedByProjection = Array.isArray(source.oneOf)
+        && (isObjectSchema(source) || source.type !== undefined || source.items !== undefined);
+    if (oneOfDroppedByProjection && Array.isArray(source.oneOf)) {
+        const branches = source.oneOf
+            .filter(isRecord)
+            .map((branch) => describeConstraintCondition(branch, 0));
+        if (branches.length > 0) {
+            clauses.push(`exactly one variant must hold: [${branches.join('] / [')}]`);
+        }
+    }
+    return clauses;
+}
+
+/**
+ * 把当前节点上会被 strict 投影丢弃的条件约束（allOf/if/then/else/not、对象级
+ * oneOf）压缩成一段确定、长度受限的英文提示。同时明确 strict wire 的 null 在
+ * 主机校验前会被恢复为“原可选字段缺失”，让模型知道用 null 表达“不提供”。
+ * 单节点上限 MAX_STRICT_CONSTRAINT_HINT_NODE_CHARS；budget 控制整棵 schema
+ * 的提示总量，超出后剩余节点不再产出提示（原 AJV 校验不受影响）。
+ */
+export function summarizeStrictWireDroppedConstraints(
+    source: JsonSchema,
+    budget: StrictConstraintHintBudget
+): string | undefined {
+    const clauses = collectDroppedConstraintClauses(source);
+    if (clauses.length === 0) return undefined;
+    if (budget.remainingChars < MIN_STRICT_CONSTRAINT_HINT_CHARS) return undefined;
+    const hint = 'Host-enforced conditions (checked after null-restore; on this strict wire '
+        + 'optional fields are nullable and null is removed before host validation, '
+        + `i.e. null = field absent): ${clauses.join('; ')}.`;
+    const nodeCap = Math.min(MAX_STRICT_CONSTRAINT_HINT_NODE_CHARS, budget.remainingChars);
+    const bounded = hint.length > nodeCap ? `${hint.slice(0, nodeCap - 1)}…` : hint;
+    budget.remainingChars -= bounded.length;
+    return bounded;
+}
+
+function appendConstraintHint(projected: JsonSchema, hint: string | undefined): void {
+    if (!hint) return;
+    const existing = typeof projected.description === 'string' ? projected.description : '';
+    projected.description = existing ? `${existing} ${hint}` : hint;
+}
+
 function describeOpaqueObject(source: JsonSchema): string {
     const original = typeof source.description === 'string' ? source.description.trim() : '';
     const wireNote = 'Return this free-form object as one JSON-encoded object string. The host restores and validates it before tool execution.';
@@ -195,32 +416,39 @@ function assertStandaloneUnionIsRecoverable(source: JsonSchema): void {
     }
 }
 
-function projectSchemaNode(source: JsonSchema, rootSchema: JsonSchema): JsonSchema {
+function projectSchemaNode(
+    source: JsonSchema,
+    rootSchema: JsonSchema,
+    hintBudget: StrictConstraintHintBudget
+): JsonSchema {
     assertStandaloneUnionIsRecoverable(source);
+    const constraintHint = summarizeStrictWireDroppedConstraints(source, hintBudget);
     if (isExplicitlyOpenObjectSchema(source)) {
         const opaqueProjection: JsonSchema = {
             type: 'string',
             description: describeOpaqueObject(source)
         };
+        appendConstraintHint(opaqueProjection, constraintHint);
         return schemaAllowsNull(source, rootSchema)
             ? { anyOf: [opaqueProjection, { type: 'null' }] }
             : opaqueProjection;
     }
 
     const projected = copySupportedScalarKeywords(source);
+    appendConstraintHint(projected, constraintHint);
     const definitions = isRecord(source.$defs) ? source.$defs : undefined;
     if (definitions) {
         projected.$defs = Object.fromEntries(
             Object.entries(definitions)
                 .filter((entry): entry is [string, JsonSchema] => isRecord(entry[1]))
-                .map(([key, value]) => [key, projectSchemaNode(value, rootSchema)])
+                .map(([key, value]) => [key, projectSchemaNode(value, rootSchema, hintBudget)])
         );
     }
 
     if (Array.isArray(source.anyOf)) {
         projected.anyOf = source.anyOf
             .filter((branch): branch is JsonSchema => isRecord(branch))
-            .map((branch) => projectSchemaNode(branch, rootSchema));
+            .map((branch) => projectSchemaNode(branch, rootSchema, hintBudget));
     } else if (
         Array.isArray(source.oneOf)
         && !isObjectSchema(source)
@@ -233,7 +461,7 @@ function projectSchemaNode(source: JsonSchema, rootSchema: JsonSchema): JsonSche
         // sibling properties from the parent object.
         projected.anyOf = source.oneOf
             .filter((branch): branch is JsonSchema => isRecord(branch))
-            .map((branch) => projectSchemaNode(branch, rootSchema));
+            .map((branch) => projectSchemaNode(branch, rootSchema, hintBudget));
     }
 
     if (isObjectSchema(source)) {
@@ -241,7 +469,7 @@ function projectSchemaNode(source: JsonSchema, rootSchema: JsonSchema): JsonSche
         const originalRequired = readRequired(source);
         const projectedProperties: Record<string, JsonSchema> = {};
         for (const [key, propertySchema] of Object.entries(properties)) {
-            const projectedProperty = projectSchemaNode(propertySchema, rootSchema);
+            const projectedProperty = projectSchemaNode(propertySchema, rootSchema, hintBudget);
             projectedProperties[key] = originalRequired.has(key)
                 ? projectedProperty
                 : makeSchemaNullable(projectedProperty, propertySchema, rootSchema);
@@ -252,7 +480,7 @@ function projectSchemaNode(source: JsonSchema, rootSchema: JsonSchema): JsonSche
         projected.additionalProperties = false;
     } else if (source.type === 'array' || (Array.isArray(source.type) && source.type.includes('array'))) {
         if (isRecord(source.items)) {
-            projected.items = projectSchemaNode(source.items, rootSchema);
+            projected.items = projectSchemaNode(source.items, rootSchema, hintBudget);
         }
     }
 
@@ -368,7 +596,7 @@ function restoreSchemaNode(
  * payloads. This projection is wire-only and never replaces the original Tool validator.
  */
 export function buildCodexStrictOutputSchema(source: JsonSchema): JsonSchema {
-    return projectSchemaNode(source, source);
+    return projectSchemaNode(source, source, createStrictConstraintHintBudget());
 }
 
 /** Restore wire-only nullable omissions and opaque objects before original Tool validation. */
