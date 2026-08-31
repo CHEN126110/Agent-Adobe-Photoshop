@@ -37,6 +37,25 @@ interface MessageUnit {
 interface ContextTrimResult {
     messages: AgentMessage[];
     assessment: ContextBudgetAssessment;
+    beforeEstimatedTokens: number;
+    compacted: boolean;
+}
+
+/**
+ * Provider 调用前的有界上下文诊断。
+ *
+ * 这里只保存可复算的计数，不保存消息正文、Tool 参数、Tool 结果或图像内容。
+ * `messages` 是现有 prepare() 一直返回的同一份 Provider 前消息投影。
+ */
+export interface ContextPreparationDiagnostics {
+    messages: AgentMessage[];
+    beforeEstimatedTokens: number;
+    afterEstimatedTokens: number;
+    beforeMessageCount: number;
+    afterMessageCount: number;
+    reservedTokens: number;
+    removedMessageCount: number;
+    compacted: boolean;
 }
 
 const DEFAULT_CONTEXT_BUDGET = buildAgentContextWindowBudget();
@@ -524,8 +543,13 @@ export class ContextManager {
         const reserved = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
         const messageTokenBudget = Math.max(0, this.config.maxTokens - reserved);
         const protocolSafe = preserveToolCallProtocol(messages);
+        const protocolUnits = buildMessageUnits(
+            protocolSafe,
+            this.config.includeReasoningContent
+        );
+        const beforeEstimatedTokens = estimateUnits(protocolUnits);
         let units = removeSupersededEphemeralMessages(
-            buildMessageUnits(protocolSafe, this.config.includeReasoningContent),
+            protocolUnits,
             this.config.includeReasoningContent
         );
         let estimatedMessageTokens = estimateUnits(units);
@@ -533,6 +557,8 @@ export class ContextManager {
             const preparedMessages = flattenUnits(units);
             return {
                 messages: preparedMessages,
+                beforeEstimatedTokens,
+                compacted: false,
                 assessment: buildContextBudgetAssessment(
                     estimatedMessageTokens,
                     reserved,
@@ -548,14 +574,21 @@ export class ContextManager {
             recentRemaining -= 1;
         }
 
-        units = units.map((unit) => unit.recent || unit.protected
-            ? unit
-            : compressUnitToolResults(unit, this.config.includeReasoningContent));
+        let compacted = false;
+        units = units.map((unit) => {
+            if (unit.recent || unit.protected) return unit;
+            if (unit.messages.some((message) => message.role === 'tool_result')) {
+                compacted = true;
+            }
+            return compressUnitToolResults(unit, this.config.includeReasoningContent);
+        });
         estimatedMessageTokens = estimateUnits(units);
         if (estimatedMessageTokens <= messageTokenBudget) {
             const preparedMessages = flattenUnits(units);
             return {
                 messages: preparedMessages,
+                beforeEstimatedTokens,
+                compacted,
                 assessment: buildContextBudgetAssessment(
                     estimatedMessageTokens,
                     reserved,
@@ -574,9 +607,13 @@ export class ContextManager {
         }
 
         if (estimatedMessageTokens > messageTokenBudget) {
-            units = units.map((unit) => unit.protected
-                ? unit
-                : compressUnitToolResults(unit, this.config.includeReasoningContent));
+            units = units.map((unit) => {
+                if (unit.protected) return unit;
+                if (unit.messages.some((message) => message.role === 'tool_result')) {
+                    compacted = true;
+                }
+                return compressUnitToolResults(unit, this.config.includeReasoningContent);
+            });
             estimatedMessageTokens = estimateUnits(units);
         }
 
@@ -591,6 +628,8 @@ export class ContextManager {
         const preparedMessages = preserveToolCallProtocol(flattenUnits(units));
         return {
             messages: preparedMessages,
+            beforeEstimatedTokens,
+            compacted,
             assessment: buildContextBudgetAssessment(
                 estimatedMessageTokens,
                 reserved,
@@ -618,14 +657,37 @@ export class ContextManager {
     /**
      * Provider 调用前的唯一容量闸：先按完整消息单元压缩，再验证受保护内容与预留是否仍可容纳。
      */
-    prepare(messages: AgentMessage[], reservedTokens: number = 0): AgentMessage[] {
+    prepareWithDiagnostics(
+        messages: AgentMessage[],
+        reservedTokens: number = 0
+    ): ContextPreparationDiagnostics {
+        const beforeMessageCount = messages.length;
+        const normalizedReservedTokens = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
         const prepared = this.trimWithAssessment(messages, reservedTokens);
-        if (prepared.assessment.fits) return prepared.messages;
+        if (prepared.assessment.fits) {
+            const afterMessageCount = prepared.messages.length;
+            return {
+                messages: prepared.messages,
+                beforeEstimatedTokens: prepared.beforeEstimatedTokens,
+                // trimWithAssessment 已经在同一份最终消息投影上完成估算；
+                // 诊断只复用该事实，避免每次 Provider 调用前再扫描一次完整历史。
+                afterEstimatedTokens: prepared.assessment.estimatedMessageTokens,
+                beforeMessageCount,
+                afterMessageCount,
+                reservedTokens: normalizedReservedTokens,
+                removedMessageCount: Math.max(0, beforeMessageCount - afterMessageCount),
+                compacted: prepared.compacted
+            };
+        }
         const error: Error & { code?: string; contextAssessment?: unknown } = new Error(
             `当前模型上下文无法容纳本轮必要的系统规则、用户目标和工具定义：估算超出 ${prepared.assessment.overByTokens} tokens。`
         );
         error.code = 'context_window_budget_exceeded';
         error.contextAssessment = prepared.assessment;
         throw error;
+    }
+
+    prepare(messages: AgentMessage[], reservedTokens: number = 0): AgentMessage[] {
+        return this.prepareWithDiagnostics(messages, reservedTokens).messages;
     }
 }

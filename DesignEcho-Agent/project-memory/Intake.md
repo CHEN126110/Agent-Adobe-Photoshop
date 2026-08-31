@@ -77,5 +77,5 @@
 - 来源：用户 2026-08-31 明确反馈 Agent 运行很慢，希望下一纵切定位并处理；它是现有 S5 目标的前置测量需求，不等同于现在提前牺牲质量提速。
 - 归属层级：Runtime Accounting / Model Provider / Tool orchestration / Photoshop Provider / Performance Evaluation。
 - 状态：in_progress
-- 下一步：历史 r35/r38 已证明模型调用占墙钟约 92%/93%，但调用用途仍是 unscoped。先扩展现有 Runtime Accounting：100% 物理模型调用具备 call kind，100% Tool 调用具备 name/origin，视觉调用关联前一 revision，上下文记录脱敏来源桶；固定同一 Case 跑一次后再选择单变量配对实验。
+- 下一步：归因代码已让生产模型请求显式携带 call kind，并记录 context/output/transport/视觉 revision；审查同时修复了截断恢复未重发像素却可能取得视觉信用的事实错误。Tool name/origin/activity 继续由既有 AgentRunRecord 拥有，当前缺单次 Tool duration 时如实标记 unavailable，不复制第二账本。fresh 65 阶段完整核心验证已经通过；提交后固定同一 Case 跑一次，再选择单变量配对实验。
 - 边界：没有同 Case 基线不宣称提速；不通过减少必要视觉观察、跳过写后读回、缩短到无法完成的预算、换低质量模型或隐藏等待状态获得速度；优化后技术成功率与人工质量不得显著退化。

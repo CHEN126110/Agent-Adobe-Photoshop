@@ -7229,6 +7229,7 @@ async function assertObservationObligationRequiresRealReadButNotMutation() {
 
 async function assertProviderTruncationRecoveryDoesNotSpendTaskModelBudget() {
   const requestedMaxTokens = [];
+  const imagePayloadsByCall = [];
   let modelCallCount = 0;
   const agent = new Agent(
     {
@@ -7237,20 +7238,24 @@ async function assertProviderTruncationRecoveryDoesNotSpendTaskModelBudget() {
         maxIterations: 3,
         openingCanvasObservationMode: 'none'
       }),
+      modelId: 'deepseek-v4-flash-vision-exp',
       performanceBudget: {
         maxModelCalls: 1,
         maxToolCalls: 1,
-        maxVisionCandidates: 0,
-        maxInitialVisionCandidates: 0,
-        maxVisualAnalyses: 0,
-        maxFullResolutionImageReads: 0,
+        maxVisionCandidates: 3,
+        maxInitialVisionCandidates: 1,
+        maxVisualAnalyses: 1,
+        maxFullResolutionImageReads: 1,
         softTimeBudgetMs: 60_000,
         maxPrimaryOutputTokens: 1200
       }
     },
-    async (_modelId, _messages, _visibleTools, options) => {
+    async (_modelId, messages, _visibleTools, options) => {
       modelCallCount += 1;
       requestedMaxTokens.push(options?.maxTokens);
+      imagePayloadsByCall.push(messages.flatMap((message) => message.contentBlocks || [])
+        .filter((block) => block.type === 'image')
+        .map((block) => block.data));
       if (modelCallCount <= 2) {
         return { content: `截断片段 ${modelCallCount}`, stopReason: 'max_tokens' };
       }
@@ -7261,11 +7266,53 @@ async function assertProviderTruncationRecoveryDoesNotSpendTaskModelBudget() {
     }
   );
 
-  const result = await agent.run('简要说明当前状态');
+  const result = await agent.run('简要说明当前状态', [{
+    data: 'same-recovery-image-pixels', mediaType: 'image/png'
+  }]);
+  const accounting = agent.readRuntimeAccountingDigest();
   assert.strictEqual(modelCallCount, 3);
   assert.deepStrictEqual(requestedMaxTokens, [1200, 2400, 4800]);
+  assert.deepStrictEqual(imagePayloadsByCall, [
+    ['same-recovery-image-pixels'],
+    ['same-recovery-image-pixels'],
+    ['same-recovery-image-pixels']
+  ]);
   assert.strictEqual(agent.performanceLedger.modelCallCount, 1);
+  assert.strictEqual(agent.performanceLedger.visionCandidateCount, 1);
+  assert.strictEqual(accounting.modelCallCount, 3);
+  assert.deepStrictEqual(accounting.promptShapeSamples.map((sample) => sample.imageBlocks), [1, 1, 1]);
+  assert.deepStrictEqual(accounting.promptShapeSamples.map((sample) => sample.callKind), [
+    'agent_turn', 'provider_output_recovery', 'provider_output_recovery'
+  ]);
+  assert.strictEqual(agent.observedInputImageCount, 1);
+  assert.strictEqual(result.messages.flatMap((message) => message.contentBlocks || [])
+    .some((block) => block.type === 'image'), false);
   assert.notStrictEqual(result.stopReason, 'provider_output_truncated');
+
+  let exhaustedCalls = 0;
+  const exhaustedAgent = new Agent(
+    {
+      ...buildAgentTestConfig({ tools: [], maxIterations: 3, openingCanvasObservationMode: 'none' }),
+      modelId: 'deepseek-v4-flash-vision-exp',
+      performanceBudget: {
+        maxModelCalls: 1, maxToolCalls: 1, maxVisionCandidates: 3,
+        maxInitialVisionCandidates: 1, maxVisualAnalyses: 1,
+        maxFullResolutionImageReads: 1, softTimeBudgetMs: 60_000,
+        maxPrimaryOutputTokens: 1200
+      }
+    },
+    async () => { exhaustedCalls += 1; return { content: 'partial', stopReason: 'max_tokens' }; },
+    async () => { throw new Error('exhausted recovery fixture must not execute Tools'); }
+  );
+  const exhaustedResult = await exhaustedAgent.run('简要说明当前状态', [{
+    data: 'exhausted-recovery-pixels', mediaType: 'image/png'
+  }]);
+  assert.strictEqual(exhaustedCalls, 3);
+  assert.strictEqual(exhaustedResult.stopReason, 'provider_output_truncated');
+  assert.strictEqual(exhaustedAgent.pendingPrimaryVisualObservations.length, 0);
+  assert.strictEqual(exhaustedAgent.initialImagesPendingPrimaryObservation, false);
+  assert.strictEqual(exhaustedResult.messages.flatMap((message) => message.contentBlocks || [])
+    .some((block) => block.type === 'image'), false);
 }
 
 async function assertBareCompletionClaimsCannotBypassTextExits() {

@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：交付与评审代码根因已通过核心验证；当前提交基线并补 Runtime 性能归因，再运行首条 fresh 隔离 Photoshop 技术交付链。",
+  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：交付与评审代码根因已提交；Runtime 性能归因纵切已通过 fresh 65 阶段完整核心验证，当前提交可回滚基线并准备固定 fresh Case profiling。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -7,24 +7,29 @@
       "v3 remains the default production execution path; v5 supplies manifest and governance contracts; bridge is transitional; legacy does not expand.",
       "Agent, Harness, Design Kernel, Skill Package, Tool Provider and Evaluation ownership boundaries are guarded by current project rules and source audits.",
       "OpenAI-compatible non-streaming Final Judge now binds serializer-owned outgoing image receipts to the exact ReviewSet and same-revision editable/raster delivery refs.",
-      "Invalid Evaluation batches fail closed without TaskCompletion, task-card, learning or primary-Agent recovery authority; advisory evaluateDesign cannot close canonical completion."
+      "Invalid Evaluation batches fail closed without TaskCompletion, task-card, learning or primary-Agent recovery authority; advisory evaluateDesign cannot close canonical completion.",
+      "Existing Runtime Accounting now records explicit model call kind, request mode, iteration/generation, requested reasoning, context preparation/source buckets, output shape and run-scoped visual revision attribution without gaining budget, permission, result or aesthetic authority.",
+      "Truncated visual Provider responses no longer retire pixels while retaining observation credit: bounded recovery re-sends the same pixels, records each physical request, consumes logical task budget once and only marks visual input consumed after a complete response.",
+      "Tool name, origin and activity remain owned by AgentRunRecord; missing per-Tool duration stays explicit instead of being guessed or copied into a second Tool ledger."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
       "S1 delivery/review root-cause code passed a fresh 65-stage maintenance:validate run plus DeepSeek adapter, receipt, Evaluation authority and r38-shaped delivery regression tests.",
+      "INTAKE-090 attribution and visual recovery passed one fresh 65-stage maintenance:validate run, including Runtime ledger, ContextManager, authorship/business boundaries, Agent simplification ratchet, Main/Renderer type checks, Agent/UXP tests and UXP production build.",
       "S1 startup read-only preflight reached Debug Bridge, Photoshop MCP and a real UXP Runtime, but a new matching build, disposable fixture and write authorization must be rechecked before live capture."
     ],
     "manual": [
       "r31 is the only recorded formal zero-intervention technical pass in the earlier main-image reliability evidence; the current S1 cohort is not complete.",
       "r37 and r38 preserved pre-existing external dirty Photoshop document revisions while exposing abandoned-document settlement and final artifact reference gaps.",
-      "r35/r38 accounting attributes about 92-93% of wall time to model calls and only 8-10% to physical Tools; model call purpose is still unscoped.",
+      "r35/r38 accounting attributes about 92-93% of wall time to model calls and only 8-10% to physical Tools; those historical records predate call-kind attribution.",
       "Human review has not verified stable commercial design quality; automatic scores have missed copy and composition defects."
     ]
   },
   "unverified": [
     "A fresh production sidecar Attempt proving finalArtifactObserved, exact PSD/JPG runtimeDeliveryResultRefs and non-empty Debug finalArtifactRefs under the current commit.",
     "Human-calibrated Evaluation defect detection and false-pass rate under the current production build.",
-    "Purpose/origin attribution for every physical model and Tool call, visual revision chain and bounded context source buckets.",
+    "A fresh fixed-Case profile proving current call-kind, context/output and visual revision attribution in the production runtime.",
+    "Per-Tool duration and nested Skill/Design-Team physical Tool coverage; current AgentRunRecord facts do not justify guessing these values.",
     "Five-case technical success and repeatability for the current production build.",
     "Main-image, SKU and detail-page multi-sample Photoshop E2E with editable source and same-revision export delivery.",
     "No-Skill cross-scenario design quality comparable with the user's D:\\A1 neveralone旗舰店 work and Eagle references."
@@ -37,8 +42,7 @@
     "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery."
   ],
   "nextActions": [
-    "Commit the validated S1 delivery/review root-cause code baseline.",
-    "Add bounded purpose/origin instrumentation to the existing Runtime Accounting without changing Agent behavior.",
+    "Commit the fully validated bounded Runtime performance attribution slice.",
     "Run one fixed profiling Case, then change only the highest-impact reversible variable.",
     "Rebuild matching Agent/UXP runtimes and run one capture-ready isolated Photoshop Case before opening the full S1 cohort."
   ],
@@ -48,7 +52,7 @@
     "status": "in_progress",
     "mustDo": [
       "Keep serializer-owned visual receipts, Final Judge binding, E2 delivery refs and Debug projection as one task-bound chain.",
-      "Instrument model/Tool/context/visual-loop purpose and origin in the existing observation-only accounting owner.",
+      "Preserve the completed observation-only model/context/output/visual attribution and the existing AgentRunRecord Tool owner.",
       "Keep Evaluation protocol validity separate from human aesthetic calibration.",
       "Protect every pre-existing Photoshop document and use only an authorized disposable fixture for live writes.",
       "Preserve the passed reusable tests and core validation, then obtain one isolated live Case before buying the full S1 cohort."
@@ -65,8 +69,7 @@
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
     "source": "project-memory/Plan.md",
     "steps": [
-      "Commit the validated S1 delivery/review root-cause baseline.",
-      "Extend existing Runtime Accounting with bounded model-call, Tool, context and visual-revision attribution.",
+      "Commit the fully validated Runtime Accounting model/context/output/visual attribution baseline.",
       "Run one fixed profiling Case without artificial behavior changes and select one reversible optimization variable.",
       "Rebuild matching Agent/UXP runtimes and complete one authorized disposable-fixture Photoshop Case with canonical evidence."
     ]

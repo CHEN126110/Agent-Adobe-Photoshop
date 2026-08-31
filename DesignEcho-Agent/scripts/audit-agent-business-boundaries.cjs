@@ -373,6 +373,8 @@ const performanceVisionPolicyPath = path.join(
   'performance-vision-policy.ts'
 );
 const activeRuntimeAccountingPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'active-runtime-accounting.ts');
+const modelCallAccountingPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'model-call-accounting.ts');
+const providerOutputRecoveryRuntimePath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'provider-output-recovery.ts');
 const runtimeAccountingPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-accounting.ts');
 const enginePath = path.join(root, 'src', 'renderer', 'services', 'design-agent', 'engine.ts');
 const agentToolExecutionPreflightPath = path.join(root, 'src', 'shared', 'agent-tool-execution-preflight.ts');
@@ -2139,6 +2141,7 @@ async function run() {
     shouldIssuePerformanceBudgetDisciplineDirective
   } = require(performanceLedgerPath);
   const activeRuntimeAccountingText = read(activeRuntimeAccountingPath);
+  const modelCallAccountingText = read(modelCallAccountingPath);
   const runtimeAccountingText = read(runtimeAccountingPath);
   const performanceSource = parse(performancePolicyPath);
   const decisionFunctionNames = [
@@ -7202,6 +7205,7 @@ async function run() {
   } = require(trustedVisualReviewArtifactPath);
   const {
     deriveAgentVisualObservationReceipt,
+    markPrimaryVisualObservationsConsumed,
     writeAgentVisualObservation,
     writeAgentVisualObservationReceipt
   } = require(visualObservationStrategyPath);
@@ -7216,6 +7220,12 @@ async function run() {
     prepareAgentMessagesForModel,
     retireDeliveredAgentMessageImages
   } = require(agentMessageContextPath);
+  const {
+    executeModelCallWithAccounting,
+    projectCurrentVisualInputForAccounting,
+    registerRuntimeVisualPresentationBlock
+  } = require(modelCallAccountingPath);
+  const { isProviderOutputTruncated, settleProviderToolResponse } = require(providerOutputRecoveryRuntimePath);
   const {
     buildDesignerAgentTeamConsultationContract,
     buildDesignerAgentTeamConsultationProgress
@@ -7940,6 +7950,19 @@ async function run() {
     || primaryRequestSnapshotIndex < primaryRequestDirectiveIndex) {
     autonomousDesignLoopViolations.push('performance-budget:closure-directive-arrives-after-request-snapshot');
   }
+  if (!agentRuntimeText.includes('this.contextManager.prepareWithDiagnostics(')
+    || !agentRuntimeText.includes("? 'provider_output_recovery'")
+    || !agentRuntimeText.includes(": 'agent_turn',")
+    || !agentRuntimeText.includes("callKind: 'visual_observation'")
+    || !agentRuntimeText.includes("callKind: 'forced_final_response'")
+    || !agentRuntimeText.includes("callKind: 'no_tool_replan'")
+    || !agentRuntimeText.includes("callKind: 'silent_final_summary'")
+    || !agentRuntimeText.includes("callKind: 'richer_final_summary'")
+    || !agentRuntimeText.includes("? 'final_quality_judge'")
+    || !agentRuntimeText.includes(": 'final_quality_diagnosis_repair',")
+    || !modelCallAccountingText.includes("requestMode: callModelStream ? 'stream' : 'non_stream',")) {
+    autonomousDesignLoopViolations.push('runtime-accounting:model-call-kinds-or-context-preparation-not-explicit');
+  }
   const requestScaledCostViolations = [];
   const userActivityProjectionViolations = [];
   const visibleStepActivityFunction = findFunction(
@@ -8010,6 +8033,7 @@ async function run() {
     }
   ];
   const firstPreparedImageMessages = prepareAgentMessagesForModel(oneShotImageMessages);
+  registerRuntimeVisualPresentationBlock(oneShotImageMessages[1].contentBlocks[1], 'snapshot-key');
   const firstPreparedImageCount = firstPreparedImageMessages
     .flatMap((message) => message.contentBlocks || [])
     .filter((block) => block.type === 'image').length;
@@ -8017,6 +8041,110 @@ async function run() {
     ?.filter((block) => block.type === 'text')
     .map((block) => String(block.text || ''))
     .join('\n') || '';
+  const pendingSnapshotObservation = {
+    version: 'agent-visual-observation/v1', status: 'presented_to_primary', reviewed: false,
+    observer: 'primary_model', strategy: 'primary-self', toolName: 'snapshot',
+    observationKey: 'snapshot-key', presentedModelTurn: 1,
+    observationIdentity: { outer: 'snapshot', resultPath: '$', document: '7', history: '11', sourceKind: 'canvas', sourceId: '7' }
+  };
+  const matchingVisualInput = projectCurrentVisualInputForAccounting(firstPreparedImageMessages, [pendingSnapshotObservation]);
+  const unrelatedUserImageOnly = projectCurrentVisualInputForAccounting([firstPreparedImageMessages[0]], [pendingSnapshotObservation]);
+  const firstCollisionBlock = registerRuntimeVisualPresentationBlock(
+    { type: 'image', data: 'first-collision-pixels', mediaType: 'image/png' }, 'first-same-tool-key'
+  );
+  const secondCollisionBlock = registerRuntimeVisualPresentationBlock(
+    { type: 'image', data: 'second-collision-pixels', mediaType: 'image/png' }, 'second-same-tool-key'
+  );
+  const collisionVisualInput = projectCurrentVisualInputForAccounting(
+    [{ role: 'user', contentBlocks: [secondCollisionBlock] }],
+    [
+      { ...pendingSnapshotObservation, observationKey: 'first-same-tool-key' },
+      { ...pendingSnapshotObservation, observationKey: 'second-same-tool-key' }
+    ]
+  );
+  if (matchingVisualInput?.observationKeys?.[0] !== 'snapshot-key'
+    || matchingVisualInput?.photoshopRevisions?.[0]?.documentId !== 7
+    || unrelatedUserImageOnly !== undefined
+    || firstCollisionBlock === secondCollisionBlock
+    || collisionVisualInput?.observationKeys?.length !== 1
+    || collisionVisualInput.observationKeys[0] !== 'second-same-tool-key') {
+    requestScaledCostViolations.push('runtime-accounting:visual-input-was-not-bound-to-matching-runtime-scope');
+  }
+  let successfulRecordCalls = 0;
+  let successfulRecordErrors = 0;
+  const successfulResponseDespiteRecordError = await executeModelCallWithAccounting({
+    messages: [], tools: [], requestedOptions: undefined,
+    accounting: { callKind: 'agent_turn', requestMode: 'non_stream', agentIteration: 1 },
+    readRequestStartedActiveMs: () => 0,
+    request: async () => ({ content: 'ok', stopReason: 'end_turn' }),
+    record: () => { successfulRecordCalls += 1; throw new Error('accounting-write-failed'); },
+    onRecordError: () => { successfulRecordErrors += 1; throw new Error('record-error-hook-failed'); }
+  });
+  const originalProviderError = new Error('provider-request-failed');
+  let failedRecordCalls = 0;
+  let failedRecordErrors = 0;
+  let observedProviderError;
+  try {
+    await executeModelCallWithAccounting({
+      messages: [], tools: [], requestedOptions: undefined,
+      accounting: { callKind: 'agent_turn', requestMode: 'non_stream', agentIteration: 1 },
+      readRequestStartedActiveMs: () => 0,
+      request: async () => { throw originalProviderError; },
+      record: () => { failedRecordCalls += 1; throw new Error('accounting-write-failed'); },
+      onRecordError: () => { failedRecordErrors += 1; throw new Error('record-error-hook-failed'); }
+    });
+  } catch (error) {
+    observedProviderError = error;
+  }
+  if (successfulResponseDespiteRecordError.content !== 'ok'
+    || successfulRecordCalls !== 1 || successfulRecordErrors !== 1
+    || observedProviderError !== originalProviderError
+    || failedRecordCalls !== 1 || failedRecordErrors !== 1) {
+    requestScaledCostViolations.push('runtime-accounting:record-failure-changed-or-double-recorded-provider-result');
+  }
+  const replayBlock = registerRuntimeVisualPresentationBlock(
+    { type: 'image', data: 'replay-pixels', mediaType: 'image/png' }, 'snapshot-key'
+  );
+  const replayMessages = [{
+    role: 'user', contentBlocks: [replayBlock],
+    contextMetadata: { origin: 'visual_observation', scope: 'tool-visual:snapshot' }
+  }];
+  const replayObservation = { ...pendingSnapshotObservation };
+  const replayRecords = [];
+  const firstReplayResponse = await executeModelCallWithAccounting({
+    messages: replayMessages, tools: [], requestedOptions: { maxTokens: 10 },
+    accounting: {
+      callKind: 'agent_turn', requestMode: 'non_stream', agentIteration: 1,
+      visualInput: projectCurrentVisualInputForAccounting(replayMessages, [replayObservation])
+    },
+    readRequestStartedActiveMs: () => 0,
+    request: async () => settleProviderToolResponse({ content: 'partial', stopReason: 'max_tokens', toolCalls: [] }),
+    record: (record) => { replayRecords.push(record); }, onRecordError: () => {}
+  });
+  if (!isProviderOutputTruncated(firstReplayResponse.stopReason)) retireDeliveredAgentMessageImages(replayMessages);
+  const imageCountAfterTruncation = replayMessages.flatMap((message) => message.contentBlocks || [])
+    .filter((block) => block.type === 'image').length;
+  const consumedTurnAfterTruncation = replayObservation.consumedModelTurn;
+  const secondReplayVisualInput = projectCurrentVisualInputForAccounting(replayMessages, [replayObservation]);
+  const secondReplayResponse = await executeModelCallWithAccounting({
+    messages: replayMessages, tools: [], requestedOptions: { maxTokens: 10 },
+    accounting: {
+      callKind: 'provider_output_recovery', requestMode: 'non_stream', agentIteration: 1,
+      visualInput: secondReplayVisualInput
+    },
+    readRequestStartedActiveMs: () => 1,
+    request: async () => settleProviderToolResponse({ content: 'complete', stopReason: 'end_turn', toolCalls: [] }),
+    record: (record) => { replayRecords.push(record); }, onRecordError: () => {}
+  });
+  if (!isProviderOutputTruncated(secondReplayResponse.stopReason)) retireDeliveredAgentMessageImages(replayMessages);
+  markPrimaryVisualObservationsConsumed({ observations: [replayObservation], modelTurn: 1, consumed: true });
+  const imageCountAfterComplete = replayMessages.flatMap((message) => message.contentBlocks || [])
+    .filter((block) => block.type === 'image').length;
+  if (imageCountAfterTruncation !== 1 || consumedTurnAfterTruncation !== undefined || !secondReplayVisualInput
+    || imageCountAfterComplete !== 0 || replayObservation.consumedModelTurn !== 1
+    || replayRecords.length !== 2 || replayRecords[1].callKind !== 'provider_output_recovery') {
+    requestScaledCostViolations.push('provider-recovery:visual-input-was-not-replayed-until-complete-response');
+  }
   const retiredImageCount = retireDeliveredAgentMessageImages(oneShotImageMessages);
   const secondPreparedBlocks = prepareAgentMessagesForModel(oneShotImageMessages)
     .flatMap((message) => message.contentBlocks || []);
@@ -8236,7 +8364,7 @@ async function run() {
       || !agentRuntimeText.includes('this.runtimeAccounting.releaseUnboundLedgerAfterBinding();')
       || !agentRuntimeText.includes('this.runtimeAccounting.recordToolCall(this.runtimeSession')
       || !activeRuntimeAccountingText.includes('private unboundLedger: RuntimeAccountingLedger | undefined;')
-      || !activeRuntimeAccountingText.includes('recordRuntimeModelCall({ ledger: this.unboundLedger, ...accountingInput })')
+      || !activeRuntimeAccountingText.includes('recordRuntimeModelCall({ ledger: this.unboundLedger, ...persistedInput })')
       || !activeRuntimeAccountingText.includes('recordRuntimeToolCall({ ledger: this.unboundLedger, ...input })')
       || !runtimeAccountingText.includes('export function cloneRuntimeAccountingLedger(')
       || !runtimeAccountingText.includes('export function validateRuntimeAccountingDigest(')
@@ -17099,7 +17227,7 @@ async function run() {
           )
           ? []
           : ['provider-failure:terminal-event-bypasses-strict-idle-deadline']),
-        ...(agentRuntimeText.includes('outcome: response')
+        ...(modelCallAccountingText.includes('outcome: response')
           && activeRuntimeAccountingText.includes('const candidateAttempts = (input.outcome as {')
           && activeRuntimeAccountingText.includes('currentSession = this.recordRecoveryAttempt(currentSession);')
           && executorText.includes('transportAttempts.push(buildModelTransportAttempt(')

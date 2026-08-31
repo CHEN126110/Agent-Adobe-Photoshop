@@ -2616,11 +2616,24 @@ export function recordRuntimeSessionModelCall(input: {
     session: RuntimeSession;
     durationMs: number;
     succeeded: boolean;
+    callKind?: Parameters<typeof recordRuntimeModelCall>[0]['callKind'];
+    requestMode?: Parameters<typeof recordRuntimeModelCall>[0]['requestMode'];
+    agentIteration?: number;
+    runtimeGeneration?: number;
+    requestStartedActiveMs?: number;
+    transportAttemptIndex?: number;
+    transportAttemptCount?: number;
+    requestedThinking?: Parameters<typeof recordRuntimeModelCall>[0]['requestedThinking'];
+    requestedReasoningEffort?: Parameters<typeof recordRuntimeModelCall>[0]['requestedReasoningEffort'];
+    requestedMaxTokens?: number;
+    contextPreparation?: Parameters<typeof recordRuntimeModelCall>[0]['contextPreparation'];
+    visualInput?: Parameters<typeof recordRuntimeModelCall>[0]['visualInput'];
     usage?: Parameters<typeof recordRuntimeModelCall>[0]['usage'];
     failureKind?: Parameters<typeof recordRuntimeModelCall>[0]['failureKind'];
     providerCode?: string;
     status?: number;
     promptShape?: Parameters<typeof recordRuntimeModelCall>[0]['promptShape'];
+    outputShape?: Parameters<typeof recordRuntimeModelCall>[0]['outputShape'];
     now?: string;
 }): RuntimeSession {
     return {
@@ -2630,11 +2643,24 @@ export function recordRuntimeSessionModelCall(input: {
             stage: input.session.stageState.currentStage,
             durationMs: input.durationMs,
             succeeded: input.succeeded,
+            callKind: input.callKind,
+            requestMode: input.requestMode,
+            agentIteration: input.agentIteration,
+            runtimeGeneration: input.runtimeGeneration,
+            requestStartedActiveMs: input.requestStartedActiveMs,
+            transportAttemptIndex: input.transportAttemptIndex,
+            transportAttemptCount: input.transportAttemptCount,
+            requestedThinking: input.requestedThinking,
+            requestedReasoningEffort: input.requestedReasoningEffort,
+            requestedMaxTokens: input.requestedMaxTokens,
+            contextPreparation: input.contextPreparation,
+            visualInput: input.visualInput,
             usage: input.usage,
             failureKind: input.failureKind,
             providerCode: input.providerCode,
             status: input.status,
             promptShape: input.promptShape,
+            outputShape: input.outputShape,
             now: input.now
         })
     };

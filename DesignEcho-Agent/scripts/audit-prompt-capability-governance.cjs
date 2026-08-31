@@ -275,7 +275,9 @@ assert(unknownWindowPlan.outputReserveTokens <= 8_192);
 
 const agentSource = fs.readFileSync(agentPath, 'utf8');
 assert(agentSource.includes('estimateToolSchemaTokens(iterationTools)'));
-assert(agentSource.includes('this.contextManager.prepare('));
+assert(agentSource.includes('this.contextManager.prepareWithDiagnostics('));
+assert(agentSource.includes('this.messages = contextPreparationDiagnostics.messages;'));
+assert(agentSource.includes('projectContextPreparationForAccounting('));
 const contextManagerSource = fs.readFileSync(
   path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'context-manager.ts'),
   'utf8'

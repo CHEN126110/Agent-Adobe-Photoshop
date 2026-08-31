@@ -10,11 +10,24 @@
  */
 
 import type {
-    AgentConfig, AgentMessage, AgentRunResult,
-    ToolCall, ToolResult, ImageAttachment,
-    CallModelFn, ExecuteToolFn, ContentBlock,
-    AgentExecutionSummary, AgentStopReason, AgentToolCallLogEntry, AgentStepEvent,
-    AgentThinkingEventMeta, ToolSchema, TaskCompletionContract, TaskCompletionContext, TaskCompletionReferenceObservation, ModelTransportAttemptAccounting
+    AgentConfig,
+    AgentExecutionSummary,
+    AgentMessage,
+    AgentRunResult,
+    AgentStepEvent,
+    AgentStopReason,
+    AgentThinkingEventMeta,
+    AgentToolCallLogEntry,
+    CallModelFn,
+    ContentBlock,
+    ExecuteToolFn,
+    ImageAttachment,
+    TaskCompletionContext,
+    TaskCompletionContract,
+    TaskCompletionReferenceObservation,
+    ToolCall,
+    ToolResult,
+    ToolSchema
 } from './types';
 import { bindCanvasSnapshotExpectedDocumentId } from './canvas-snapshot-target-binding';
 import {
@@ -22,7 +35,9 @@ import {
     deriveAgentUserResultFacts,
     type UserResultProjection
 } from './agent-user-result-projection';
-import { buildAgentActionEventProjection } from './agent-action-event-projection';
+import {
+    buildAgentActionEventProjection
+} from './agent-action-event-projection';
 import {
     ensureFinalQualityCurrentReviewSet,
     isFinalQualityReviewedVisualSource,
@@ -63,10 +78,10 @@ import {
     buildPrimaryVisualObservationReviewInstruction,
     buildVisualExpertReviewBatchPrompt,
     clearProducerVisualRuntimeAnnotations,
-    consumePrimaryVisualObservationReviewBatch,
     deriveAgentVisualObservationReceipt,
-    hasAgentVisualDeliveryObservationCoverage, markPrimaryVisualObservationsConsumed,
+    hasAgentVisualDeliveryObservationCoverage,
     parseVisualExpertReviewBatch,
+    reconcilePrimaryVisualObservationReviews,
     readAgentVisualObservation,
     readAgentVisualObservationReceipt,
     readAgentVisualObservations,
@@ -232,10 +247,10 @@ import {
     synchronizeRuntimeSessionActionPlanNodes,
     type RuntimeSession
 } from '../../../shared/agent-runtime-v5/runtime-session';
-import {
-    measureRuntimePromptShape,
-    type RuntimeAccountingDigest,
-    type RuntimePerformanceUsage
+import type {
+    RuntimeAccountingDigest,
+    RuntimeContextPreparationShape,
+    RuntimePerformanceUsage
 } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import {
     attachArtifactRepositoryProjectionToRuntimeTaskSnapshot,
@@ -389,7 +404,8 @@ import {
     isProviderOutputBlocked,
     ProviderOutputRecoveryController,
     readCompleteProviderTextContent,
-    requestWithProviderOutputRecoveryAccounting
+    requestWithProviderOutputRecoveryAccounting,
+    settleProviderToolResponse
 } from './provider-output-recovery';
 import { ContextManager } from './context-manager';
 import {
@@ -410,6 +426,12 @@ import {
     prepareAgentMessagesForModel,
     retireDeliveredAgentMessageImages
 } from './message-context';
+import {
+    ModelCallAccountingRuntime,
+    projectContextPreparationForAccounting,
+    projectCurrentVisualInputForAccounting,
+    registerRuntimeVisualPresentationBlock
+} from './model-call-accounting';
 import { buildTaskCompletionContract, buildTaskRunCreatedDocumentPreflightInput } from './task-completion-contract';
 import { projectAgenticFinalDeliveryStageEvidence } from './agentic-final-delivery-evidence';
 import {
@@ -1216,6 +1238,29 @@ export class Agent {
     /** 本轮唯一生产 Session owner；统一身份、实时 Stage State 与白名单 Trace。 */
     private runtimeSession: RuntimeSession | undefined;
     private readonly runtimeAccounting = new ActiveRuntimeAccounting();
+    private readonly modelCallAccounting = new ModelCallAccountingRuntime({
+        readRuntimeGeneration: () => this.runtimeSession?.identity.generation
+            ?? this.config.runtimeSessionIdentity?.generation,
+        readRequestStartedActiveMs: (startedAtMs) => this.performanceLedger.runStartedAtMs > 0
+            ? this.readPerformanceActiveElapsedMs(startedAtMs) : undefined,
+        readDefaultReasoningEffort: () => this.config.reasoningEffort,
+        readThinkingEnabled: () => this.resolveProviderThinkingEnabled(),
+        callModel: (...args) => this.callModel(...args),
+        readCallModelStream: () => this.config.callModelStream,
+        settleResponse: settleProviderToolResponse,
+        beginPerformanceModelCall: (...args) => {
+            this.beginPerformanceModelCall(...args);
+        },
+        record: (record) => {
+            this.runtimeSession = this.runtimeAccounting.recordModelCall(
+                this.runtimeSession,
+                record
+            );
+        },
+        onRecordError: (error) => {
+            console.warn('[Agent] Runtime Accounting 记录失败，Provider 结果保持不变。', error);
+        }
+    });
     /** 同一活动 Session 内的 Reflexion 规划上下文承接摘要；完整声明不持久化。 */
     private runtimePlanningContextSeedDigest: RuntimePlanningContextSeedDigest | undefined;
     private finalQualityModelProtocolDigest: FinalQualityModelProtocolDigest | undefined;
@@ -2427,14 +2472,6 @@ export class Agent {
         this.synchronizeRuntimePerformanceUsage();
     }
 
-    /**
-     * 循环进度提示的用户可见文案。
-     *
-     * 原文案是「正在处理第 N 步」——N 是内部循环计数(iteration)，用户既不知道"步"的单位，
-     * 也无法从数字判断进展，和 setLayerVisibility / documentId 属于同一类内部标识泄漏。
-     * 这里按"刚才在做什么"给出阶段性描述；首轮沿用同一处已有的人话文案。
-     * 注：轮次开始时模型尚未返回，无法预告本轮要做什么，所以依据是最近一次真实动作。
-     */
     private buildIterationProgressLabel(): string {
         if (this.iteration === 0) return '正在思考任务怎么做';
         const recent = [...this.toolCallLog]
@@ -2452,64 +2489,6 @@ export class Agent {
                 return '正在生成素材';
             default:
                 return '正在查看当前状况';
-        }
-    }
-
-    private recordModelAccounting(input: {
-        startedAtMs: number;
-        succeeded: boolean;
-        usage?: ModelTransportAttemptAccounting['usage'];
-        promptShape?: ReturnType<typeof measureRuntimePromptShape>;
-        outcome?: unknown;
-    }): void {
-        this.runtimeSession = this.runtimeAccounting.recordModelCall(this.runtimeSession, {
-            durationMs: Date.now() - input.startedAtMs,
-            succeeded: input.succeeded,
-            usage: input.usage,
-            promptShape: input.promptShape,
-            outcome: input.outcome
-        });
-    }
-
-    private async callModelWithAccounting(
-        modelId: string,
-        messages: AgentMessage[],
-        tools: ToolSchema[],
-        options?: Parameters<CallModelFn>[3],
-        accounting?: {
-            visualAnalysis?: boolean;
-            budgetClass?: PerformanceModelBudgetClass;
-            directVisionCandidateCount?: number;
-            directVisionCandidateKeys?: string[];
-            billDirectVisionCandidatesByPresentation?: boolean;
-            performanceChargeKind?: 'task' | 'provider_truncation_recovery';
-        }
-    ): ReturnType<CallModelFn> {
-        if (accounting?.performanceChargeKind !== 'provider_truncation_recovery') {
-            this.beginPerformanceModelCall(
-                accounting?.visualAnalysis === true,
-                accounting?.budgetClass || 'task',
-                accounting?.directVisionCandidateCount || 0,
-                accounting?.directVisionCandidateKeys || [],
-                accounting?.billDirectVisionCandidatesByPresentation === true
-            );
-        }
-        const startedAtMs = Date.now();
-        const promptShape = measureRuntimePromptShape({ messages, tools });
-        const effectiveOptions = this.config.reasoningEffort && !options?.reasoningEffort
-            ? { ...options, reasoningEffort: this.config.reasoningEffort }
-            : options;
-        try {
-            const response = await this.callModel(modelId, messages, tools, effectiveOptions);
-            this.recordModelAccounting({
-                startedAtMs,
-                succeeded: true,
-                usage: response.usage, promptShape, outcome: response
-            });
-            return response;
-        } catch (error) {
-            this.recordModelAccounting({ startedAtMs, succeeded: false, promptShape, outcome: error });
-            throw error;
         }
     }
 
@@ -6152,23 +6131,27 @@ export class Agent {
                 this.ensureToolCallProtocolIntegrity();
                 // 系统提示、动态运行上下文、历史、Tool schema 与输出共用模型窗口。
                 // 每次调用前按当前动态工具面重新核算；能力按需扩展后也不能绕过容量治理。
-                this.messages = this.contextManager.prepare(
+                const contextPreparationDiagnostics = this.contextManager.prepareWithDiagnostics(
                     this.messages,
                     iterationReservedTokens
                 );
+                this.messages = contextPreparationDiagnostics.messages;
+                const contextPreparation = projectContextPreparationForAccounting(
+                    contextPreparationDiagnostics
+                );
                 // 占位纪律（2026-08-23 用户指正）：只陈述可观察事实（带图 / 在等模型），不代笔思考内容——真实思考由流式 thinking 显示；真机模型回合常跑 40–110 秒，无状态显示用户会以为卡住。
-            const modelTurnLooksAtImages = this.pendingPrimaryVisualObservations.length > 0
-                || this.initialImagesPendingPrimaryObservation;
-            this.emitStep({
-                kind: 'model_request',
-                // 与 buildIterationProgressLabel 同口径：用户可见处不出现内部轮次计数。
-                // detail 会被实时活动直接展示给用户（优先于 title），必须是产品语言：
-                // 说「在做什么」，不解释系统机制（2026-08-23 截图病例：「模型推理中，
-                // 结束后展示它的判断和动作」是在向用户讲解架构，不是产品在说话）。
-                title: this.iteration === 0 ? '正在思考任务怎么做' : '正在思考下一步',
-                detail: modelTurnLooksAtImages
-                    ? '正在查看画面，这一步会稍慢'
-                    : undefined,
+                const modelTurnLooksAtImages = this.pendingPrimaryVisualObservations.length > 0
+                    || this.initialImagesPendingPrimaryObservation;
+                this.emitStep({
+                    kind: 'model_request',
+                    // 与当前进度标签同口径：用户可见处不出现内部轮次计数。
+                    // detail 会被实时活动直接展示给用户（优先于 title），必须是产品语言：
+                    // 说「在做什么」，不解释系统机制（2026-08-23 截图病例：「模型推理中，
+                    // 结束后展示它的判断和动作」是在向用户讲解架构，不是产品在说话）。
+                    title: this.iteration === 0 ? '正在思考任务怎么做' : '正在思考下一步',
+                    detail: modelTurnLooksAtImages
+                        ? '正在查看画面，这一步会稍慢'
+                        : undefined,
                     status: 'running',
                     iteration: this.iteration + 1,
                     maxIterations: this.config.maxIterations,
@@ -6195,8 +6178,9 @@ export class Agent {
                             timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
                         },
                         providerTruncationRecoveryRequest
-                            ? 'provider_truncation_recovery'
-                            : 'task'
+                            ? 'provider_output_recovery'
+                            : 'agent_turn',
+                        contextPreparation
                     )
                 });
                 if (isProviderOutputTruncated(response.stopReason)) {
@@ -6237,6 +6221,9 @@ export class Agent {
                         ));
                         continue;
                     }
+                    retireDeliveredAgentMessageImages(this.messages);
+                    this.pendingPrimaryVisualObservations = [];
+                    this.initialImagesPendingPrimaryObservation = false;
                     return await this.buildProviderOutputFailureResult(this.iteration, 'truncated', {
                         phase: 'agent_turn',
                         recoveryAttempts: this.providerOutputRecovery.recoveryAttempts,
@@ -6244,6 +6231,8 @@ export class Agent {
                     });
                 }
                 if (isProviderOutputBlocked(response.stopReason)) {
+                    this.pendingPrimaryVisualObservations = [];
+                    this.initialImagesPendingPrimaryObservation = false;
                     return await this.buildProviderOutputFailureResult(this.iteration, 'blocked');
                 }
                 if (this.config.signal?.aborted) continue agentLoop;
@@ -6270,7 +6259,13 @@ export class Agent {
                 if (response.toolCalls?.length) {
                     response.toolCalls = this.normalizeToolCallsBeforeExecution(response.toolCalls, response.content);
                 }
-                const primaryVisualInputConsumed = this.consumePrimaryVisualObservationReviews(response);
+                const visualReview = reconcilePrimaryVisualObservationReviews({
+                    observations: this.pendingPrimaryVisualObservations,
+                    modelTurn: this.iteration,
+                    response
+                });
+                response.content = visualReview.content;
+                const primaryVisualInputConsumed = visualReview.consumedVisualInput;
                 // 像素已在刚完成的 provider 请求中一次性投递。未返回结构化 decision 的
                 // observation 保持 reviewed=false，但不能为了等待下一轮而继续重传同一 Base64。
                 this.pendingPrimaryVisualObservations = [];
@@ -7727,7 +7722,7 @@ export class Agent {
         ].join('\n');
 
         try {
-            const response = await this.callModelWithAccounting(
+            const response = await this.modelCallAccounting.callAgentProvider(
                 expertModelId,
                 [{
                     role: 'user',
@@ -7742,8 +7737,17 @@ export class Agent {
                     ]
                 }],
                 [],
-                { maxTokens: 1600, temperature: 0.2, timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS },
-                { visualAnalysis: true }
+                {
+                    maxTokens: 1600,
+                    temperature: 0.2,
+                    timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
+                },
+                {
+                    callKind: 'visual_observation',
+                    requestMode: 'non_stream',
+                    agentIteration: this.iteration + 1,
+                    visualAnalysis: true
+                }
             );
             const observation = readCompleteProviderTextContent(response).content.trim();
             if (!observation) {
@@ -8225,7 +8229,10 @@ export class Agent {
                                     : ''
                             ].filter(Boolean).join('\n')
                         },
-                        { type: 'image', data: image.data, mediaType: image.mediaType }
+                        registerRuntimeVisualPresentationBlock(
+                            { type: 'image', data: image.data, mediaType: image.mediaType },
+                            observation?.observationKey
+                        )
                     ]
                 }));
                 this.emitStep({
@@ -8371,7 +8378,7 @@ export class Agent {
                 // 默认开着思考的 mimo-v2.5 每张快照要 60–80 秒，且常把 1800 token 全花在思考上、正文为空
                 // （finish_reason=length）——67 秒白等一场，画面还是「未复核」。这里明确关思考，
                 // 与评审器 / analyzeAssetContent 同一口径；主循环模型的思考不受影响。
-                const expertResponse = await this.callModelWithAccounting(
+                const expertResponse = await this.modelCallAccounting.callAgentProvider(
                     expertModelId,
                     [{
                         role: 'user',
@@ -8379,8 +8386,18 @@ export class Agent {
                         contentBlocks
                     }],
                     [],
-                    { maxTokens: 1800, temperature: 0.2, timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS, thinkingEnabled: false },
-                    { visualAnalysis: true }
+                    {
+                        maxTokens: 1800,
+                        temperature: 0.2,
+                        timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS,
+                        thinkingEnabled: false
+                    },
+                    {
+                        callKind: 'visual_observation',
+                        requestMode: 'non_stream',
+                        agentIteration: this.iteration + 1,
+                        visualAnalysis: true
+                    }
                 );
                 const judgment = readCompleteProviderTextContent(expertResponse).content.trim();
                 if (!judgment) throw new Error('视觉模型没有返回完整结果');
@@ -8484,56 +8501,6 @@ export class Agent {
                 });
             }
         }
-    }
-
-    private primaryModelResponseConsumedVisualInput(response: {
-        content?: unknown;
-        toolCalls?: unknown[];
-        stopReason?: unknown;
-    }): boolean {
-        const stopReason = typeof response.stopReason === 'string' ? response.stopReason : undefined;
-        if (isProviderOutputTruncated(stopReason)) return false;
-        const hasContent = Boolean(String(response.content || '').trim());
-        const hasToolDecision = Array.isArray(response.toolCalls) && response.toolCalls.length > 0;
-        return hasContent || hasToolDecision;
-    }
-
-    /**
-     * 主模型只有返回匹配 observationKey 的结构化 review decision，才能把该画面标为已复核。
-     * 普通回复、任意 Tool call 或“我看过了”自然语言都不能提升 reviewed 状态。
-     */
-    private consumePrimaryVisualObservationReviews(response: {
-        content?: unknown;
-        toolCalls?: unknown[];
-        stopReason?: unknown;
-    }): boolean {
-        const consumedVisualInput = this.primaryModelResponseConsumedVisualInput(response);
-        markPrimaryVisualObservationsConsumed({ observations: this.pendingPrimaryVisualObservations, modelTurn: this.iteration, consumed: consumedVisualInput });
-        if (isProviderOutputTruncated(
-            typeof response.stopReason === 'string' ? response.stopReason : undefined
-        )) {
-            return false;
-        }
-        const parsed = consumePrimaryVisualObservationReviewBatch(response.content);
-        response.content = parsed.content;
-        if (!parsed.batch) return consumedVisualInput;
-        const decisionsByKey = new Map(
-            parsed.batch.decisions.map((decision) => [decision.observationKey, decision])
-        );
-        const remaining: AgentVisualObservation[] = [];
-        for (const observation of this.pendingPrimaryVisualObservations) {
-            const observationKey = observation.observationKey;
-            const decision = observationKey ? decisionsByKey.get(observationKey) : undefined;
-            if (!decision || observation.status !== 'presented_to_primary') {
-                remaining.push(observation);
-                continue;
-            }
-            observation.status = 'observed_by_primary';
-            observation.reviewed = true;
-            observation.reviewDecision = decision;
-        }
-        this.pendingPrimaryVisualObservations = remaining;
-        return consumedVisualInput;
     }
 
     private buildUserMessage(task: string, images?: ImageAttachment[], observationSection = ''): AgentMessage {
@@ -8710,10 +8677,11 @@ export class Agent {
 
         let response: Awaited<ReturnType<CallModelFn>>;
         let terminalContent: ReturnType<typeof readCompleteProviderTextContent>;
+        const forcedFinalMessages = prepareAgentMessagesForModel(this.messages);
         try {
-            response = await this.callModelWithAccounting(
+            response = await this.modelCallAccounting.callAgentProvider(
                 this.config.modelId,
-                prepareAgentMessagesForModel(this.messages),
+                forcedFinalMessages,
                 [],
                 {
                     maxTokens: Math.min(2048, this.resolvePrimaryTurnProviderMaxTokens()),
@@ -8722,13 +8690,27 @@ export class Agent {
                     thinkingEnabled: this.resolveProviderThinkingEnabled()
                 },
                 {
+                    callKind: 'forced_final_response',
+                    requestMode: 'non_stream',
+                    agentIteration: this.iteration + 1,
+                    visualInput: projectCurrentVisualInputForAccounting(
+                        forcedFinalMessages,
+                        this.pendingPrimaryVisualObservations
+                    ),
                     visualAnalysis: this.initialImagesPendingPrimaryObservation
                         || this.pendingPrimaryVisualObservations.length > 0
                 }
             );
             terminalContent = readCompleteProviderTextContent(response);
-            const primaryVisualInputConsumed = terminalContent.complete
-                && this.consumePrimaryVisualObservationReviews(response);
+            const visualReview = terminalContent.complete
+                ? reconcilePrimaryVisualObservationReviews({
+                    observations: this.pendingPrimaryVisualObservations,
+                    modelTurn: this.iteration,
+                    response
+                })
+                : undefined;
+            if (visualReview) response.content = visualReview.content;
+            const primaryVisualInputConsumed = visualReview?.consumedVisualInput === true;
             this.pendingPrimaryVisualObservations = [];
             if (this.initialImagesPendingPrimaryObservation) {
                 this.attachedImageObservationAvailable = primaryVisualInputConsumed;
@@ -10525,17 +10507,13 @@ export class Agent {
         return undefined;
     }
 
-    /**
-     * 读取 Tool 结果声明的恢复选项。
-     *
-     * 字段名为兼容旧 Tool 契约继续保留 required/nextRequired，但这里只用于失败恢复统计；
-     * Agent 循环不得据此裁剪下一轮工具面、授予权限或强迫模型调用某个工具。
-     */
     private readToolResultRecoveryOptions(output: any): string[] {
         if (!output || typeof output !== 'object') return [];
         const candidates = [
             ...(Array.isArray(output.nextRequiredToolOptions) ? output.nextRequiredToolOptions : []),
-            ...(Array.isArray(output.data?.nextRequiredToolOptions) ? output.data.nextRequiredToolOptions : []),
+            ...(Array.isArray(output.data?.nextRequiredToolOptions)
+                ? output.data.nextRequiredToolOptions
+                : []),
             output.nextRequiredTool,
             output.requiredNextTool,
             output.requiredTool,
@@ -10562,9 +10540,10 @@ export class Agent {
             timeoutMs?: number;
             reasoningEffort?: AgentConfig['reasoningEffort'];
         },
-        performanceChargeKind: 'task' | 'provider_truncation_recovery' = 'task'
+        callKind: 'agent_turn' | 'provider_output_recovery',
+        contextPreparation: RuntimeContextPreparationShape
     ): ReturnType<CallModelFn> {
-        if (performanceChargeKind !== 'provider_truncation_recovery') {
+        if (callKind !== 'provider_output_recovery') {
             // The directive must be added before message governance snapshots the request.
             // Counting the imminent call avoids the former one-turn delay at the threshold.
             this.maybePushBudgetDisciplineDirective(1);
@@ -10572,50 +10551,31 @@ export class Agent {
         const governedMessages = prepareAgentMessagesForModel(messages);
         const visualAnalysis = this.initialImagesPendingPrimaryObservation
             || this.pendingPrimaryVisualObservations.length > 0;
-        if (!this.config.callModelStream) {
-            try {
-                return await this.callModelWithAccounting(modelId, governedMessages, tools as any, {
-                    ...options,
-                    thinkingEnabled: this.resolveProviderThinkingEnabled()
-                }, { visualAnalysis, performanceChargeKind });
-            } catch (error) {
-                this.initialImagesPendingPrimaryObservation = false;
-                this.pendingPrimaryVisualObservations = [];
-                throw error;
-            } finally {
-                retireDeliveredAgentMessageImages(messages);
-            }
-        }
-
-        if (performanceChargeKind !== 'provider_truncation_recovery') {
-            this.beginPerformanceModelCall(visualAnalysis);
-        }
-        const startedAtMs = Date.now();
-        const promptShape = measureRuntimePromptShape({ messages: governedMessages, tools });
+        const visualInput = projectCurrentVisualInputForAccounting(
+            governedMessages,
+            this.pendingPrimaryVisualObservations
+        );
         try {
-            const response = await this.config.callModelStream(modelId, governedMessages, tools as any, {
-                ...options,
-                thinkingEnabled: this.resolveProviderThinkingEnabled(),
-                reasoningEffort: options.reasoningEffort || this.config.reasoningEffort,
-                // Provider 的正文与 reasoning 增量在完整终态前都只是传输缓冲；
-                // 最终 thinking 由本轮权威响应一次提交，截断轮次不向过程区泄露半段判断。
-                onThinkingDelta: () => {},
-                onContentDelta: () => {},
-                onToolCallDelta: () => {}
+            const response = await this.modelCallAccounting.callPrimaryProvider({
+                modelId,
+                messages: governedMessages,
+                tools: tools as ToolSchema[],
+                requestedOptions: options,
+                callKind,
+                agentIteration: this.iteration + 1,
+                contextPreparation,
+                visualInput,
+                beforeRequest: callKind === 'provider_output_recovery'
+                    ? undefined
+                    : () => { this.beginPerformanceModelCall(visualAnalysis); }
             });
-            this.recordModelAccounting({
-                startedAtMs,
-                succeeded: true,
-                usage: response.usage, promptShape, outcome: response
-            });
+            if (!isProviderOutputTruncated(response.stopReason)) retireDeliveredAgentMessageImages(messages);
             return response;
         } catch (error) {
-            this.recordModelAccounting({ startedAtMs, succeeded: false, promptShape, outcome: error });
+            retireDeliveredAgentMessageImages(messages);
             this.initialImagesPendingPrimaryObservation = false;
             this.pendingPrimaryVisualObservations = [];
             throw error;
-        } finally {
-            retireDeliveredAgentMessageImages(messages);
         }
     }
 
@@ -10637,7 +10597,7 @@ export class Agent {
 
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             try {
-                const response = await this.callModelWithAccounting(
+                const response = await this.modelCallAccounting.callAgentProvider(
                     this.config.modelId,
                     [
                         {
@@ -10660,7 +10620,12 @@ export class Agent {
                         }
                     ],
                     [],
-                    { maxTokens: 1200, temperature: attempt > 0 ? 0.45 : 0.3, timeoutMs: AGENT_AUXILIARY_MODEL_TIMEOUT_MS }
+                    {
+                        maxTokens: 1200,
+                        temperature: attempt > 0 ? 0.45 : 0.3,
+                        timeoutMs: AGENT_AUXILIARY_MODEL_TIMEOUT_MS
+                    },
+                    { callKind: 'no_tool_replan', requestMode: 'non_stream', agentIteration: this.iteration + 1 }
                 );
 
                 if (response.toolCalls?.length) {
@@ -11241,7 +11206,7 @@ export class Agent {
         const maxAttempts = 2;
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             try {
-                const response = await this.callModelWithAccounting(
+                const response = await this.modelCallAccounting.callAgentProvider(
                     this.config.modelId,
                     [
                         { role: 'system', content: this.config.systemPrompt },
@@ -11265,6 +11230,11 @@ export class Agent {
                         maxTokens: Math.min(2600, this.resolvePrimaryTurnProviderMaxTokens()),
                         timeoutMs: AGENT_FINAL_SUMMARY_TIMEOUT_MS,
                         thinkingEnabled: this.resolveProviderThinkingEnabled()
+                    },
+                    {
+                        callKind: 'silent_final_summary',
+                        requestMode: 'non_stream',
+                        agentIteration: this.iteration + 1
                     }
                 );
                 const text = sanitizeUserVisibleAgentText(readCompleteProviderTextContent(response).content).trim();
@@ -11298,7 +11268,7 @@ export class Agent {
         }).join('\n\n');
 
         try {
-            const response = await this.callModelWithAccounting(
+            const response = await this.modelCallAccounting.callAgentProvider(
                 this.config.modelId,
                 [
                     { role: 'system', content: this.config.systemPrompt },
@@ -11326,6 +11296,11 @@ export class Agent {
                     maxTokens: Math.min(900, this.resolvePrimaryTurnProviderMaxTokens()),
                     timeoutMs: AGENT_FINAL_SUMMARY_TIMEOUT_MS,
                     thinkingEnabled: this.resolveProviderThinkingEnabled()
+                },
+                {
+                    callKind: 'richer_final_summary',
+                    requestMode: 'non_stream',
+                    agentIteration: this.iteration + 1
                 }
             );
             const text = sanitizeUserVisibleAgentText(readCompleteProviderTextContent(response).content).trim();
@@ -12090,6 +12065,7 @@ export class Agent {
         this.writeTrustedVisualReviewArtifactForRunResult(runResult);
         return runResult;
     }
+
     private buildVerificationStepDetail(projection: UserResultProjection): string {
         return projection.detail;
     }
@@ -12099,22 +12075,18 @@ export class Agent {
         let unresolved = 0;
         for (let index = 0; index < this.toolCallLog.length; index += 1) {
             const entry = this.toolCallLog[index];
-            // Capability 控制调用无论失败、成功还是后续恢复，都不属于用户任务完成会计。
             if (isAgentHarnessControlTool(entry.name)
                 || entry.origin === 'harness_opening_observation'
                 || entry.origin === 'harness_quality_verification') continue;
             if (entry.result?.success !== false) continue;
             if (entry.failureDisposition) continue;
-            // 走哪条出路由模型决定，所以任一被指出的出路成功都算这次失败已恢复；
-            // 只认首选项会把「门禁给了三条路、模型选了第二条并成功」误记成未恢复。
             const recoveryToolOptions = this.readToolResultRecoveryOptions(entry.result);
             const hasLaterRecovery = this.toolCallLog.slice(index + 1).some((later) => {
                 if (isAgentHarnessControlTool(later.name)
                     || later.origin === 'harness_opening_observation'
                     || later.origin === 'harness_quality_verification') return false;
                 if (later.result?.success === false) return false;
-                if (later.name === entry.name) return true;
-                return recoveryToolOptions.includes(later.name);
+                return later.name === entry.name || recoveryToolOptions.includes(later.name);
             });
             if (hasLaterRecovery) recovered += 1;
             else unresolved += 1;
@@ -12287,13 +12259,28 @@ export class Agent {
             maxRequestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS,
             readActiveElapsedMs: () => this.readPerformanceActiveElapsedMs(),
             callModel: async (budgetClass, { messages, ...requestOptions }, presentation) => {
-                const response = await this.callModelWithAccounting(judgeModelId, messages, [], requestOptions, {
-                    visualAnalysis: true,
-                    budgetClass,
-                    directVisionCandidateCount: presentation.candidateCount,
-                    directVisionCandidateKeys: presentation.candidateKeys,
-                    billDirectVisionCandidatesByPresentation: true
-                });
+                const response = await this.modelCallAccounting.callAgentProvider(
+                    judgeModelId,
+                    messages,
+                    [],
+                    requestOptions,
+                    {
+                        callKind: budgetClass === 'final_quality_judge'
+                            ? 'final_quality_judge'
+                            : 'final_quality_diagnosis_repair',
+                        requestMode: 'non_stream',
+                        agentIteration: this.iteration + 1,
+                        visualAnalysis: true,
+                        visualInput: {
+                            observationKeys: presentation.candidateKeys,
+                            photoshopRevisions: [reviewCandidate.historyStateRef]
+                        },
+                        budgetClass,
+                        directVisionCandidateCount: presentation.candidateCount,
+                        directVisionCandidateKeys: presentation.candidateKeys,
+                        billDirectVisionCandidatesByPresentation: true
+                    }
+                );
                 const terminalContent = readCompleteProviderTextContent(response);
                 if (!terminalContent.complete) {
                     throw new Error('视觉评审模型没有返回可消费的完整终态');

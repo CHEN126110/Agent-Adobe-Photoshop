@@ -2,6 +2,19 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-116 性能先按物理请求归因，再做同 Case 单变量优化；诊断不得取得 Agent 控制权
+
+- 状态：active；instrumentation-only 代码与专项验证已完成，完整核心验证、提交和修复后 fixed Case profiling 尚待完成，当前不能宣称已经提速。
+- 触发事实：r35 / r38 中模型调用约占墙钟 92% / 93%，普通 Agent 回合为 35 / 29 次，截图与 transform 只占少量时间；但旧 `promptShapeSamples` 没有调用用途、上下文来源、输出形态或逐调用视觉 revision，因此“删上下文、降 reasoning、减少看图、移除 Final Judge”都不是已证明的根因修复。历史 run 602 进一步显示 22 次模型调用约 604 秒、Tool 约 67 秒、历史增长到约 15.9 万字，但它仍只是旧版本个案。
+- 决定：现有 Runtime Accounting 是物理模型 attempt 的唯一 observation-only owner。生产调用必须显式声明有限 `callKind`，并记录 stream 模式、iteration /generation、requested reasoning、transport attempt、上下文压缩和有限来源桶、输出体量；视觉输入只从本次真实 presentation 与 Runtime-owned observation / ReviewSet revision 投影为 run-scoped SHA-256。旧 v0 缺字段保持 unknown，不从内容、阶段或相邻事件猜测。
+- Tool owner：Tool name、origin、activity、Host revision 与 mutation 事实继续留在既有 AgentRunRecord / Tool log；Runtime Accounting 只保留原有聚合。当前记录没有单次 Tool duration 时，诊断必须显示 instrumentation unavailable，禁止用累计 `elapsedMs` 相减或复制第二 Tool 账本。若未来需要覆盖 Skill / Design Team 内部物理 Tool，应在真实 dispatch-settled 边界补回原 owner，并明确聚合是否计数，不能扫描 Skill 返回对象补造。
+- 行为边界：性能字段不进入 Prompt、Tool 可用性、预算准入、权限、Stage、Completion、DesignVerdict、Evaluation 或学习写回；Harness 不因“慢”替 Agent 选择素材、构图、减少必要观察或跳过写后读回。归因适配只能计时、测量、脱敏和交给现有 ledger，调用用途与是否请求模型仍由 Agent /既有质量 owner 决定。
+- 视觉恢复裁决：若一个真实携带像素的主模型请求以 `max_tokens / stream_incomplete` 截断，残缺输出没有观察信用；语义 recovery 必须重发同一像素，直到取得完整终态或达到既有恢复上限。它不重复扣普通任务模型 /视觉预算，但每个物理请求、图片块和同 revision presentation 都进入 Runtime Accounting。若完整、blocked、异常或恢复耗尽，Runtime 必须退休像素并清空 pending，不能留下无像素 review 入口。
+- 优化方法：先在相同代码、模型、reasoning、素材、预算和 fixture 上取得 fixed Case 基线，找出最慢五个调用、call kind、输出长度、上下文来源和同 revision 重复视觉 presentation；然后一次只改一个可逆变量做配对。没有同 Case 结果，不用总体平均或旧单例宣称改善；质量与技术成功率显著退化时回滚。两种不同优化仍无法改善同一首个偏差时触发 GMR，换根因假设而不是继续叠加提示词或 retry。
+- 正面经验：把“模型为什么被调用、当时看了什么、输入如何增长、输出了多少”和“Tool 实际做了什么”按现有 owner 对齐，才能区分必要设计思考、Provider 输出恢复、辅助总结、终审固定成本和低增量循环；测量基础设施本身不应成为新的工作流。
+- 负面教训与禁止反例：不得用降低模型、关闭主 Agent reasoning、减少必要视觉样本、跳过终审、缩短到无法完成的预算或隐藏等待状态制造速度；不得保存 Prompt /reasoning 正文、Tool 参数 /结果、路径、Base64、原始 observation key 或 Photoshop ID；不得给新增调用默认为 `agent_turn`；不得把 transport retry 的同像素重发误报为 Agent 重复设计循环。
+- 回滚点：本切片只扩展现有 Runtime Accounting /诊断投影、ContextManager 计数和品类中立模型会计适配。若真实运行证明记录时钟、视觉归因或旧档案兼容有误，可独立回滚 D-116；回滚不影响 S1 的交付引用、Evaluation authority、Photoshop 事务或设计作者权修复。
+
 ## D-115 当前文档使用单一投影，长期路线使用分阶段 SMART，不再保存并行历史主线
 
 - 状态：active

@@ -104,6 +104,21 @@ export function isProviderOutputBlocked(stopReason?: string): boolean {
     return resolveCanonicalProviderStopReason(stopReason) === 'content_blocked';
 }
 
+export function didCompleteProviderResponseConsumeVisualInput(response: {
+    content?: unknown;
+    toolCalls?: unknown[];
+    stopReason?: unknown;
+}): boolean {
+    const stopReason = typeof response.stopReason === 'string'
+        ? response.stopReason
+        : undefined;
+    if (isProviderOutputTruncated(stopReason)) return false;
+    const hasContent = Boolean(String(response.content || '').trim());
+    const hasToolDecision = Array.isArray(response.toolCalls)
+        && response.toolCalls.length > 0;
+    return hasContent || hasToolDecision;
+}
+
 export function resolveProviderOutputRecoveryOutcome(
     stopReason: unknown
 ): ProviderOutputRecoveryOutcome {

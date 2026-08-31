@@ -204,6 +204,9 @@ const autonomousExecutor = source('src/renderer/services/skill-executors/autonom
 const designAgentEngineSource = source('src/renderer/services/design-agent/engine.ts');
 const skillRoutingSource = source('src/shared/skill-routing.ts');
 const agentRuntime = source('src/renderer/services/agent-runtime/agent.ts');
+const modelCallAccountingSource = source(
+    'src/renderer/services/agent-runtime/model-call-accounting.ts'
+);
 const providerOutputRecoverySource = source('src/renderer/services/agent-runtime/provider-output-recovery.ts');
 const agentMessageContext = source('src/renderer/services/agent-runtime/message-context.ts');
 const mcpHostClient = source('src/renderer/services/mcp-host.client.ts');
@@ -562,8 +565,8 @@ providerRecoveryController.schedule([{ name: 'fourth' }]);
 providerRecoveryController.markComplete();
 check(
     '未结算正文与 reasoning delta 不持久化，Provider 恢复按连续 2 次、整轮 4 次限额并隔离工具快照',
-    agentRuntime.includes('onContentDelta: () => {}')
-        && agentRuntime.includes('onThinkingDelta: () => {}')
+    modelCallAccountingSource.includes('onContentDelta: () => {}')
+        && modelCallAccountingSource.includes('onThinkingDelta: () => {}')
         && !agentRuntime.includes("this.emitVisibleReasoning(fullThinking, { source: 'provider_thinking_delta' })")
         && !agentRuntime.includes("this.emitVisibleReasoning(fullContent, { source: 'model_visible_reasoning_delta' })")
         && exhaustedConsecutiveRecovery === true

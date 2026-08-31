@@ -10,6 +10,7 @@
 
 import { sha256Hex } from './content-hash';
 import type { RuntimeStage } from './contracts';
+import type { ModelReasoningEffort } from '../config/models.config';
 import type { ModelProviderFailureKind } from '../model-provider-failure';
 import type { ProviderReportedTokenUsage } from '../provider-reported-token-usage';
 import {
@@ -18,6 +19,86 @@ import {
 } from '../provider-transport-metrics';
 
 export type RuntimeAccountingStage = RuntimeStage | 'unscoped';
+
+/** 品类中立的模型调用用途；只用于性能归因，不参与路由、预算或结果裁决。 */
+export type RuntimeModelCallKind =
+    | 'agent_turn'
+    | 'provider_output_recovery'
+    | 'visual_observation'
+    | 'forced_final_response'
+    | 'no_tool_replan'
+    | 'silent_final_summary'
+    | 'richer_final_summary'
+    | 'final_quality_judge'
+    | 'final_quality_diagnosis_repair';
+
+export type RuntimeModelRequestMode = 'stream' | 'non_stream';
+export type RuntimeRequestedThinking = 'enabled' | 'disabled' | 'unspecified';
+
+/**
+ * 单次请求中各类消息贡献的字符数。桶名是有限枚举，不保存 source/scope 或正文。
+ * 所有桶之和必须与同一样本的 systemChars + historyChars 守恒。
+ */
+export interface RuntimePromptContextSourceChars {
+    system: number;
+    currentUser: number;
+    assistantResponse: number;
+    assistantReasoning: number;
+    assistantToolArguments: number;
+    toolResults: number;
+    harnessControl: number;
+    runtimeObservation: number;
+    visualObservation: number;
+    toolObservation: number;
+    unclassified: number;
+}
+
+export type RuntimeModelOutputTerminalKind =
+    | 'complete'
+    | 'tool_calls'
+    | 'max_tokens'
+    | 'content_blocked'
+    | 'stream_incomplete'
+    | 'incomplete_tool_calls'
+    | 'unknown';
+
+/** 只保存输出体量与有限终态，不保存正文、reasoning、Tool 参数或 Provider 原始状态。 */
+export interface RuntimeModelOutputShape {
+    contentChars: number;
+    reasoningChars: number;
+    toolCallCount: number;
+    toolArgumentChars: number;
+    incompleteToolCallCount: number;
+    terminalKind: RuntimeModelOutputTerminalKind;
+}
+
+/** ContextManager 压缩前后的纯计数投影；不得携带 messages 或被用于预算执行。 */
+export interface RuntimeContextPreparationShape {
+    beforeEstimatedTokens: number;
+    afterEstimatedTokens: number;
+    beforeMessageCount: number;
+    afterMessageCount: number;
+    reservedTokens: number;
+    removedMessageCount: number;
+    compacted: boolean;
+}
+
+/** 只在一次记录调用内存在；原始观察键与 Photoshop revision 永不进入 ledger/digest。 */
+export interface RuntimeModelVisualInput {
+    observationKeys?: readonly string[];
+    photoshopRevisions?: ReadonlyArray<{
+        documentId: number;
+        historyStateId: number;
+    }>;
+}
+
+/** Run-scoped 的视觉输入归因；只证明一次模型请求携带了哪些版本身份。 */
+export interface RuntimeModelVisualInputAttribution {
+    trackedObservationCount: number;
+    observationSetDigest?: string;
+    revisionDigests: string[];
+    droppedRevisionCount: number;
+}
 
 export interface RuntimeAccountingStageBucket {
     stage: RuntimeAccountingStage;
@@ -62,6 +143,19 @@ export interface RuntimePerformanceUsage {
 export interface RuntimePromptShapeSample {
     seq: number;
     stage: RuntimeAccountingStage;
+    callKind?: RuntimeModelCallKind;
+    requestMode?: RuntimeModelRequestMode;
+    agentIteration?: number;
+    runtimeGeneration?: number;
+    /** 跨 generation 单调累计的活跃执行时间起点；缺失时保持 unknown。 */
+    requestStartedActiveMs?: number;
+    /** 同一语义请求内的物理 Provider attempt 序号与总数；必须成对出现。 */
+    transportAttemptIndex?: number;
+    transportAttemptCount?: number;
+    /** Renderer 实际请求值；不宣称 Provider 最终采用了该配置。 */
+    requestedThinking?: RuntimeRequestedThinking;
+    requestedReasoningEffort?: ModelReasoningEffort;
+    requestedMaxTokens?: number;
     /** provider 报告的用量；未报告为 undefined，不估算 */
     inputTokens?: number;
     outputTokens?: number;
@@ -84,6 +178,10 @@ export interface RuntimePromptShapeSample {
     toolCount: number;
     /** 工具 schema JSON 字符数 */
     toolSchemaChars: number;
+    contextSourceChars?: RuntimePromptContextSourceChars;
+    contextPreparation?: RuntimeContextPreparationShape;
+    outputShape?: RuntimeModelOutputShape;
+    visualInputAttribution?: RuntimeModelVisualInputAttribution;
 }
 
 /** 失败调用的有界结构身份；不允许错误正文、堆栈、请求或响应载荷进入账本。 */
@@ -291,6 +389,16 @@ const RUNTIME_ACCOUNTING_STAGE_BUCKET_ALLOWED_KEYS = new Set([
 const RUNTIME_ACCOUNTING_PROMPT_SAMPLE_ALLOWED_KEYS = new Set([
     'seq',
     'stage',
+    'callKind',
+    'requestMode',
+    'agentIteration',
+    'runtimeGeneration',
+    'requestStartedActiveMs',
+    'transportAttemptIndex',
+    'transportAttemptCount',
+    'requestedThinking',
+    'requestedReasoningEffort',
+    'requestedMaxTokens',
     'inputTokens',
     'outputTokens',
     'cacheHitInputTokens',
@@ -303,7 +411,51 @@ const RUNTIME_ACCOUNTING_PROMPT_SAMPLE_ALLOWED_KEYS = new Set([
     'messageCount',
     'imageBlocks',
     'toolCount',
-    'toolSchemaChars'
+    'toolSchemaChars',
+    'contextSourceChars',
+    'contextPreparation',
+    'outputShape',
+    'visualInputAttribution'
+]);
+
+const RUNTIME_PROMPT_CONTEXT_SOURCE_CHAR_KEYS = new Set<keyof RuntimePromptContextSourceChars>([
+    'system',
+    'currentUser',
+    'assistantResponse',
+    'assistantReasoning',
+    'assistantToolArguments',
+    'toolResults',
+    'harnessControl',
+    'runtimeObservation',
+    'visualObservation',
+    'toolObservation',
+    'unclassified'
+]);
+
+const RUNTIME_MODEL_OUTPUT_SHAPE_KEYS = new Set<keyof RuntimeModelOutputShape>([
+    'contentChars',
+    'reasoningChars',
+    'toolCallCount',
+    'toolArgumentChars',
+    'incompleteToolCallCount',
+    'terminalKind'
+]);
+
+const RUNTIME_CONTEXT_PREPARATION_KEYS = new Set<keyof RuntimeContextPreparationShape>([
+    'beforeEstimatedTokens',
+    'afterEstimatedTokens',
+    'beforeMessageCount',
+    'afterMessageCount',
+    'reservedTokens',
+    'removedMessageCount',
+    'compacted'
+]);
+
+const RUNTIME_MODEL_VISUAL_INPUT_ATTRIBUTION_KEYS = new Set<keyof RuntimeModelVisualInputAttribution>([
+    'trackedObservationCount',
+    'observationSetDigest',
+    'revisionDigests',
+    'droppedRevisionCount'
 ]);
 
 const RUNTIME_ACCOUNTING_MODEL_FAILURE_SAMPLE_ALLOWED_KEYS = new Set([
@@ -328,6 +480,48 @@ const RUNTIME_ACCOUNTING_BOUNDARY_ALLOWED_KEYS = new Set([
 const RUNTIME_ACCOUNTING_STAGE_VALUES = new Set<RuntimeAccountingStage>([
     'R0', 'R1', 'R2', 'R3', 'R4', 'E1', 'R5', 'E2', 'unscoped'
 ]);
+
+const RUNTIME_MODEL_CALL_KINDS = new Set<RuntimeModelCallKind>([
+    'agent_turn',
+    'provider_output_recovery',
+    'visual_observation',
+    'forced_final_response',
+    'no_tool_replan',
+    'silent_final_summary',
+    'richer_final_summary',
+    'final_quality_judge',
+    'final_quality_diagnosis_repair'
+]);
+
+const RUNTIME_MODEL_REQUEST_MODES = new Set<RuntimeModelRequestMode>(['stream', 'non_stream']);
+const RUNTIME_REQUESTED_THINKING_VALUES = new Set<RuntimeRequestedThinking>([
+    'enabled',
+    'disabled',
+    'unspecified'
+]);
+const RUNTIME_REASONING_EFFORT_VALUES = new Set<ModelReasoningEffort>([
+    'low', 'medium', 'high', 'xhigh', 'max', 'ultra'
+]);
+const RUNTIME_MODEL_OUTPUT_TERMINAL_KINDS = new Set<RuntimeModelOutputTerminalKind>([
+    'complete',
+    'tool_calls',
+    'max_tokens',
+    'content_blocked',
+    'stream_incomplete',
+    'incomplete_tool_calls',
+    'unknown'
+]);
+
+const MAX_RUNTIME_MODEL_VISUAL_OBSERVATION_KEYS = 128;
+const MAX_RUNTIME_MODEL_VISUAL_REVISION_DIGESTS = 4;
+const RUNTIME_MODEL_VISUAL_OBSERVATION_SET_DIGEST_PREFIX =
+    'runtime-visual-observation-set-sha256-v1:';
+const RUNTIME_MODEL_VISUAL_REVISION_DIGEST_PREFIX =
+    'runtime-photoshop-revision-sha256-v1:';
+const RUNTIME_MODEL_VISUAL_OBSERVATION_SET_DIGEST_PATTERN =
+    /^runtime-visual-observation-set-sha256-v1:[0-9a-f]{64}$/;
+const RUNTIME_MODEL_VISUAL_REVISION_DIGEST_PATTERN =
+    /^runtime-photoshop-revision-sha256-v1:[0-9a-f]{64}$/;
 
 const RUNTIME_MODEL_FAILURE_KINDS = new Set<ModelProviderFailureKind>([
     'billing',
@@ -514,6 +708,55 @@ export function validateRuntimeAccountingDigest(
             if (!RUNTIME_ACCOUNTING_STAGE_VALUES.has(String(sample.stage || '') as RuntimeAccountingStage)) {
                 return { ok: false, reason: 'Runtime accounting prompt sample 的 stage 非法' };
             }
+            if (sample.callKind !== undefined
+                && !RUNTIME_MODEL_CALL_KINDS.has(sample.callKind as RuntimeModelCallKind)) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 callKind 非法' };
+            }
+            if (sample.requestMode !== undefined
+                && !RUNTIME_MODEL_REQUEST_MODES.has(sample.requestMode as RuntimeModelRequestMode)) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 requestMode 非法' };
+            }
+            if (sample.agentIteration !== undefined
+                && !isNonNegativeSafeInteger(sample.agentIteration)) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 Agent iteration 非法' };
+            }
+            if (sample.runtimeGeneration !== undefined
+                && !isNonNegativeSafeInteger(sample.runtimeGeneration)) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 Runtime generation 非法' };
+            }
+            if (sample.requestStartedActiveMs !== undefined
+                && !isNonNegativeSafeInteger(sample.requestStartedActiveMs)) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的请求起点非法' };
+            }
+            const hasAttemptIndex = sample.transportAttemptIndex !== undefined;
+            const hasAttemptCount = sample.transportAttemptCount !== undefined;
+            if (hasAttemptIndex !== hasAttemptCount
+                || (hasAttemptIndex && (
+                    !Number.isSafeInteger(sample.transportAttemptIndex)
+                    || !Number.isSafeInteger(sample.transportAttemptCount)
+                    || Number(sample.transportAttemptIndex) < 1
+                    || Number(sample.transportAttemptCount) < 1
+                    || Number(sample.transportAttemptIndex) > Number(sample.transportAttemptCount)
+                    || Number(sample.transportAttemptCount) > 4
+                ))) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 transport attempt 身份非法' };
+            }
+            if (sample.requestedThinking !== undefined
+                && !RUNTIME_REQUESTED_THINKING_VALUES.has(
+                    sample.requestedThinking as RuntimeRequestedThinking
+                )) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 thinking 请求非法' };
+            }
+            if (sample.requestedReasoningEffort !== undefined
+                && !RUNTIME_REASONING_EFFORT_VALUES.has(
+                    sample.requestedReasoningEffort as ModelReasoningEffort
+                )) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 reasoning effort 非法' };
+            }
+            if (sample.requestedMaxTokens !== undefined
+                && !isNonNegativeSafeInteger(sample.requestedMaxTokens)) {
+                return { ok: false, reason: 'Runtime accounting prompt sample 的 max tokens 非法' };
+            }
             if ([
                 'seq',
                 'durationMs',
@@ -552,6 +795,128 @@ export function validateRuntimeAccountingDigest(
             if (sample.providerTransportMetrics !== undefined
                 && !readProviderTransportMetrics(sample.providerTransportMetrics)) {
                 return { ok: false, reason: 'Runtime accounting Provider transport 指标非法' };
+            }
+            if (sample.contextSourceChars !== undefined) {
+                if (!sample.contextSourceChars
+                    || typeof sample.contextSourceChars !== 'object'
+                    || Array.isArray(sample.contextSourceChars)) {
+                    return { ok: false, reason: 'Runtime accounting prompt context buckets 非法' };
+                }
+                const contextSourceChars = sample.contextSourceChars as Record<string, unknown>;
+                const unknownContextKey = findUnknownAccountingKey(
+                    contextSourceChars,
+                    RUNTIME_PROMPT_CONTEXT_SOURCE_CHAR_KEYS
+                );
+                if (unknownContextKey
+                    || [...RUNTIME_PROMPT_CONTEXT_SOURCE_CHAR_KEYS].some((key) => (
+                        !isNonNegativeSafeInteger(contextSourceChars[key])
+                    ))) {
+                    return { ok: false, reason: 'Runtime accounting prompt context buckets 含非法字段' };
+                }
+                const contextChars = [...RUNTIME_PROMPT_CONTEXT_SOURCE_CHAR_KEYS]
+                    .reduce((sum, key) => sum + Number(contextSourceChars[key]), 0);
+                if (contextChars !== Number(sample.systemChars) + Number(sample.historyChars)) {
+                    return { ok: false, reason: 'Runtime accounting prompt context buckets 与总字符数不守恒' };
+                }
+            }
+            if (sample.contextPreparation !== undefined) {
+                if (!sample.contextPreparation
+                    || typeof sample.contextPreparation !== 'object'
+                    || Array.isArray(sample.contextPreparation)) {
+                    return { ok: false, reason: 'Runtime accounting context preparation 非法' };
+                }
+                const contextPreparation = sample.contextPreparation as Record<string, unknown>;
+                const unknownPreparationKey = findUnknownAccountingKey(
+                    contextPreparation,
+                    RUNTIME_CONTEXT_PREPARATION_KEYS
+                );
+                if (unknownPreparationKey
+                    || [
+                        'beforeEstimatedTokens',
+                        'afterEstimatedTokens',
+                        'beforeMessageCount',
+                        'afterMessageCount',
+                        'reservedTokens',
+                        'removedMessageCount'
+                    ].some((key) => !isNonNegativeSafeInteger(contextPreparation[key]))
+                    || typeof contextPreparation.compacted !== 'boolean'
+                    || Number(contextPreparation.afterEstimatedTokens)
+                        > Number(contextPreparation.beforeEstimatedTokens)
+                    || Number(contextPreparation.afterMessageCount)
+                        > Number(contextPreparation.beforeMessageCount)
+                    || Number(contextPreparation.removedMessageCount)
+                        !== Number(contextPreparation.beforeMessageCount)
+                            - Number(contextPreparation.afterMessageCount)) {
+                    return { ok: false, reason: 'Runtime accounting context preparation 含非法字段' };
+                }
+            }
+            if (sample.outputShape !== undefined) {
+                if (!sample.outputShape
+                    || typeof sample.outputShape !== 'object'
+                    || Array.isArray(sample.outputShape)) {
+                    return { ok: false, reason: 'Runtime accounting model output shape 非法' };
+                }
+                const outputShape = sample.outputShape as Record<string, unknown>;
+                const unknownOutputKey = findUnknownAccountingKey(
+                    outputShape,
+                    RUNTIME_MODEL_OUTPUT_SHAPE_KEYS
+                );
+                if (unknownOutputKey
+                    || [
+                        'contentChars',
+                        'reasoningChars',
+                        'toolCallCount',
+                        'toolArgumentChars',
+                        'incompleteToolCallCount'
+                    ].some((key) => !isNonNegativeSafeInteger(outputShape[key]))
+                    || !RUNTIME_MODEL_OUTPUT_TERMINAL_KINDS.has(
+                        outputShape.terminalKind as RuntimeModelOutputTerminalKind
+                    )) {
+                    return { ok: false, reason: 'Runtime accounting model output shape 含非法字段' };
+                }
+            }
+            if (sample.visualInputAttribution !== undefined) {
+                if (!sample.visualInputAttribution
+                    || typeof sample.visualInputAttribution !== 'object'
+                    || Array.isArray(sample.visualInputAttribution)) {
+                    return { ok: false, reason: 'Runtime accounting visual input attribution 非法' };
+                }
+                const visualInputAttribution = sample.visualInputAttribution as Record<string, unknown>;
+                const unknownVisualInputKey = findUnknownAccountingKey(
+                    visualInputAttribution,
+                    RUNTIME_MODEL_VISUAL_INPUT_ATTRIBUTION_KEYS
+                );
+                if (unknownVisualInputKey
+                    || !isNonNegativeSafeInteger(visualInputAttribution.trackedObservationCount)
+                    || Number(visualInputAttribution.trackedObservationCount)
+                        > MAX_RUNTIME_MODEL_VISUAL_OBSERVATION_KEYS
+                    || !isNonNegativeSafeInteger(visualInputAttribution.droppedRevisionCount)
+                    || !Array.isArray(visualInputAttribution.revisionDigests)
+                    || visualInputAttribution.revisionDigests.length
+                        > MAX_RUNTIME_MODEL_VISUAL_REVISION_DIGESTS
+                    || visualInputAttribution.revisionDigests.some((digest) => (
+                        typeof digest !== 'string'
+                        || !RUNTIME_MODEL_VISUAL_REVISION_DIGEST_PATTERN.test(digest)
+                    ))
+                    || new Set(visualInputAttribution.revisionDigests).size
+                        !== visualInputAttribution.revisionDigests.length
+                    || (Number(visualInputAttribution.droppedRevisionCount) > 0
+                        && visualInputAttribution.revisionDigests.length
+                            !== MAX_RUNTIME_MODEL_VISUAL_REVISION_DIGESTS)) {
+                    return { ok: false, reason: 'Runtime accounting visual input attribution 含非法字段' };
+                }
+                const trackedObservationCount = Number(
+                    visualInputAttribution.trackedObservationCount
+                );
+                if ((trackedObservationCount === 0
+                    && visualInputAttribution.observationSetDigest !== undefined)
+                    || (trackedObservationCount > 0
+                        && (typeof visualInputAttribution.observationSetDigest !== 'string'
+                            || !RUNTIME_MODEL_VISUAL_OBSERVATION_SET_DIGEST_PATTERN.test(
+                                visualInputAttribution.observationSetDigest
+                            )))) {
+                    return { ok: false, reason: 'Runtime accounting visual observation set digest 非法' };
+                }
             }
         }
     }
@@ -689,6 +1054,21 @@ function clonePromptShapeSamples(
     if (!Array.isArray(values) || values.length === 0) return undefined;
     return values.map((sample) => ({
         ...sample,
+        ...(sample.contextSourceChars
+            ? { contextSourceChars: { ...sample.contextSourceChars } }
+            : {}),
+        ...(sample.contextPreparation
+            ? { contextPreparation: { ...sample.contextPreparation } }
+            : {}),
+        ...(sample.outputShape ? { outputShape: { ...sample.outputShape } } : {}),
+        ...(sample.visualInputAttribution
+            ? {
+                visualInputAttribution: {
+                    ...sample.visualInputAttribution,
+                    revisionDigests: [...sample.visualInputAttribution.revisionDigests]
+                }
+            }
+            : {}),
         ...(sample.providerTransportMetrics
             ? { providerTransportMetrics: { ...sample.providerTransportMetrics } }
             : {})
@@ -923,8 +1303,46 @@ export interface RuntimePromptShapeInput {
         contentBlocks?: ReadonlyArray<{ type?: unknown; text?: unknown }>;
         toolCalls?: ReadonlyArray<{ name?: unknown; arguments?: unknown }>;
         toolResults?: ReadonlyArray<{ output?: unknown }>;
+        contextMetadata?: {
+            origin?: unknown;
+        };
     }>;
     tools: ReadonlyArray<unknown>;
+}
+
+function createEmptyRuntimePromptContextSourceChars(): RuntimePromptContextSourceChars {
+    return {
+        system: 0,
+        currentUser: 0,
+        assistantResponse: 0,
+        assistantReasoning: 0,
+        assistantToolArguments: 0,
+        toolResults: 0,
+        harnessControl: 0,
+        runtimeObservation: 0,
+        visualObservation: 0,
+        toolObservation: 0,
+        unclassified: 0
+    };
+}
+
+function classifyRuntimeUserPromptContextSource(
+    message: RuntimePromptShapeInput['messages'][number]
+): keyof RuntimePromptContextSourceChars {
+    switch (message.contextMetadata?.origin) {
+        case 'current_user_instruction':
+            return 'currentUser';
+        case 'harness_control':
+            return 'harnessControl';
+        case 'runtime_observation':
+            return 'runtimeObservation';
+        case 'visual_observation':
+            return 'visualObservation';
+        case 'tool_observation':
+            return 'toolObservation';
+        default:
+            return 'unclassified';
+    }
 }
 
 export function measureRuntimePromptShape(input: RuntimePromptShapeInput): Omit<RuntimePromptShapeSample, 'seq' | 'stage' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
@@ -932,38 +1350,65 @@ export function measureRuntimePromptShape(input: RuntimePromptShapeInput): Omit<
     let historyChars = 0;
     let reasoningChars = 0;
     let imageBlocks = 0;
+    const contextSourceChars = createEmptyRuntimePromptContextSourceChars();
     for (const message of input.messages) {
-        let chars = typeof message.content === 'string' ? message.content.length : 0;
-        if (typeof message.reasoningContent === 'string') {
-            chars += message.reasoningContent.length;
-            reasoningChars += message.reasoningContent.length;
+        const contentChars = typeof message.content === 'string' ? message.content.length : 0;
+        const contentBlocks = message.contentBlocks || [];
+        const blockTextChars = contentBlocks.reduce((sum, block) => (
+            sum + (block.type === 'text' && typeof block.text === 'string' ? block.text.length : 0)
+        ), 0);
+        let responseChars = 0;
+        let messageReasoningChars = 0;
+        let messageToolArgumentChars = 0;
+        let messageToolResultChars = 0;
+        if (message.role === 'system') {
+            responseChars = contentChars;
+        } else if (message.role === 'user') {
+            responseChars = contentBlocks.length > 0 ? blockTextChars : contentChars;
+            imageBlocks += contentBlocks.filter((block) => block.type === 'image').length;
+        } else if (message.role === 'assistant') {
+            responseChars = contentChars;
         }
-        for (const block of message.contentBlocks || []) {
-            if (block.type === 'image') {
-                imageBlocks += 1;
-            } else if (typeof block.text === 'string') {
-                chars += block.text.length;
-            }
+        if (message.role === 'assistant' && typeof message.reasoningContent === 'string') {
+            messageReasoningChars = message.reasoningContent.length;
+            reasoningChars += messageReasoningChars;
         }
-        for (const call of message.toolCalls || []) {
-            chars += String(call.name || '').length;
+        for (const call of message.role === 'assistant' ? message.toolCalls || [] : []) {
+            messageToolArgumentChars += String(call.name || '').length;
             try {
-                chars += JSON.stringify(call.arguments ?? {}).length;
+                messageToolArgumentChars += JSON.stringify(call.arguments ?? {}).length;
             } catch {
-                chars += 0;
+                // Unserializable arguments remain unmeasured; no payload is retained.
             }
         }
-        for (const result of message.toolResults || []) {
+        for (const result of message.role === 'tool_result' ? message.toolResults || [] : []) {
             try {
-                chars += typeof result.output === 'string' ? result.output.length : JSON.stringify(result.output ?? '').length;
+                messageToolResultChars += typeof result.output === 'string'
+                    ? result.output.length
+                    : JSON.stringify(result.output ?? '').length;
             } catch {
-                chars += 0;
+                // Unserializable results remain unmeasured; no payload is retained.
             }
         }
+        const chars = responseChars
+            + messageReasoningChars
+            + messageToolArgumentChars
+            + messageToolResultChars;
         if (message.role === 'system') {
             systemChars += chars;
+            contextSourceChars.system += chars;
+        } else if (message.role === 'assistant') {
+            historyChars += chars;
+            contextSourceChars.assistantResponse += responseChars;
+            contextSourceChars.assistantReasoning += messageReasoningChars;
+            contextSourceChars.assistantToolArguments += messageToolArgumentChars;
+            contextSourceChars.toolResults += messageToolResultChars;
+        } else if (message.role === 'tool_result') {
+            historyChars += chars;
+            contextSourceChars.toolResults += chars;
         } else {
             historyChars += chars;
+            contextSourceChars[classifyRuntimeUserPromptContextSource(message)] += chars;
         }
     }
     let toolSchemaChars = 0;
@@ -979,7 +1424,136 @@ export function measureRuntimePromptShape(input: RuntimePromptShapeInput): Omit<
         messageCount: input.messages.length,
         imageBlocks,
         toolCount: input.tools.length,
-        toolSchemaChars
+        toolSchemaChars,
+        contextSourceChars
+    };
+}
+
+function countRuntimeModelToolArgumentChars(toolCalls: readonly unknown[]): number {
+    let chars = 0;
+    for (const value of toolCalls) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const call = value as { arguments?: unknown };
+        try {
+            chars += JSON.stringify(call.arguments ?? {}).length;
+        } catch {
+            // Circular or unsupported arguments stay unmeasured; no payload is retained.
+        }
+    }
+    return chars;
+}
+
+function classifyRuntimeModelOutputTerminalKind(input: {
+    stopReason: unknown;
+    toolCallCount: number;
+    incompleteToolCallCount: number;
+}): RuntimeModelOutputTerminalKind {
+    if (input.incompleteToolCallCount > 0) return 'incomplete_tool_calls';
+    const reason = String(input.stopReason || '').trim().toLowerCase();
+    if (reason === 'max_tokens' || reason === 'length') return 'max_tokens';
+    if (reason === 'stream_incomplete') return 'stream_incomplete';
+    if (reason === 'content_blocked'
+        || reason === 'content_filter'
+        || reason === 'blocked'
+        || reason === 'safety') {
+        return 'content_blocked';
+    }
+    if (input.toolCallCount > 0 || reason === 'tool_use' || reason === 'tool_calls') {
+        return 'tool_calls';
+    }
+    if (reason === 'stop'
+        || reason === 'end_turn'
+        || reason === 'complete'
+        || reason === 'completed'
+        || reason === 'stop_sequence') {
+        return 'complete';
+    }
+    return 'unknown';
+}
+
+/** 从完整响应投影有界输出体量；无对象响应保持 unknown，不读取或保留正文语义。 */
+export function measureRuntimeModelOutputShape(value: unknown): RuntimeModelOutputShape | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const response = value as {
+        content?: unknown;
+        thinking?: unknown;
+        toolCalls?: unknown;
+        incompleteToolCallNames?: unknown;
+        stopReason?: unknown;
+    };
+    const toolCalls = Array.isArray(response.toolCalls) ? response.toolCalls : [];
+    const incompleteToolCalls = Array.isArray(response.incompleteToolCallNames)
+        ? response.incompleteToolCallNames
+        : [];
+    return {
+        contentChars: typeof response.content === 'string' ? response.content.length : 0,
+        reasoningChars: typeof response.thinking === 'string' ? response.thinking.length : 0,
+        toolCallCount: toolCalls.length,
+        toolArgumentChars: countRuntimeModelToolArgumentChars(toolCalls),
+        incompleteToolCallCount: incompleteToolCalls.length,
+        terminalKind: classifyRuntimeModelOutputTerminalKind({
+            stopReason: response.stopReason,
+            toolCallCount: toolCalls.length,
+            incompleteToolCallCount: incompleteToolCalls.length
+        })
+    };
+}
+
+function projectRuntimeModelVisualInputAttribution(input: {
+    runStartedAt: string;
+    visualInput?: RuntimeModelVisualInput;
+}): RuntimeModelVisualInputAttribution | undefined {
+    const observationKeyDigests = Array.from(new Set(
+        (input.visualInput?.observationKeys || [])
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .map((value) => sha256Hex(value))
+    ))
+        .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+        .slice(0, MAX_RUNTIME_MODEL_VISUAL_OBSERVATION_KEYS);
+    const revisionsByIdentity = new Map<string, { documentId: number; historyStateId: number }>();
+    for (const revision of input.visualInput?.photoshopRevisions || []) {
+        if (!revision
+            || !Number.isSafeInteger(revision.documentId)
+            || revision.documentId < 1
+            || !Number.isSafeInteger(revision.historyStateId)
+            || revision.historyStateId < 1) {
+            continue;
+        }
+        revisionsByIdentity.set(
+            `${revision.documentId}:${revision.historyStateId}`,
+            { documentId: revision.documentId, historyStateId: revision.historyStateId }
+        );
+    }
+    const revisions = Array.from(revisionsByIdentity.values()).sort((left, right) => (
+        left.documentId - right.documentId || left.historyStateId - right.historyStateId
+    ));
+    if (observationKeyDigests.length === 0 && revisions.length === 0) return undefined;
+
+    const runScope = String(input.runStartedAt || '').trim();
+    const retainedRevisions = revisions.slice(0, MAX_RUNTIME_MODEL_VISUAL_REVISION_DIGESTS);
+    return {
+        trackedObservationCount: observationKeyDigests.length,
+        ...(observationKeyDigests.length > 0
+            ? {
+                observationSetDigest:
+                    `${RUNTIME_MODEL_VISUAL_OBSERVATION_SET_DIGEST_PREFIX}${sha256Hex([
+                        'runtime-model-visual-observation-set/v1',
+                        runScope,
+                        ...observationKeyDigests
+                    ].join('\u0000'))}`
+            }
+            : {}),
+        revisionDigests: retainedRevisions.map((revision) => (
+            `${RUNTIME_MODEL_VISUAL_REVISION_DIGEST_PREFIX}${sha256Hex([
+                'runtime-model-photoshop-revision/v1',
+                runScope,
+                String(revision.documentId),
+                String(revision.historyStateId)
+            ].join('\u0000'))}`
+        )),
+        droppedRevisionCount: Math.max(0, revisions.length - retainedRevisions.length)
     };
 }
 
@@ -988,11 +1562,24 @@ export function recordRuntimeModelCall(input: {
     stage?: RuntimeStage;
     durationMs: number;
     succeeded: boolean;
+    callKind?: RuntimeModelCallKind;
+    requestMode?: RuntimeModelRequestMode;
+    agentIteration?: number;
+    runtimeGeneration?: number;
+    requestStartedActiveMs?: number;
+    transportAttemptIndex?: number;
+    transportAttemptCount?: number;
+    requestedThinking?: RuntimeRequestedThinking;
+    requestedReasoningEffort?: ModelReasoningEffort;
+    requestedMaxTokens?: number;
     usage?: Partial<ProviderReportedTokenUsage>;
     failureKind?: ModelProviderFailureKind;
     providerCode?: string;
     status?: number;
     promptShape?: ReturnType<typeof measureRuntimePromptShape>;
+    contextPreparation?: RuntimeContextPreparationShape;
+    outputShape?: RuntimeModelOutputShape;
+    visualInput?: RuntimeModelVisualInput;
     now?: string;
 }): RuntimeAccountingLedger {
     const durationMs = nonNegativeInteger(input.durationMs);
@@ -1029,16 +1616,60 @@ export function recordRuntimeModelCall(input: {
         };
     }
     const previousSamples = Array.isArray(input.ledger.promptShapeSamples) ? input.ledger.promptShapeSamples : [];
+    const visualInputAttribution = projectRuntimeModelVisualInputAttribution({
+        runStartedAt: input.ledger.startedAt,
+        visualInput: input.visualInput
+    });
     const promptShapeSamples = sanitizedPromptShape
         ? [
             ...previousSamples,
             {
                 seq: input.ledger.modelCallCount + 1,
                 stage: normalizeStage(input.stage),
+                ...(input.callKind ? { callKind: input.callKind } : {}),
+                ...(input.requestMode ? { requestMode: input.requestMode } : {}),
+                ...(isNonNegativeSafeInteger(input.agentIteration)
+                    ? { agentIteration: Number(input.agentIteration) }
+                    : {}),
+                ...(isNonNegativeSafeInteger(input.runtimeGeneration)
+                    ? { runtimeGeneration: Number(input.runtimeGeneration) }
+                    : {}),
+                ...(isNonNegativeSafeInteger(input.requestStartedActiveMs)
+                    ? { requestStartedActiveMs: Number(input.requestStartedActiveMs) }
+                    : {}),
+                ...(Number.isSafeInteger(input.transportAttemptIndex)
+                    && Number(input.transportAttemptIndex) >= 1
+                    && Number.isSafeInteger(input.transportAttemptCount)
+                    && Number(input.transportAttemptCount) >= Number(input.transportAttemptIndex)
+                    && Number(input.transportAttemptCount) <= 4
+                    ? {
+                        transportAttemptIndex: Number(input.transportAttemptIndex),
+                        transportAttemptCount: Number(input.transportAttemptCount)
+                    }
+                    : {}),
+                ...(input.requestedThinking ? { requestedThinking: input.requestedThinking } : {}),
+                ...(input.requestedReasoningEffort
+                    ? { requestedReasoningEffort: input.requestedReasoningEffort }
+                    : {}),
+                ...(isNonNegativeSafeInteger(input.requestedMaxTokens)
+                    ? { requestedMaxTokens: Number(input.requestedMaxTokens) }
+                    : {}),
                 ...(hasReportedUsage ? { inputTokens, outputTokens } : {}),
                 ...(hasReportedCacheUsage ? { cacheHitInputTokens, cacheMissInputTokens } : {}),
                 durationMs,
-                ...sanitizedPromptShape
+                ...sanitizedPromptShape,
+                ...(input.contextPreparation
+                    ? { contextPreparation: { ...input.contextPreparation } }
+                    : {}),
+                ...(input.outputShape ? { outputShape: { ...input.outputShape } } : {}),
+                ...(visualInputAttribution
+                    ? {
+                        visualInputAttribution: {
+                            ...visualInputAttribution,
+                            revisionDigests: [...visualInputAttribution.revisionDigests]
+                        }
+                    }
+                    : {})
             }
         ].slice(-MAX_PROMPT_SHAPE_SAMPLES)
         : previousSamples;

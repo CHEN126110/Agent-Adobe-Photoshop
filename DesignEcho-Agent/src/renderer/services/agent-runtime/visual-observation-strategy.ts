@@ -24,6 +24,10 @@ import { sha256Hex } from '../../../shared/agent-runtime-v5/content-hash';
 import { readPhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
 import { collectImagesFromToolResult } from './tool-result-sanitizer';
 import { readExecutedToolResultProvenance } from './tool-result-provenance';
+import {
+    didCompleteProviderResponseConsumeVisualInput,
+    isProviderOutputTruncated
+} from './provider-output-recovery';
 
 export type VisualObservationStrategy = 'primary-self' | 'visual-expert' | 'no-visual-capability';
 
@@ -869,6 +873,66 @@ export function consumePrimaryVisualObservationReviewBatch(
             version: VISUAL_OBSERVATION_REVIEW_BATCH_VERSION,
             decisions: Array.from(decisions.values())
         }
+    };
+}
+
+export function reconcilePrimaryVisualObservationReviews(input: {
+    observations: readonly AgentVisualObservation[];
+    modelTurn: number;
+    response: {
+        content?: unknown;
+        toolCalls?: unknown[];
+        stopReason?: unknown;
+    };
+}): {
+    content: string;
+    remainingObservations: AgentVisualObservation[];
+    consumedVisualInput: boolean;
+} {
+    const consumedVisualInput = didCompleteProviderResponseConsumeVisualInput(input.response);
+    const stopReason = typeof input.response.stopReason === 'string'
+        ? input.response.stopReason
+        : undefined;
+    if (isProviderOutputTruncated(stopReason)) {
+        return {
+            content: String(input.response.content || ''),
+            remainingObservations: [...input.observations],
+            consumedVisualInput: false
+        };
+    }
+    markPrimaryVisualObservationsConsumed({
+        observations: input.observations,
+        modelTurn: input.modelTurn,
+        consumed: consumedVisualInput
+    });
+    const parsed = consumePrimaryVisualObservationReviewBatch(input.response.content);
+    if (!parsed.batch) {
+        return {
+            content: parsed.content,
+            remainingObservations: [...input.observations],
+            consumedVisualInput
+        };
+    }
+    const decisionsByKey = new Map(
+        parsed.batch.decisions.map((decision) => [decision.observationKey, decision])
+    );
+    const remainingObservations: AgentVisualObservation[] = [];
+    for (const observation of input.observations) {
+        const decision = observation.observationKey
+            ? decisionsByKey.get(observation.observationKey)
+            : undefined;
+        if (!decision || observation.status !== 'presented_to_primary') {
+            remainingObservations.push(observation);
+            continue;
+        }
+        observation.status = 'observed_by_primary';
+        observation.reviewed = true;
+        observation.reviewDecision = decision;
+    }
+    return {
+        content: parsed.content,
+        remainingObservations,
+        consumedVisualInput
     };
 }
 

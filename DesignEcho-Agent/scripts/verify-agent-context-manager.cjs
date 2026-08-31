@@ -55,6 +55,40 @@ const underBudgetMessages = [
     { role: 'assistant', content: 'answer' }
 ];
 const underBudgetManager = new ContextManager({ maxTokens: 100, keepRecentRounds: 2 });
+const underBudgetDiagnostics = underBudgetManager.prepareWithDiagnostics(underBudgetMessages, 7);
+assert.deepStrictEqual(
+    underBudgetDiagnostics.messages,
+    underBudgetMessages,
+    '未超预算的诊断入口不得改写消息顺序或内容'
+);
+assert.deepStrictEqual(
+    {
+        beforeEstimatedTokens: underBudgetDiagnostics.beforeEstimatedTokens,
+        afterEstimatedTokens: underBudgetDiagnostics.afterEstimatedTokens,
+        beforeMessageCount: underBudgetDiagnostics.beforeMessageCount,
+        afterMessageCount: underBudgetDiagnostics.afterMessageCount,
+        reservedTokens: underBudgetDiagnostics.reservedTokens,
+        removedMessageCount: underBudgetDiagnostics.removedMessageCount,
+        compacted: underBudgetDiagnostics.compacted
+    },
+    {
+        beforeEstimatedTokens: 11,
+        afterEstimatedTokens: 11,
+        beforeMessageCount: 3,
+        afterMessageCount: 3,
+        reservedTokens: 7,
+        removedMessageCount: 0,
+        compacted: false
+    },
+    '未超预算时只返回计数诊断，不得伪造裁剪或压缩'
+);
+const { messages: _underBudgetPreparedMessages, ...underBudgetCountsOnly } = underBudgetDiagnostics;
+assert(
+    !JSON.stringify(underBudgetCountsOnly).includes('system')
+        && !JSON.stringify(underBudgetCountsOnly).includes('goal')
+        && !JSON.stringify(underBudgetCountsOnly).includes('answer'),
+    '上下文诊断字段不得记录消息正文'
+);
 assert.deepStrictEqual(
     underBudgetManager.prepare(underBudgetMessages),
     underBudgetMessages,
@@ -329,7 +363,24 @@ for (let index = 0; index < 120; index += 1) {
     });
 }
 const longManager = new ContextManager({ maxTokens: 600, keepRecentRounds: 3 });
-const longPrepared = longManager.prepare(longHistory, 50);
+const longDiagnostics = longManager.prepareWithDiagnostics(longHistory, 50);
+const longPrepared = longDiagnostics.messages;
+assert.strictEqual(longDiagnostics.beforeMessageCount, longHistory.length);
+assert.strictEqual(longDiagnostics.afterMessageCount, longPrepared.length);
+assert.strictEqual(
+    longDiagnostics.removedMessageCount,
+    longHistory.length - longPrepared.length,
+    '长历史诊断必须准确报告删除的消息数量'
+);
+assert(longDiagnostics.beforeEstimatedTokens > longDiagnostics.afterEstimatedTokens);
+assert(longDiagnostics.removedMessageCount > 0);
+assert.strictEqual(longDiagnostics.reservedTokens, 50);
+assert.strictEqual(longDiagnostics.compacted, true);
+const { messages: _longPreparedMessages, ...longCountsOnly } = longDiagnostics;
+assert(
+    !JSON.stringify(longCountsOnly).includes('result-119-'),
+    '裁剪诊断字段不得记录历史 Tool 正文'
+);
 for (let index = 0; index < longPrepared.length; index += 1) {
     const message = longPrepared[index];
     if (!message.toolCalls?.length) continue;

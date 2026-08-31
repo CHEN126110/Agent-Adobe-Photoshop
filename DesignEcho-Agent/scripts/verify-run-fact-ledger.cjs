@@ -16,12 +16,19 @@ const {
 } = require(path.join(root, 'src/shared/agent-run-record.ts'));
 const {
     buildRuntimeAccountingDigest,
+    cloneRuntimeAccountingDigest,
     cloneRuntimeAccountingLedger,
     createRuntimeAccountingLedger,
+    measureRuntimeModelOutputShape,
+    measureRuntimePromptShape,
     recordRuntimeModelCall,
     recordRuntimePerformanceUsage,
-    recordRuntimeToolCall
+    recordRuntimeToolCall,
+    validateRuntimeAccountingDigest
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-accounting.ts'));
+const { settleProviderToolResponse } = require(
+    path.join(root, 'src/renderer/services/agent-runtime/provider-output-recovery.ts')
+);
 const {
     advanceRuntimeSessionIdentity,
     buildRuntimeSessionDigest,
@@ -2182,6 +2189,101 @@ check(
     '公开 history 只按精确原文同步，不用 trim 误命中另一版本'
 );
 
+const attributedPromptShape = measureRuntimePromptShape({
+    messages: [
+        { role: 'system', content: '0123456789' },
+        {
+            role: 'user',
+            content: '12345',
+            contextMetadata: { origin: 'current_user_instruction' }
+        },
+        {
+            role: 'assistant',
+            content: '1234567',
+            reasoningContent: '123',
+            toolCalls: [{ name: 'tool', arguments: { x: 1 } }]
+        },
+        { role: 'tool_result', toolResults: [{ output: '1234' }] },
+        { role: 'user', content: '123456', contextMetadata: { origin: 'harness_control' } },
+        { role: 'user', content: '12345678', contextMetadata: { origin: 'runtime_observation' } },
+        {
+            role: 'user',
+            contentBlocks: [{ type: 'text', text: '12' }, { type: 'image' }],
+            contextMetadata: { origin: 'visual_observation' }
+        },
+        { role: 'user', content: '123456789', contextMetadata: { origin: 'tool_observation' } },
+        { role: 'user', content: '1' }
+    ],
+    tools: []
+});
+check(
+    attributedPromptShape.systemChars === 10
+        && attributedPromptShape.historyChars === 56
+        && attributedPromptShape.reasoningChars === 3
+        && attributedPromptShape.imageBlocks === 1
+        && attributedPromptShape.contextSourceChars.system === 10
+        && attributedPromptShape.contextSourceChars.currentUser === 5
+        && attributedPromptShape.contextSourceChars.assistantResponse === 7
+        && attributedPromptShape.contextSourceChars.assistantReasoning === 3
+        && attributedPromptShape.contextSourceChars.assistantToolArguments === 11
+        && attributedPromptShape.contextSourceChars.toolResults === 4
+        && attributedPromptShape.contextSourceChars.harnessControl === 6
+        && attributedPromptShape.contextSourceChars.runtimeObservation === 8
+        && attributedPromptShape.contextSourceChars.visualObservation === 2
+        && attributedPromptShape.contextSourceChars.toolObservation === 9
+        && attributedPromptShape.contextSourceChars.unclassified === 1,
+    'Prompt 归因按有限来源桶拆分正文、reasoning、Tool 参数与 Tool result 且总量守恒'
+);
+const adapterExclusivePromptShape = measureRuntimePromptShape({
+    messages: [
+        { role: 'system', content: 'sys', contentBlocks: [{ type: 'text', text: 'sys' }] },
+        {
+            role: 'user', content: 'same', contentBlocks: [{ type: 'text', text: 'same' }, { type: 'image' }],
+            contextMetadata: { origin: 'current_user_instruction' }
+        },
+        { role: 'assistant', content: 'reply', reasoningContent: 'rr', contentBlocks: [{ type: 'text', text: 'reply' }] },
+        { role: 'tool_result', content: 'ignored', contentBlocks: [{ type: 'text', text: 'ignored' }], toolResults: [{ output: 'four' }] }
+    ],
+    tools: []
+});
+check(
+    adapterExclusivePromptShape.systemChars === 3
+        && adapterExclusivePromptShape.historyChars === 15
+        && adapterExclusivePromptShape.imageBlocks === 1
+        && adapterExclusivePromptShape.contextSourceChars.currentUser === 4
+        && adapterExclusivePromptShape.contextSourceChars.assistantResponse === 5
+        && adapterExclusivePromptShape.contextSourceChars.assistantReasoning === 2
+        && adapterExclusivePromptShape.contextSourceChars.toolResults === 4,
+    'Prompt 体量按 Adapter 互斥序列化计数，content 与 contentBlocks/toolResults 不重复累计'
+);
+const contradictorySettledOutput = settleProviderToolResponse({
+    content: 'partial', stopReason: 'end_turn',
+    toolCalls: [{ id: 'conflict', name: 'read', arguments: {} }]
+});
+const contradictoryOutputShape = measureRuntimeModelOutputShape(contradictorySettledOutput);
+check(
+    contradictorySettledOutput.stopReason === 'stream_incomplete'
+        && contradictorySettledOutput.toolCalls.length === 0
+        && contradictoryOutputShape?.terminalKind === 'stream_incomplete'
+        && contradictoryOutputShape.toolCallCount === 0,
+    '模型输出体量消费结算后的终态，end_turn 与 Tool calls 矛盾不能按原始调用计账'
+);
+const maxTokensOutputShape = measureRuntimeModelOutputShape({
+    content: 'partial', stopReason: 'max_tokens', toolCalls: []
+});
+const contentBlockedOutputShape = measureRuntimeModelOutputShape({
+    content: '', stopReason: 'content_blocked', toolCalls: []
+});
+const streamIncompleteOutputShape = measureRuntimeModelOutputShape({
+    content: '', stopReason: 'stream_incomplete', toolCalls: []
+});
+check(
+    maxTokensOutputShape?.terminalKind === 'max_tokens'
+        && contentBlockedOutputShape?.terminalKind === 'content_blocked'
+        && streamIncompleteOutputShape?.terminalKind === 'stream_incomplete',
+    '模型输出体量以有限枚举保留 max_tokens、content_blocked 与 stream_incomplete 终态'
+);
+
 const providerTransportMetrics = buildProviderTransportMetrics({
     startedAtMs: 10_000,
     serializedRequestBytes: 150_000,
@@ -2198,6 +2300,16 @@ unboundAccounting = recordRuntimeModelCall({
     ledger: unboundAccounting,
     durationMs: 1200,
     succeeded: true,
+    callKind: 'agent_turn',
+    requestMode: 'stream',
+    agentIteration: 1,
+    runtimeGeneration: 0,
+    requestStartedActiveMs: 25,
+    transportAttemptIndex: 1,
+    transportAttemptCount: 1,
+    requestedThinking: 'enabled',
+    requestedReasoningEffort: 'high',
+    requestedMaxTokens: 2048,
     usage: {
         inputTokens: 321,
         outputTokens: 45,
@@ -2212,6 +2324,30 @@ unboundAccounting = recordRuntimeModelCall({
         toolCount: 2,
         toolSchemaChars: 300,
         providerTransportMetrics
+    },
+    contextPreparation: {
+        beforeEstimatedTokens: 900,
+        afterEstimatedTokens: 700,
+        beforeMessageCount: 5,
+        afterMessageCount: 4,
+        reservedTokens: 2048,
+        removedMessageCount: 1,
+        compacted: true
+    },
+    visualInput: {
+        observationKeys: ['visual-private-b', 'visual-private-a', 'visual-private-a'],
+        photoshopRevisions: [
+            { documentId: 17, historyStateId: 23 },
+            { documentId: 17, historyStateId: 23 }
+        ]
+    },
+    outputShape: {
+        contentChars: 120,
+        reasoningChars: 240,
+        toolCallCount: 1,
+        toolArgumentChars: 36,
+        incompleteToolCallCount: 0,
+        terminalKind: 'tool_calls'
     },
     now: '2026-08-24T00:00:01.200Z'
 });
@@ -2258,7 +2394,16 @@ check(
         && unboundAccountingDigest.promptShapeSamples[0].cacheHitInputTokens === 200
         && unboundAccountingDigest.promptShapeSamples[0].cacheMissInputTokens === 121
         && unboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100
-        && unboundAccountingDigest.promptShapeSamples[0].providerTransportMetrics.serializedRequestBytes === 150_000,
+        && unboundAccountingDigest.promptShapeSamples[0].providerTransportMetrics.serializedRequestBytes === 150_000
+        && unboundAccountingDigest.promptShapeSamples[0].callKind === 'agent_turn'
+        && unboundAccountingDigest.promptShapeSamples[0].requestMode === 'stream'
+        && unboundAccountingDigest.promptShapeSamples[0].agentIteration === 1
+        && unboundAccountingDigest.promptShapeSamples[0].runtimeGeneration === 0
+        && unboundAccountingDigest.promptShapeSamples[0].requestStartedActiveMs === 25
+        && unboundAccountingDigest.promptShapeSamples[0].transportAttemptIndex === 1
+        && unboundAccountingDigest.promptShapeSamples[0].requestedReasoningEffort === 'high'
+        && unboundAccountingDigest.promptShapeSamples[0].contextPreparation.removedMessageCount === 1
+        && unboundAccountingDigest.promptShapeSamples[0].outputShape.toolArgumentChars === 36,
     'Provider 缓存与 transport 指标写入同一活动账本和 digest'
 );
 const fractionalInputCacheLedger = recordRuntimeModelCall({
@@ -2291,11 +2436,15 @@ clonedUnboundAccounting.stageBuckets[0].modelCallCount = 999;
 clonedUnboundAccounting.performanceUsage.observationKeys.push('visual:clone-only');
 clonedUnboundAccounting.promptShapeSamples[0].systemChars = 999;
 clonedUnboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs = 999;
+clonedUnboundAccounting.promptShapeSamples[0].contextPreparation.beforeEstimatedTokens = 999;
+clonedUnboundAccounting.promptShapeSamples[0].outputShape.contentChars = 999;
 check(
     unboundAccounting.stageBuckets[0].modelCallCount === 2
         && !unboundAccounting.performanceUsage.observationKeys.includes('visual:clone-only')
         && unboundAccounting.promptShapeSamples[0].systemChars === 100
-        && unboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100,
+        && unboundAccounting.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100
+        && unboundAccounting.promptShapeSamples[0].contextPreparation.beforeEstimatedTokens === 900
+        && unboundAccounting.promptShapeSamples[0].outputShape.contentChars === 120,
     'Runtime Accounting 转移使用深拷贝，不让旧 owner 与新 Session 并行共享可变引用'
 );
 const accountingSeedIdentity = createRuntimeSessionIdentity({
@@ -2338,6 +2487,7 @@ check(
 const activeAccounting = new ActiveRuntimeAccounting();
 activeAccounting.beginRun(Date.parse('2026-08-24T00:01:00.000Z'), undefined);
 activeAccounting.recordModelCall(undefined, {
+    callKind: 'agent_turn',
     durationMs: 420,
     succeeded: true,
     usage: { inputTokens: 40, outputTokens: 8 },
@@ -2372,6 +2522,7 @@ let lifecycleSession = createRuntimeSession({
 });
 activeAccounting.releaseUnboundLedgerAfterBinding();
 lifecycleSession = activeAccounting.recordModelCall(lifecycleSession, {
+    callKind: 'no_tool_replan',
     durationMs: 75,
     succeeded: false
 });
@@ -2384,6 +2535,9 @@ check(
     lifecycleTransferSeed?.modelCallCount === 1
         && lifecycleTransferSeed.toolCallCount === 0
         && lifecycleTransferSeed.promptShapeSamples[0].providerTransportMetrics.completedMs === 1100
+        && lifecycleTransferSeed.promptShapeSamples[0].callKind === 'agent_turn'
+        && lifecycleTransferSeed.promptShapeSamples[0].transportAttemptIndex === 1
+        && lifecycleTransferSeed.promptShapeSamples[0].transportAttemptCount === 1
         && activeAccounting.readUnboundLedgerForTransfer() === undefined
         && lifecycleSession?.accounting.modelCallCount === 2
         && lifecycleSession.accounting.modelFailureCount === 1
@@ -2391,6 +2545,298 @@ check(
         && lifecycleDigest?.modelDurationMs === 495
         && lifecycleDigest.toolDurationMs === 25,
     'ActiveRuntimeAccounting 完成 unbound → late-bind → release 生命周期且绑定后只写 Session owner'
+);
+
+const transportAttemptAttribution = new ActiveRuntimeAccounting();
+transportAttemptAttribution.beginRun(Date.parse('2026-08-24T00:01:10.000Z'), undefined);
+transportAttemptAttribution.recordModelCall(undefined, {
+    callKind: 'provider_output_recovery',
+    requestMode: 'stream',
+    agentIteration: 3,
+    runtimeGeneration: 1,
+    requestStartedActiveMs: 500,
+    requestedThinking: 'disabled',
+    requestedMaxTokens: 1024,
+    durationMs: 999,
+    succeeded: true,
+    promptShape: attributedPromptShape,
+    contextPreparation: {
+        beforeEstimatedTokens: 600,
+        afterEstimatedTokens: 500,
+        beforeMessageCount: 9,
+        afterMessageCount: 8,
+        reservedTokens: 1024,
+        removedMessageCount: 1,
+        compacted: true
+    },
+    visualInput: {
+        observationKeys: ['visual-private-b', 'visual-private-a', 'visual-private-a'],
+        photoshopRevisions: [
+            { documentId: 17, historyStateId: 23 },
+            { documentId: 17, historyStateId: 23 }
+        ]
+    },
+    outcome: {
+        content: 'done',
+        thinking: 'reasoning',
+        stopReason: 'stop',
+        transportAttempts: [
+            {
+                durationMs: 100,
+                succeeded: false,
+                failureKind: 'timeout'
+            },
+            {
+                durationMs: 30,
+                succeeded: true,
+                usage: { inputTokens: 50, outputTokens: 4 }
+            }
+        ]
+    }
+});
+const transportAttributionDigest = transportAttemptAttribution.readDigest();
+check(
+    transportAttributionDigest?.modelCallCount === 2
+        && transportAttributionDigest.modelDurationMs === 130
+        && transportAttributionDigest.recoveryAttemptCount === 1
+        && transportAttributionDigest.promptShapeSamples[0].callKind === 'provider_output_recovery'
+        && transportAttributionDigest.promptShapeSamples[0].transportAttemptIndex === 1
+        && transportAttributionDigest.promptShapeSamples[0].transportAttemptCount === 2
+        && transportAttributionDigest.promptShapeSamples[0].outputShape === undefined
+        && transportAttributionDigest.promptShapeSamples[0].visualInputAttribution.trackedObservationCount === 2
+        && transportAttributionDigest.promptShapeSamples[1].transportAttemptIndex === 2
+        && transportAttributionDigest.promptShapeSamples[1].outputShape.contentChars === 4
+        && transportAttributionDigest.promptShapeSamples[1].outputShape.reasoningChars === 9
+        && transportAttributionDigest.promptShapeSamples[1].outputShape.terminalKind === 'complete'
+        && transportAttributionDigest.promptShapeSamples[1].contextSourceChars.assistantToolArguments === 11
+        && transportAttributionDigest.promptShapeSamples[0].visualInputAttribution.observationSetDigest
+            === transportAttributionDigest.promptShapeSamples[1].visualInputAttribution.observationSetDigest
+        && transportAttributionDigest.promptShapeSamples[0].visualInputAttribution.revisionDigests[0]
+            === transportAttributionDigest.promptShapeSamples[1].visualInputAttribution.revisionDigests[0]
+        && validateRuntimeAccountingDigest(transportAttributionDigest).ok === true,
+    '同一语义请求的 transport attempts 保留 1..N 用途归因，完整输出只归最后成功 attempt'
+);
+
+const invalidCallKindDigest = JSON.parse(JSON.stringify(transportAttributionDigest));
+invalidCallKindDigest.promptShapeSamples[0].callKind = 'sku_special_case';
+const invalidContextBalanceDigest = JSON.parse(JSON.stringify(transportAttributionDigest));
+invalidContextBalanceDigest.promptShapeSamples[0].contextSourceChars.runtimeObservation += 1;
+const invalidContextPreparationDigest = JSON.parse(JSON.stringify(transportAttributionDigest));
+invalidContextPreparationDigest.promptShapeSamples[0].contextPreparation.afterEstimatedTokens = 601;
+const invalidOutputShapeDigest = JSON.parse(JSON.stringify(transportAttributionDigest));
+invalidOutputShapeDigest.promptShapeSamples[1].outputShape.responseText = '不得持久化正文';
+check(
+    validateRuntimeAccountingDigest(invalidCallKindDigest).ok === false
+        && validateRuntimeAccountingDigest(invalidContextBalanceDigest).ok === false
+        && validateRuntimeAccountingDigest(invalidContextPreparationDigest).ok === false
+        && validateRuntimeAccountingDigest(invalidOutputShapeDigest).ok === false,
+    'Runtime 模型归因严格拒绝未知用途、不守恒上下文、非法压缩计数与输出正文'
+);
+
+let visualAttributionLedger = createRuntimeAccountingLedger('2026-08-24T00:01:20.000Z');
+const visualAttributionPromptShape = {
+    systemChars: 1,
+    historyChars: 1,
+    messageCount: 2,
+    imageBlocks: 1,
+    toolCount: 0,
+    toolSchemaChars: 0
+};
+visualAttributionLedger = recordRuntimeModelCall({
+    ledger: visualAttributionLedger,
+    durationMs: 10,
+    succeeded: true,
+    callKind: 'agent_turn',
+    promptShape: visualAttributionPromptShape,
+    visualInput: {
+        observationKeys: ['private-key-b', 'private-key-a', 'private-key-a'],
+        photoshopRevisions: [{ documentId: 8, historyStateId: 13 }]
+    }
+});
+visualAttributionLedger = recordRuntimeModelCall({
+    ledger: visualAttributionLedger,
+    durationMs: 11,
+    succeeded: true,
+    callKind: 'agent_turn',
+    promptShape: visualAttributionPromptShape,
+    visualInput: {
+        observationKeys: ['private-key-a', 'private-key-b'],
+        photoshopRevisions: [{ documentId: 8, historyStateId: 13 }]
+    }
+});
+visualAttributionLedger = recordRuntimeModelCall({
+    ledger: visualAttributionLedger,
+    durationMs: 12,
+    succeeded: true,
+    callKind: 'agent_turn',
+    promptShape: visualAttributionPromptShape,
+    visualInput: {
+        observationKeys: ['private-key-a', 'private-key-b'],
+        photoshopRevisions: [{ documentId: 8, historyStateId: 14 }]
+    }
+});
+visualAttributionLedger = recordRuntimeModelCall({
+    ledger: visualAttributionLedger,
+    durationMs: 13,
+    succeeded: true,
+    callKind: 'final_quality_judge',
+    promptShape: visualAttributionPromptShape,
+    visualInput: {
+        photoshopRevisions: [
+            { documentId: 8, historyStateId: 13 },
+            { documentId: 8, historyStateId: 14 },
+            { documentId: 8, historyStateId: 15 },
+            { documentId: 8, historyStateId: 16 },
+            { documentId: 8, historyStateId: 17 },
+            { documentId: 8, historyStateId: 18 }
+        ]
+    }
+});
+const visualAttributionDigest = buildRuntimeAccountingDigest({
+    ledger: visualAttributionLedger,
+    now: '2026-08-24T00:01:20.046Z'
+});
+const firstVisualAttribution = visualAttributionDigest.promptShapeSamples[0].visualInputAttribution;
+const repeatedVisualAttribution = visualAttributionDigest.promptShapeSamples[1].visualInputAttribution;
+const changedRevisionAttribution = visualAttributionDigest.promptShapeSamples[2].visualInputAttribution;
+const boundedRevisionAttribution = visualAttributionDigest.promptShapeSamples[3].visualInputAttribution;
+const visualAttributionJson = JSON.stringify(visualAttributionDigest);
+check(
+    firstVisualAttribution.trackedObservationCount === 2
+        && firstVisualAttribution.observationSetDigest === repeatedVisualAttribution.observationSetDigest
+        && firstVisualAttribution.revisionDigests[0] === repeatedVisualAttribution.revisionDigests[0]
+        && firstVisualAttribution.revisionDigests[0] !== changedRevisionAttribution.revisionDigests[0]
+        && boundedRevisionAttribution.revisionDigests.length === 4
+        && boundedRevisionAttribution.droppedRevisionCount === 2
+        && boundedRevisionAttribution.observationSetDigest === undefined
+        && !visualAttributionJson.includes('private-key-a')
+        && !visualAttributionJson.includes('private-key-b')
+        && !visualAttributionJson.includes('documentId')
+        && !visualAttributionJson.includes('historyStateId')
+        && validateRuntimeAccountingDigest(visualAttributionDigest).ok === true,
+    '视觉输入归因在同 run 对同集合与 revision 稳定、不同 revision 可区分且不泄漏原始身份'
+);
+
+function buildRunScopedVisualAttributionDigest(startedAt) {
+    const ledger = recordRuntimeModelCall({
+        ledger: createRuntimeAccountingLedger(startedAt),
+        durationMs: 1,
+        succeeded: true,
+        callKind: 'agent_turn',
+        promptShape: visualAttributionPromptShape,
+        visualInput: {
+            observationKeys: ['same-private-observation'],
+            photoshopRevisions: [{ documentId: 8, historyStateId: 13 }]
+        }
+    });
+    return buildRuntimeAccountingDigest({ ledger, now: startedAt })
+        .promptShapeSamples[0].visualInputAttribution;
+}
+const firstRunScopedAttribution = buildRunScopedVisualAttributionDigest(
+    '2026-08-24T00:01:30.000Z'
+);
+const secondRunScopedAttribution = buildRunScopedVisualAttributionDigest(
+    '2026-08-24T00:01:31.000Z'
+);
+check(
+    firstRunScopedAttribution.observationSetDigest
+        !== secondRunScopedAttribution.observationSetDigest
+        && firstRunScopedAttribution.revisionDigests[0]
+            !== secondRunScopedAttribution.revisionDigests[0],
+    '相同视觉身份在不同 ledger.startedAt 下生成不同 run-scoped observation/revision 摘要'
+);
+
+const clonedRuntimeAccountingDigest = cloneRuntimeAccountingDigest(
+    transportAttributionDigest
+);
+clonedRuntimeAccountingDigest.promptShapeSamples[0].contextSourceChars.runtimeObservation = 999;
+clonedRuntimeAccountingDigest.promptShapeSamples[0].contextPreparation.beforeEstimatedTokens = 999;
+clonedRuntimeAccountingDigest.promptShapeSamples[1].outputShape.contentChars = 999;
+clonedRuntimeAccountingDigest.promptShapeSamples[0].visualInputAttribution.revisionDigests[0] =
+    'runtime-photoshop-revision-sha256-v1:' + 'f'.repeat(64);
+check(
+    transportAttributionDigest.promptShapeSamples[0].contextSourceChars.runtimeObservation === 8
+        && transportAttributionDigest.promptShapeSamples[0].contextPreparation.beforeEstimatedTokens === 600
+        && transportAttributionDigest.promptShapeSamples[1].outputShape.contentChars === 4
+        && transportAttributionDigest.promptShapeSamples[0].visualInputAttribution.revisionDigests[0]
+            !== clonedRuntimeAccountingDigest.promptShapeSamples[0]
+                .visualInputAttribution.revisionDigests[0],
+    'Runtime Accounting digest clone 深拷贝上下文桶、压缩诊断、输出体量与视觉 revision 摘要'
+);
+
+let cappedPromptSampleLedger = createRuntimeAccountingLedger('2026-08-24T00:01:40.000Z');
+for (let index = 1; index <= 52; index += 1) {
+    cappedPromptSampleLedger = recordRuntimeModelCall({
+        ledger: cappedPromptSampleLedger,
+        durationMs: index,
+        succeeded: true,
+        callKind: 'agent_turn',
+        agentIteration: index,
+        promptShape: {
+            systemChars: 1,
+            historyChars: index,
+            messageCount: 2,
+            imageBlocks: 0,
+            toolCount: 0,
+            toolSchemaChars: 0
+        }
+    });
+}
+const cappedPromptSampleDigest = buildRuntimeAccountingDigest({
+    ledger: cappedPromptSampleLedger,
+    now: '2026-08-24T00:01:40.052Z'
+});
+const clonedCappedPromptSampleLedger = cloneRuntimeAccountingLedger(cappedPromptSampleLedger);
+check(
+    cappedPromptSampleLedger.modelCallCount === 52
+        && cappedPromptSampleDigest.modelCallCount === 52
+        && cappedPromptSampleLedger.promptShapeSamples.length === 48
+        && cappedPromptSampleDigest.promptShapeSamples.length === 48
+        && cappedPromptSampleLedger.promptShapeSamples[0].seq === 5
+        && cappedPromptSampleLedger.promptShapeSamples[47].seq === 52
+        && cappedPromptSampleDigest.promptShapeSamples[0].seq === 5
+        && cappedPromptSampleDigest.promptShapeSamples[47].seq === 52
+        && clonedCappedPromptSampleLedger.modelCallCount === 52
+        && clonedCappedPromptSampleLedger.promptShapeSamples.length === 48
+        && clonedCappedPromptSampleLedger.promptShapeSamples[0].seq === 5
+        && clonedCappedPromptSampleLedger.promptShapeSamples[47].seq === 52,
+    'Runtime Accounting 保留真实 52 次模型总数，prompt samples 只保留末 48 条 seq 5..52 且 clone 不扩容'
+);
+
+const clonedVisualAttributionLedger = cloneRuntimeAccountingLedger(visualAttributionLedger);
+clonedVisualAttributionLedger.promptShapeSamples[0].visualInputAttribution.revisionDigests[0] =
+    'runtime-photoshop-revision-sha256-v1:' + 'f'.repeat(64);
+const visualAttributionSeedSession = createRuntimeSession({
+    identity: createRuntimeSessionIdentity({
+        now: '2026-08-24T00:01:20.046Z',
+        nonce: 'visual-attribution-late-bind',
+        skillId: 'accounting-test-skill',
+        taskType: 'design.generic'
+    }),
+    plan: accountingSeedPlan,
+    accountingSeed: visualAttributionLedger
+});
+check(
+    visualAttributionLedger.promptShapeSamples[0].visualInputAttribution.revisionDigests[0]
+        === firstVisualAttribution.revisionDigests[0]
+        && visualAttributionSeedSession.accounting.promptShapeSamples[0]
+            .visualInputAttribution.observationSetDigest === firstVisualAttribution.observationSetDigest,
+    '视觉归因在 clone 与 late binding 中深拷贝并继续由同一 Runtime Accounting owner 持有'
+);
+
+const invalidObservationDigest = JSON.parse(JSON.stringify(visualAttributionDigest));
+invalidObservationDigest.promptShapeSamples[0].visualInputAttribution.observationSetDigest =
+    'runtime-visual-observation-set-sha256-v1:RAW-KEY';
+const invalidRevisionDigest = JSON.parse(JSON.stringify(visualAttributionDigest));
+invalidRevisionDigest.promptShapeSamples[0].visualInputAttribution.revisionDigests[0] =
+    'runtime-photoshop-revision-sha256-v1:' + 'A'.repeat(64);
+const pollutedVisualAttribution = JSON.parse(JSON.stringify(visualAttributionDigest));
+pollutedVisualAttribution.promptShapeSamples[0].visualInputAttribution.documentId = 8;
+check(
+    validateRuntimeAccountingDigest(invalidObservationDigest).ok === false
+        && validateRuntimeAccountingDigest(invalidRevisionDigest).ok === false
+        && validateRuntimeAccountingDigest(pollutedVisualAttribution).ok === false,
+    '视觉归因严格拒绝非法摘要前缀、非小写 hex 与原始 Photoshop 身份字段'
 );
 
 const longObservationKey = `visual:C:\\project\\${'deep-directory\\'.repeat(32)}product.png@history-123`;

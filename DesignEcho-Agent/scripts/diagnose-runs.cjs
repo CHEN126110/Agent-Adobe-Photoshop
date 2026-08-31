@@ -84,6 +84,22 @@ function oneLine(value, maxLength) {
     return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
+function readNonNegativeInteger(value) {
+    return Number.isSafeInteger(value) && Number(value) >= 0
+        ? Number(value)
+        : undefined;
+}
+
+/**
+ * 性能分组只能打印结构身份；任何正文、路径或自由文本都降级为 unknown。
+ * Tool 名、origin、activityClass 与 callKind 都应是代码侧枚举或 schema 名。
+ */
+function normalizePerformanceIdentity(value, maxLength = 80) {
+    const text = String(value || '').trim();
+    if (!text || text.length > maxLength) return 'unknown';
+    return /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(text) ? text : 'unknown';
+}
+
 function readJsonSafely(filePath) {
     try {
         return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -949,6 +965,7 @@ function printRunRecordTrace(record) {
     const toolCalls = Array.isArray(record.toolCalls) ? record.toolCalls : [];
     if (!toolCalls.length) {
         console.log('\n本档案没有工具调用。');
+        printRunRecordToolPerformance(record);
         printPromptShapeSamples(record);
         return;
     }
@@ -965,6 +982,7 @@ function printRunRecordTrace(record) {
             console.log(`        └ 参数字段：${call.argsKeys.join(', ')}`);
         }
     }
+    printRunRecordToolPerformance(record);
     if (Array.isArray(record.blockers) && record.blockers.length) {
         console.log(`\n阻塞：${record.blockers.map((item) => oneLine(item, 120)).join('；')}`);
     }
@@ -976,6 +994,589 @@ function readRuntimeAccounting(record) {
     const standalone = record?.runtimeAccounting;
     if (nested && standalone) return null;
     return nested || standalone || null;
+}
+
+function summarizeToolAttribution(toolCalls, pick) {
+    const buckets = new Map();
+    for (const call of toolCalls) {
+        const key = normalizePerformanceIdentity(pick(call));
+        const bucket = buckets.get(key) || {
+            key,
+            count: 0,
+            succeeded: 0,
+            failed: 0,
+            timedCount: 0,
+            durationMs: 0
+        };
+        bucket.count += 1;
+        if (call?.success === false) bucket.failed += 1;
+        else bucket.succeeded += 1;
+        const durationMs = readNonNegativeInteger(call?.durationMs);
+        if (durationMs !== undefined) {
+            bucket.timedCount += 1;
+            bucket.durationMs += durationMs;
+        }
+        buckets.set(key, bucket);
+    }
+    return [...buckets.values()].sort((left, right) => (
+        right.count - left.count || left.key.localeCompare(right.key)
+    ));
+}
+
+/**
+ * AgentRunRecord Tool 性能投影。
+ *
+ * 当前 v0 档案持久化 elapsedMs（从 run 起点到调用结束），不持久化单次 durationMs。
+ * elapsedMs 不能相减：两次调用之间可能包含模型等待、Harness 工作或并行批次，因此缺少
+ * durationMs 时明确报告 instrumentation unavailable，绝不估算最慢 Tool。
+ */
+function buildRunRecordToolPerformance(record) {
+    if (!Array.isArray(record?.toolCalls)) {
+        return {
+            status: 'instrumentation_unavailable',
+            reason: 'agent_run_record_tool_calls_missing',
+            count: 0,
+            droppedCount: readNonNegativeInteger(record?.droppedToolCalls) || 0,
+            durationCoverage: { measured: 0, total: 0 },
+            slowest: [],
+            byOrigin: [],
+            byActivityClass: []
+        };
+    }
+    const toolCalls = record.toolCalls;
+    const timedCalls = toolCalls
+        .map((call) => ({
+            seq: readNonNegativeInteger(call?.seq) || 0,
+            name: normalizePerformanceIdentity(call?.name),
+            origin: normalizePerformanceIdentity(call?.origin),
+            activityClass: normalizePerformanceIdentity(call?.activityClass),
+            durationMs: readNonNegativeInteger(call?.durationMs),
+            succeeded: call?.success !== false
+        }))
+        .filter((call) => call.durationMs !== undefined);
+    return {
+        status: 'available',
+        count: toolCalls.length,
+        droppedCount: readNonNegativeInteger(record.droppedToolCalls) || 0,
+        durationCoverage: {
+            measured: timedCalls.length,
+            total: toolCalls.length
+        },
+        slowest: timedCalls
+            .sort((left, right) => right.durationMs - left.durationMs || left.seq - right.seq)
+            .slice(0, 5),
+        byOrigin: summarizeToolAttribution(toolCalls, (call) => call?.origin),
+        byActivityClass: summarizeToolAttribution(toolCalls, (call) => call?.activityClass)
+    };
+}
+
+function summarizeModelCallsByKind(samples) {
+    const buckets = new Map();
+    for (const sample of samples) {
+        const callKind = normalizePerformanceIdentity(sample?.callKind);
+        const bucket = buckets.get(callKind) || {
+            callKind,
+            count: 0,
+            durationCoverage: 0,
+            durationMs: 0,
+            inputTokenCoverage: 0,
+            inputTokens: 0,
+            outputTokenCoverage: 0,
+            outputTokens: 0,
+            outputShapeCoverage: 0,
+            outputReasoningChars: 0,
+            outputToolArgumentChars: 0
+        };
+        bucket.count += 1;
+        const durationMs = readNonNegativeInteger(sample?.durationMs);
+        if (durationMs !== undefined) {
+            bucket.durationCoverage += 1;
+            bucket.durationMs += durationMs;
+        }
+        const inputTokens = readNonNegativeInteger(sample?.inputTokens);
+        if (inputTokens !== undefined) {
+            bucket.inputTokenCoverage += 1;
+            bucket.inputTokens += inputTokens;
+        }
+        const outputTokens = readNonNegativeInteger(sample?.outputTokens);
+        if (outputTokens !== undefined) {
+            bucket.outputTokenCoverage += 1;
+            bucket.outputTokens += outputTokens;
+        }
+        const outputShape = readRuntimeModelOutputShape(sample?.outputShape);
+        if (outputShape) {
+            bucket.outputShapeCoverage += 1;
+            bucket.outputReasoningChars += outputShape.reasoningChars;
+            bucket.outputToolArgumentChars += outputShape.toolArgumentChars;
+        }
+        buckets.set(callKind, bucket);
+    }
+    return [...buckets.values()].sort((left, right) => (
+        right.durationMs - left.durationMs
+        || right.count - left.count
+        || left.callKind.localeCompare(right.callKind)
+    ));
+}
+
+const RUNTIME_CONTEXT_SOURCE_BUCKETS = [
+    'system',
+    'currentUser',
+    'assistantResponse',
+    'assistantReasoning',
+    'assistantToolArguments',
+    'toolResults',
+    'harnessControl',
+    'runtimeObservation',
+    'visualObservation',
+    'toolObservation',
+    'unclassified'
+];
+
+function readRuntimeModelOutputShape(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const contentChars = readNonNegativeInteger(value.contentChars);
+    const reasoningChars = readNonNegativeInteger(value.reasoningChars);
+    const toolArgumentChars = readNonNegativeInteger(value.toolArgumentChars);
+    if (contentChars === undefined
+        || reasoningChars === undefined
+        || toolArgumentChars === undefined) {
+        return null;
+    }
+    return { contentChars, reasoningChars, toolArgumentChars };
+}
+
+function readRuntimeContextPreparation(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const beforeEstimatedTokens = readNonNegativeInteger(value.beforeEstimatedTokens);
+    const afterEstimatedTokens = readNonNegativeInteger(value.afterEstimatedTokens);
+    const removedMessageCount = readNonNegativeInteger(value.removedMessageCount);
+    if (beforeEstimatedTokens === undefined
+        || afterEstimatedTokens === undefined
+        || removedMessageCount === undefined
+        || typeof value.compacted !== 'boolean') {
+        return null;
+    }
+    return {
+        beforeEstimatedTokens,
+        afterEstimatedTokens,
+        removedMessageCount,
+        compacted: value.compacted
+    };
+}
+
+function readRuntimeContextSourceChars(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const output = {};
+    for (const key of RUNTIME_CONTEXT_SOURCE_BUCKETS) {
+        const count = readNonNegativeInteger(value[key]);
+        if (count === undefined) return null;
+        output[key] = count;
+    }
+    return output;
+}
+
+function buildRuntimeContextSourceChange(samples) {
+    const measured = samples
+        .map((sample) => ({
+            seq: readNonNegativeInteger(sample?.seq) || 0,
+            buckets: readRuntimeContextSourceChars(sample?.contextSourceChars)
+        }))
+        .filter((sample) => Boolean(sample.buckets));
+    if (measured.length === 0) {
+        return {
+            status: 'instrumentation_unavailable',
+            coverage: { measured: 0, total: samples.length }
+        };
+    }
+    const first = measured[0];
+    const last = measured[measured.length - 1];
+    const delta = {};
+    for (const key of RUNTIME_CONTEXT_SOURCE_BUCKETS) {
+        delta[key] = last.buckets[key] - first.buckets[key];
+    }
+    return {
+        status: 'available',
+        coverage: { measured: measured.length, total: samples.length },
+        first: { seq: first.seq, buckets: first.buckets },
+        last: { seq: last.seq, buckets: last.buckets },
+        delta
+    };
+}
+
+function buildRuntimeContextPreparationSummary(samples) {
+    const measured = samples
+        .map((sample) => readRuntimeContextPreparation(sample?.contextPreparation))
+        .filter(Boolean);
+    return {
+        coverage: { measured: measured.length, total: samples.length },
+        removedMessageCount: measured.reduce(
+            (sum, preparation) => sum + preparation.removedMessageCount,
+            0
+        ),
+        compactedCount: measured.filter((preparation) => preparation.compacted).length
+    };
+}
+
+function readVisualPresentationIdentity(sample) {
+    const attribution = sample?.visualInputAttribution;
+    if (!attribution || typeof attribution !== 'object' || Array.isArray(attribution)) return null;
+    const observationSetDigest = String(attribution.observationSetDigest || '').trim();
+    const revisionDigests = Array.isArray(attribution.revisionDigests)
+        ? attribution.revisionDigests
+            .map((value) => String(value || '').trim())
+            .filter((value) => /^runtime-photoshop-revision-sha256-v1:[0-9a-f]{64}$/.test(value))
+            .sort()
+        : [];
+    if (!/^runtime-visual-observation-set-sha256-v1:[0-9a-f]{64}$/.test(observationSetDigest)
+        || revisionDigests.length === 0) {
+        return null;
+    }
+    return {
+        observationSetDigest,
+        revisionDigests,
+        key: `${observationSetDigest}|${revisionDigests.join('|')}`
+    };
+}
+
+function semanticModelRequestChanged(previous, current) {
+    const previousStartedAt = readNonNegativeInteger(previous?.requestStartedActiveMs);
+    const currentStartedAt = readNonNegativeInteger(current?.requestStartedActiveMs);
+    const previousIteration = readNonNegativeInteger(previous?.agentIteration);
+    const currentIteration = readNonNegativeInteger(current?.agentIteration);
+    return (previousStartedAt !== undefined
+            && currentStartedAt !== undefined
+            && previousStartedAt !== currentStartedAt)
+        || (previousIteration !== undefined
+        && currentIteration !== undefined
+        && previousIteration !== currentIteration);
+}
+
+function buildRepeatedVisualPresentations(samples) {
+    const previousByPresentation = new Map();
+    const repeats = [];
+    let trackedPresentationCount = 0;
+    for (const sample of samples) {
+        const identity = readVisualPresentationIdentity(sample);
+        if (!identity) continue;
+        trackedPresentationCount += 1;
+        const previous = previousByPresentation.get(identity.key);
+        if (previous && semanticModelRequestChanged(previous, sample)) {
+            repeats.push({
+                firstSeq: readNonNegativeInteger(previous.seq) || 0,
+                repeatedSeq: readNonNegativeInteger(sample.seq) || 0,
+                firstRequestStartedActiveMs:
+                    readNonNegativeInteger(previous.requestStartedActiveMs) ?? null,
+                repeatedRequestStartedActiveMs:
+                    readNonNegativeInteger(sample.requestStartedActiveMs) ?? null,
+                firstAgentIteration: readNonNegativeInteger(previous.agentIteration) ?? null,
+                repeatedAgentIteration: readNonNegativeInteger(sample.agentIteration) ?? null,
+                observationSetDigest: identity.observationSetDigest,
+                revisionDigests: identity.revisionDigests,
+                revisionDigestCount: identity.revisionDigests.length
+            });
+        }
+        // 同一 transport attempt 组共享 requestStartedActiveMs，不会进入 repeats；保留组内
+        // 首个样本，使下一次真正不同的语义请求仍与首次发送相比较。
+        if (!previous || semanticModelRequestChanged(previous, sample)) {
+            previousByPresentation.set(identity.key, sample);
+        }
+    }
+    return {
+        trackedPresentationCount,
+        repeatCount: repeats.length,
+        repeats
+    };
+}
+
+function buildRuntimeModelPerformance(record) {
+    const accounting = readRuntimeAccounting(record);
+    if (!accounting) {
+        const hasAmbiguousAccounting = Boolean(
+            record?.runtimeSession?.accounting && record?.runtimeAccounting
+        );
+        return {
+            status: 'instrumentation_unavailable',
+            reason: hasAmbiguousAccounting
+                ? 'runtime_accounting_ambiguous'
+                : 'runtime_accounting_missing',
+            count: 0,
+            sampleRetention: { retained: 0, total: 0, dropped: 0 },
+            callKindCoverage: { measured: 0, total: 0 },
+            byCallKind: [],
+            slowest: [],
+            contextSourceChange: {
+                status: 'instrumentation_unavailable',
+                coverage: { measured: 0, total: 0 }
+            },
+            contextPreparation: {
+                coverage: { measured: 0, total: 0 },
+                removedMessageCount: 0,
+                compactedCount: 0
+            },
+            repeatedVisualPresentations: {
+                trackedPresentationCount: 0,
+                repeatCount: 0,
+                repeats: []
+            }
+        };
+    }
+    if (!Array.isArray(accounting.promptShapeSamples)
+        || accounting.promptShapeSamples.length === 0) {
+        const totalModelCalls = readNonNegativeInteger(accounting.modelCallCount) || 0;
+        return {
+            status: 'instrumentation_unavailable',
+            reason: 'runtime_prompt_shape_samples_missing',
+            count: 0,
+            sampleRetention: {
+                retained: 0,
+                total: totalModelCalls,
+                dropped: totalModelCalls
+            },
+            callKindCoverage: { measured: 0, total: 0 },
+            byCallKind: [],
+            slowest: [],
+            contextSourceChange: {
+                status: 'instrumentation_unavailable',
+                coverage: { measured: 0, total: 0 }
+            },
+            contextPreparation: {
+                coverage: { measured: 0, total: 0 },
+                removedMessageCount: 0,
+                compactedCount: 0
+            },
+            repeatedVisualPresentations: {
+                trackedPresentationCount: 0,
+                repeatCount: 0,
+                repeats: []
+            }
+        };
+    }
+    const samples = accounting.promptShapeSamples;
+    const declaredModelCallCount = readNonNegativeInteger(accounting.modelCallCount);
+    const totalModelCalls = declaredModelCallCount === undefined
+        ? samples.length
+        : Math.max(declaredModelCallCount, samples.length);
+    const measuredCallKinds = samples.filter((sample) => (
+        normalizePerformanceIdentity(sample?.callKind) !== 'unknown'
+    )).length;
+    const timed = samples
+        .map((sample) => ({
+            seq: readNonNegativeInteger(sample?.seq) || 0,
+            stage: normalizePerformanceIdentity(sample?.stage),
+            callKind: normalizePerformanceIdentity(sample?.callKind),
+            requestMode: normalizePerformanceIdentity(sample?.requestMode),
+            agentIteration: readNonNegativeInteger(sample?.agentIteration) ?? null,
+            runtimeGeneration: readNonNegativeInteger(sample?.runtimeGeneration) ?? null,
+            requestedThinking: normalizePerformanceIdentity(sample?.requestedThinking),
+            requestedReasoningEffort:
+                normalizePerformanceIdentity(sample?.requestedReasoningEffort),
+            requestedMaxTokens: readNonNegativeInteger(sample?.requestedMaxTokens) ?? null,
+            durationMs: readNonNegativeInteger(sample?.durationMs),
+            inputTokens: readNonNegativeInteger(sample?.inputTokens),
+            outputTokens: readNonNegativeInteger(sample?.outputTokens),
+            outputShape: readRuntimeModelOutputShape(sample?.outputShape),
+            contextPreparation: readRuntimeContextPreparation(sample?.contextPreparation)
+        }))
+        .filter((sample) => sample.durationMs !== undefined);
+    return {
+        status: 'available',
+        count: samples.length,
+        sampleRetention: {
+            retained: samples.length,
+            total: totalModelCalls,
+            dropped: Math.max(0, totalModelCalls - samples.length)
+        },
+        callKindCoverage: {
+            measured: measuredCallKinds,
+            total: samples.length
+        },
+        byCallKind: summarizeModelCallsByKind(samples),
+        slowest: timed
+            .sort((left, right) => right.durationMs - left.durationMs || left.seq - right.seq)
+            .slice(0, 5),
+        contextSourceChange: buildRuntimeContextSourceChange(samples),
+        contextPreparation: buildRuntimeContextPreparationSummary(samples),
+        repeatedVisualPresentations: buildRepeatedVisualPresentations(samples)
+    };
+}
+
+function buildRunRecordPerformance(record) {
+    return {
+        toolCalls: buildRunRecordToolPerformance(record),
+        modelCalls: buildRuntimeModelPerformance(record)
+    };
+}
+
+function formatReportedTotal(value, coverage, total) {
+    if (total > 0 && coverage === 0) return `unknown（上报 0/${total}）`;
+    return coverage === total
+        ? String(value)
+        : `${value}（上报 ${coverage}/${total}）`;
+}
+
+function printRunRecordToolPerformance(record) {
+    const report = buildRunRecordToolPerformance(record);
+    console.log('\nTool 归因（只读档案字段；不输出参数、结果、路径或正文）：');
+    if (report.status !== 'available') {
+        console.log(`  instrumentation unavailable：${report.reason}`);
+        return;
+    }
+    if (report.count === 0 && report.droppedCount === 0) {
+        console.log('  本档案记录了 0 次 Tool 调用。');
+        return;
+    }
+    const formatBucket = (bucket) => {
+        const duration = bucket.timedCount > 0
+            ? `，有耗时 ${bucket.timedCount}/${bucket.count} 次，共 ${bucket.durationMs}ms`
+            : '';
+        return `${bucket.key}=${bucket.count}（成功 ${bucket.succeeded}/失败 ${bucket.failed}${duration}）`;
+    };
+    console.log('  origin：' + (report.byOrigin.map(formatBucket).join('；') || '无保留样本'));
+    console.log('  activityClass：' + (report.byActivityClass.map(formatBucket).join('；') || '无保留样本'));
+    if (report.droppedCount > 0) {
+        console.log(`  覆盖不完整：档案另有 ${report.droppedCount} 次 Tool 摘要因持久化上限被省略。`);
+    }
+    if (report.slowest.length === 0) {
+        console.log('  最慢 Tool：instrumentation unavailable（当前 AgentRunRecord.toolCalls 未持久化 durationMs；不会用 elapsedMs 相减猜测）。');
+        return;
+    }
+    console.log('  最慢 Tool：');
+    for (const call of report.slowest) {
+        console.log(
+            `    #${String(call.seq).padStart(3)} ${call.name} ${call.durationMs}ms`
+            + ` · ${call.origin}/${call.activityClass} · ${call.succeeded ? 'success' : 'failed'}`
+        );
+    }
+    if (report.durationCoverage.measured < report.durationCoverage.total) {
+        console.log(
+            `  耗时覆盖 ${report.durationCoverage.measured}/${report.durationCoverage.total}；`
+            + '最慢列表只基于明确 durationMs，不补估未测调用。'
+        );
+    }
+}
+
+function printRuntimeModelPerformance(record) {
+    const report = buildRuntimeModelPerformance(record);
+    console.log('\n模型调用用途（Runtime Accounting；callKind 缺失按 unknown）：');
+    if (report.status !== 'available') {
+        console.log(`  instrumentation unavailable：${report.reason}`);
+        if (report.sampleRetention.total > 0) {
+            console.log(
+                `  样本保留 ${report.sampleRetention.retained}/${report.sampleRetention.total}`
+                + `；已丢弃 ${report.sampleRetention.dropped} 条。`
+            );
+        }
+        return;
+    }
+    console.log(
+        `  样本保留 ${report.sampleRetention.retained}/${report.sampleRetention.total}`
+        + `；已丢弃 ${report.sampleRetention.dropped} 条`
+        + '（以下用途汇总与最慢 5 次仅基于保留样本）。'
+    );
+    for (const bucket of report.byCallKind) {
+        console.log(
+            `  ${bucket.callKind}：${bucket.count} 次 / ${bucket.durationMs}ms`
+            + `；输入 ${formatReportedTotal(bucket.inputTokens, bucket.inputTokenCoverage, bucket.count)} token`
+            + `；输出 ${formatReportedTotal(bucket.outputTokens, bucket.outputTokenCoverage, bucket.count)} token`
+            + `；输出 reasoning ${formatReportedTotal(
+                bucket.outputReasoningChars,
+                bucket.outputShapeCoverage,
+                bucket.count
+            )} 字`
+            + `；Tool 参数 ${formatReportedTotal(
+                bucket.outputToolArgumentChars,
+                bucket.outputShapeCoverage,
+                bucket.count
+            )} 字`
+        );
+    }
+    console.log(
+        `  callKind 覆盖 ${report.callKindCoverage.measured}/${report.callKindCoverage.total}`
+        + (report.callKindCoverage.measured === report.callKindCoverage.total
+            ? '。'
+            : '；旧记录或尚未接入的调用保留为 unknown，不推测用途。')
+    );
+    console.log('  最慢 5 次模型调用：');
+    for (const sample of report.slowest) {
+        const outputShape = sample.outputShape;
+        const contextPreparation = sample.contextPreparation;
+        console.log(
+            `    #${String(sample.seq).padStart(3)} ${sample.callKind} ${sample.durationMs}ms`
+            + ` · stage=${sample.stage}`
+            + ` · generation=${sample.runtimeGeneration ?? 'unknown'}`
+            + ` · iteration=${sample.agentIteration ?? 'unknown'}`
+            + ` · mode=${sample.requestMode}`
+            + ` · thinking=${sample.requestedThinking}`
+            + `/${sample.requestedReasoningEffort}`
+            + ` · max=${sample.requestedMaxTokens ?? 'unknown'}`
+            + ` · input=${sample.inputTokens === undefined ? 'unknown' : sample.inputTokens}`
+            + ` · output=${sample.outputTokens === undefined ? 'unknown' : sample.outputTokens}`
+        );
+        console.log(
+            '      输出形状：'
+            + (outputShape
+                ? `content=${outputShape.contentChars} / reasoning=${outputShape.reasoningChars}`
+                    + ` / toolArgs=${outputShape.toolArgumentChars} 字`
+                : 'unknown')
+            + '；上下文准备：'
+            + (contextPreparation
+                ? `${contextPreparation.beforeEstimatedTokens}→${contextPreparation.afterEstimatedTokens} token`
+                    + ` / removed=${contextPreparation.removedMessageCount}`
+                    + ` / compacted=${contextPreparation.compacted}`
+                : 'unknown')
+        );
+    }
+    const preparation = report.contextPreparation;
+    console.log(
+        `  Context preparation：覆盖 ${preparation.coverage.measured}/${preparation.coverage.total}`
+        + `；累计移除 ${preparation.removedMessageCount} 条消息`
+        + `；发生压缩 ${preparation.compactedCount} 次。`
+    );
+    const sourceChange = report.contextSourceChange;
+    if (sourceChange.status !== 'available') {
+        console.log(
+            `  Context 来源桶：instrumentation unavailable（覆盖 ${sourceChange.coverage.measured}`
+            + `/${sourceChange.coverage.total}）。`
+        );
+    } else {
+        const changedBuckets = RUNTIME_CONTEXT_SOURCE_BUCKETS
+            .filter((key) => (
+                sourceChange.first.buckets[key] !== 0
+                || sourceChange.last.buckets[key] !== 0
+            ));
+        console.log(
+            `  Context 来源桶 #${sourceChange.first.seq}→#${sourceChange.last.seq}`
+            + `（覆盖 ${sourceChange.coverage.measured}/${sourceChange.coverage.total}）：`
+            + (changedBuckets.length > 0
+                ? changedBuckets.map((key) => (
+                    `${key} ${sourceChange.first.buckets[key]}→${sourceChange.last.buckets[key]}`
+                    + `（Δ${sourceChange.delta[key] >= 0 ? '+' : ''}${sourceChange.delta[key]}）`
+                )).join('；')
+                : '全部有限桶均为 0')
+        );
+    }
+    const repeatedVisual = report.repeatedVisualPresentations;
+    if (repeatedVisual.repeatCount > 0) {
+        console.log(
+            `  同版本视觉证据再次发送：${repeatedVisual.repeatCount} 次`
+            + `（视觉 presentation 覆盖 ${repeatedVisual.trackedPresentationCount} 条）。`
+        );
+        for (const repeat of repeatedVisual.repeats) {
+            console.log(
+                `    #${repeat.firstSeq} → #${repeat.repeatedSeq}`
+                + ` · revisionDigests=${repeat.revisionDigestCount}`
+                + ` · activeMs=${repeat.firstRequestStartedActiveMs ?? 'unknown'}`
+                + `→${repeat.repeatedRequestStartedActiveMs ?? 'unknown'}`
+                + ` · iteration=${repeat.firstAgentIteration ?? 'unknown'}`
+                + `→${repeat.repeatedAgentIteration ?? 'unknown'}`
+            );
+        }
+    } else if (repeatedVisual.trackedPresentationCount > 0) {
+        console.log(
+            `  同版本视觉证据再次发送：0 次`
+            + `（视觉 presentation 覆盖 ${repeatedVisual.trackedPresentationCount} 条；同一 transport attempt 组不重复报告）。`
+        );
+    }
 }
 
 /**
@@ -999,6 +1600,7 @@ function printPromptShapeSamples(record) {
             );
         }
     }
+    printRuntimeModelPerformance(record);
     const samples = accounting?.promptShapeSamples;
     if (!Array.isArray(samples) || samples.length === 0) return;
     console.log('\n提示体量（每次模型调用；字符数 / token）：');
@@ -1338,7 +1940,8 @@ function main() {
                 atText: formatTime(run.at),
                 goal: run.goal,
                 summary: run.summary,
-                findings: diagnoseRun(run)
+                findings: diagnoseRun(run),
+                performance: buildRunRecordPerformance(run.record)
             }))
         }, null, 2));
         return;

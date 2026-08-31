@@ -22,6 +22,9 @@
 - OpenAI-compatible 非流式视觉终审现会从真实 serializer 图片序列签发出站回执，并把当前 ReviewSet 绑定到同 revision 的可编辑源稿与栅格导出；非完整终态、拒绝、缺 response id 或候选不一致均无回执。
 - `evaluateDesign` 明确保持 advisory：不能关闭 TaskCompletion；协议失败不写任务卡或设计学习，也不会被 Harness 伪装成缺少画面检查后拉回主 Agent。
 - Final Judge 不足 5 秒时在 Evaluation Owner 内结算 time exhausted；DeepSeek 图片保留使用三态能力裁决，只有明确 unsupported 才降为文本。
+- 现有 Runtime Accounting 已扩展为逐物理模型 attempt 的有界归因：调用用途、请求模式、iteration/generation、requested reasoning、上下文准备与来源桶、输出体量及 run-scoped 视觉 revision 摘要均进入同一 owner；没有第二模型账本，也不参与权限、预算、完成或审美判断。
+- 模型调用计时与脱敏投影已从 `agent.ts` 抽到品类中立适配模块；Agent 核心行数保持简化棘轮原基线，所有调用用途仍由调用方显式声明，适配模块不决定用途或路线。
+- Provider 输出恢复现在遵守视觉事实：带图响应截断且可恢复时会在恢复请求中重发同一像素；只有完整响应可消费 pending observation。恢复完整、blocked、异常或额度耗尽都会退休像素并清理状态；普通任务模型 /视觉预算只扣一次，Runtime Accounting 仍记录全部物理请求。
 
 ## 已核实（构建与自动检查）
 
@@ -29,6 +32,7 @@
 - 本轮整理开始前 `maintenance:planning-check` 与入口文档同步审计退出 0，但前者同时暴露 CurrentTask 与 project-state ID 漂移；因此旧“绿色”不能作为语义一致性证明。
 - 本轮文档改动后的 `maintenance:planning-check`、入口文档审计、编码、仓库卫生、变更边界、Skill /门禁专项及完整 `maintenance:validate` 均通过；核心回归为 65 项，并包含 Agent 类型检查、UXP 测试与 production build。
 - S1 交付 /评审根因代码纵切新增后，再次完成一轮 65 阶段 `maintenance:validate`；专项覆盖真实 DeepSeek `chatWithTools(..., tools=[])` 图片出站、OpenAI-compatible receipt、全画布 Final Judge binding、r38 形态 PSD/JPG E2 refs、Evaluation 非法输出和 advisory authority。
+- INTAKE-090 性能归因纵切已通过一轮 fresh 65 阶段完整 `maintenance:validate`，其中包含 Runtime ledger、ContextManager、设计作者权与业务边界、Agent 简化棘轮、Renderer/Main 类型检查、Agent/UXP 测试和 UXP production build；尚无 fixed Case 新样本，因此不能把工程绿色表述为已经提速。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -39,6 +43,7 @@
 - r37 / r38 在外部 dirty Photoshop 文档仍打开的条件下证明了对象级保护可以成立；两次运行仍分别暴露弃稿文档结算和最终 Artifact 引用问题。
 - 多次真实运行证明 Agent 偶尔能说明选图和构图理由，但设计感知、创意方向与后续 Photoshop 参数之间缺少稳定中间表达，常出现连续 transform 搜索。
 - r35 / r38 性能账本显示模型调用耗时分别约占墙钟 92.0% / 93.2%，普通 Agent 模型调用 35 / 29 次；11 次快照本身合计不足 1 秒，Final Judge 约 7–8 秒。当前优先归因高轮次、长输出与低增量视觉往返，不先删终审或降低 reasoning。
+- 历史 run 602 的补充只读剖析显示 22 次模型调用约 604 秒、19 次 Tool 约 67 秒，历史消息从 16 字增长到约 15.9 万字；这是旧版本单例线索，不是当前固定 Case 基线，也不能单独证明应删除哪类上下文。
 
 ## 当前未核实
 
@@ -48,6 +53,7 @@
 - 与 `D:\A1 neveralone旗舰店` 用户成稿及 Eagle 参考相比的非劣视觉质量。
 - 自动 Evaluation 对裁切、图文关系、错字、光学平衡和商业完成度的可靠检出率。
 - 在质量不退化前提下的速度、token 和观察次数改善。
+- 修复后固定 Case 的 call-kind、上下文来源、输出体量和同 revision 重复视觉 presentation 分布。
 
 ## 当前主要风险
 
@@ -60,5 +66,5 @@
 ## 当前下一步
 
 1. 当前 `S1-DELIVERY-REVIEW-ROOT-CAUSE-001` 的代码根因与核心验证已闭合，先提交可回滚基线；fresh Photoshop Attempt 仍是退出条件。
-2. 紧接着执行 INTAKE-090 instrumentation-only 纵切：沿用现有 Runtime Accounting 补 call kind、Tool name/origin、视觉 revision 链和上下文来源桶，再固定同一 Case 跑一次，不改变设计行为。
+2. INTAKE-090 observation-only 归因与视觉恢复修复已通过完整核心验证；提交该可回滚基线后固定同一 Case 跑一次。只有取得新样本后才选择一个可逆优化变量，不用删必要观察、降 reasoning 或缩短到无法完成的预算换取表面速度。
 3. 新提交与 Agent / UXP 构建身份一致、一次性 fixture 和写授权都就绪后，运行首轮隔离实机 Case；只有同时取得真实交付引用和外部文档零变化，才启动 S1 固定 5 Case × 2 次正式队列。

@@ -8,6 +8,7 @@
 import {
     buildRuntimeAccountingDigest,
     createRuntimeAccountingLedger,
+    measureRuntimeModelOutputShape,
     recordRuntimeModelCall,
     recordRuntimePerformanceUsage,
     recordRuntimeProviderOutputRecoveryAttempt,
@@ -16,9 +17,15 @@ import {
     recordRuntimeToolCall,
     type RuntimeAccountingDigest,
     type RuntimeAccountingLedger,
+    type RuntimeContextPreparationShape,
+    type RuntimeModelCallKind,
+    type RuntimeModelRequestMode,
+    type RuntimeModelVisualInput,
     type RuntimePerformanceUsage,
-    type RuntimeProviderOutputRecoveryFailureReason
+    type RuntimeProviderOutputRecoveryFailureReason,
+    type RuntimeRequestedThinking
 } from '../../../shared/agent-runtime-v5/runtime-accounting';
+import type { ModelReasoningEffort } from '../../../shared/config/models.config';
 import {
     recordRuntimeSessionModelCall,
     recordRuntimeSessionPerformanceUsage,
@@ -32,8 +39,20 @@ import { readProviderTransportMetrics } from '../../../shared/provider-transport
 import type { ModelTransportAttemptAccounting } from './types';
 
 interface ModelAccountingInput {
+    callKind: RuntimeModelCallKind;
     durationMs: number;
     succeeded: boolean;
+    requestMode?: RuntimeModelRequestMode;
+    agentIteration?: number;
+    runtimeGeneration?: number;
+    requestStartedActiveMs?: number;
+    transportAttemptIndex?: number;
+    transportAttemptCount?: number;
+    requestedThinking?: RuntimeRequestedThinking;
+    requestedReasoningEffort?: ModelReasoningEffort;
+    requestedMaxTokens?: number;
+    contextPreparation?: RuntimeContextPreparationShape;
+    visualInput?: RuntimeModelVisualInput;
     usage?: ModelTransportAttemptAccounting['usage'];
     failureKind?: ModelTransportAttemptAccounting['failureKind'];
     providerCode?: string;
@@ -82,20 +101,43 @@ export class ActiveRuntimeAccounting {
             : [];
         if (transportAttempts.length > 0) {
             let currentSession = runtimeSession;
-            for (const attempt of transportAttempts) {
+            let outputAttemptIndex = -1;
+            if (input.succeeded) {
+                for (let index = transportAttempts.length - 1; index >= 0; index -= 1) {
+                    if (transportAttempts[index].succeeded) {
+                        outputAttemptIndex = index;
+                        break;
+                    }
+                }
+            }
+            for (let index = 0; index < transportAttempts.length; index += 1) {
+                const attempt = transportAttempts[index];
                 const providerTransportMetrics = readProviderTransportMetrics(
                     attempt.providerTransportMetrics
                 );
                 currentSession = this.recordSingleModelCall(currentSession, {
+                    callKind: input.callKind,
                     durationMs: Math.max(0, Math.floor(attempt.durationMs)),
                     succeeded: attempt.succeeded,
+                    requestMode: input.requestMode,
+                    agentIteration: input.agentIteration,
+                    runtimeGeneration: input.runtimeGeneration,
+                    requestStartedActiveMs: input.requestStartedActiveMs,
+                    transportAttemptIndex: index + 1,
+                    transportAttemptCount: transportAttempts.length,
+                    requestedThinking: input.requestedThinking,
+                    requestedReasoningEffort: input.requestedReasoningEffort,
+                    requestedMaxTokens: input.requestedMaxTokens,
+                    contextPreparation: input.contextPreparation,
+                    visualInput: input.visualInput,
                     usage: attempt.usage,
                     failureKind: attempt.failureKind,
                     providerCode: attempt.providerCode,
                     status: attempt.status,
                     promptShape: input.promptShape && providerTransportMetrics
                         ? { ...input.promptShape, providerTransportMetrics }
-                        : input.promptShape
+                        : input.promptShape,
+                    ...(index === outputAttemptIndex ? { outcome: input.outcome } : {})
                 });
             }
             for (let index = 1; index < transportAttempts.length; index += 1) {
@@ -103,20 +145,31 @@ export class ActiveRuntimeAccounting {
             }
             return currentSession;
         }
-        return this.recordSingleModelCall(runtimeSession, input);
+        return this.recordSingleModelCall(runtimeSession, {
+            ...input,
+            transportAttemptIndex: 1,
+            transportAttemptCount: 1
+        });
     }
 
     private recordSingleModelCall(
         runtimeSession: RuntimeSession | undefined,
         input: ModelAccountingInput
     ): RuntimeSession | undefined {
+        const outputShape = input.succeeded
+            ? measureRuntimeModelOutputShape(input.outcome)
+            : undefined;
         const { outcome: _outcome, ...accountingInput } = input;
+        const persistedInput = {
+            ...accountingInput,
+            ...(outputShape ? { outputShape } : {})
+        };
         if (runtimeSession) {
             this.unboundLedger = undefined;
-            return recordRuntimeSessionModelCall({ session: runtimeSession, ...accountingInput });
+            return recordRuntimeSessionModelCall({ session: runtimeSession, ...persistedInput });
         }
         if (this.unboundLedger) {
-            this.unboundLedger = recordRuntimeModelCall({ ledger: this.unboundLedger, ...accountingInput });
+            this.unboundLedger = recordRuntimeModelCall({ ledger: this.unboundLedger, ...persistedInput });
         }
         return undefined;
     }
