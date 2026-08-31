@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, FileSearch, Images, SquareTerminal } from 'lucide-react';
+import { ChevronDown, FileSearch, Images, SquareTerminal, type LucideIcon } from 'lucide-react';
 import './ThinkingProcess.css';
 import { ImageZoomOverlay } from './ImageZoomOverlay';
 import {
@@ -8,6 +8,7 @@ import {
     type ToolDisplayInfo
 } from '../services/tool-display-info';
 import { buildToolResultPreview } from '../services/tool-result-preview';
+import { classifyAgentToolExecution } from '../../shared/agent-tool-execution-preflight';
 import {
     resolveThinkingStepDisplayRole,
     resolveThinkingStepRoleLabel,
@@ -73,19 +74,35 @@ interface MergedThinkingStep {
  * 展开才看明细——这是 codex 过程流"清爽"的来源（对照板 P1.75）。
  * 失败步、带画面快照的步、有关键结果摘要的步一律不聚合（防吞纪律沿用）。
  */
-type ToolAggregateCategory = 'look' | 'read' | 'none';
+type ToolAggregateCategory = 'look' | 'read' | 'act' | 'none';
 
-function resolveToolAggregateCategory(toolName: string | undefined): ToolAggregateCategory {
+function resolveToolAggregateCategory(toolName: string | undefined, toolParams?: unknown): ToolAggregateCategory {
     const name = String(toolName || '');
     if (!name) return 'none';
     if (/Snapshot|snapshot|observe|describeImage|analyzeAsset|Preview/.test(name)) return 'look';
     if (/^(get|list|search|read|find)/.test(name)) return 'read';
-    return 'none';
+    // 导出与外部生成永远不折叠：交付物落在哪、生成了什么，是用户当场要看的结果，
+    // 收进「运行了 N 个操作」等于吞掉交付信息（防吞纪律）。分类走执行契约的
+    // 同一口径，不在展示层另写一套正则，避免与 preflight 漂移。
+    const kind = classifyAgentToolExecution(name, toolParams ?? {});
+    if (kind === 'save_export' || kind === 'external_generation') return 'none';
+    // 其余（画布写入等）归 act：跑完的动作收进折叠组，展开才看逐条。
+    // 「正在跑」与「失败」的动作行留在外面——这就是 codex 过程流的形态：
+    // 当前动作可见，已完成的历史收成一句摘要。
+    return 'act';
 }
 
 function buildAggregateLabel(category: ToolAggregateCategory, count: number): string {
     if (category === 'look') return `查看了 ${count} 张画面`;
-    return `读取了 ${count} 项信息`;
+    if (category === 'read') return `读取了 ${count} 项信息`;
+    return `运行了 ${count} 个操作`;
+}
+
+/** 聚合组的图标按类别走，避免写操作也顶着「读取」的放大镜。 */
+function resolveAggregateIcon(label: string): LucideIcon {
+    if (label.startsWith('查看')) return Images;
+    if (label.startsWith('读取')) return FileSearch;
+    return SquareTerminal;
 }
 
 /**
@@ -153,7 +170,7 @@ function applyCategoryAggregation(merged: MergedThinkingStep[]): MergedThinkingS
     for (const item of merged) {
         const { step } = item;
         const category = isActionStep(step) && step.status === 'success' && !step.imageData
-            ? resolveToolAggregateCategory(step.toolName)
+            ? resolveToolAggregateCategory(step.toolName, step.toolParams)
             : 'none';
         if (category !== 'none' && (bucket.length === 0 || category === bucketCategory)) {
             bucketCategory = category;
@@ -170,6 +187,27 @@ function applyCategoryAggregation(merged: MergedThinkingStep[]): MergedThinkingS
     }
     flush();
     return out;
+}
+
+/**
+ * 单一活性点的授予判据（codex 铁律）：一批步骤里至多一条动作行拿到扫光——
+ * 最末那条进行中的动作行。抽成函数是为了让任务卡也能按同一口径让位：
+ * 判据散在两个组件里，迟早出现「条目和它下面的动作行同时扫光」这种双光带。
+ */
+function resolveLiveActionKey(merged: MergedThinkingStep[]): string {
+    let liveKey = '';
+    for (const item of merged) {
+        const actsLikeTool = isActionStep(item.step) || getDisplayRole(item.step) === 'action';
+        if (actsLikeTool && (item.step.status === 'running' || item.step.status === 'pending')) {
+            liveKey = item.key;
+        }
+    }
+    return liveKey;
+}
+
+/** 这批步骤里是否已经有一条动作行在扫光（外层据此放弃自己的光带）。 */
+export function hasLiveActionStep(steps: ThinkingStep[]): boolean {
+    return resolveLiveActionKey(mergeRepeatedSteps(steps)) !== '';
 }
 
 function getDisplayRole(step: ThinkingStep): ThinkingStepDisplayRole {
@@ -323,21 +361,15 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             <div className="pondering-steps">
                 {(() => {
                     const mergedSteps = mergeRepeatedSteps(panelSteps);
-                    // 单一活性点原则（codex 铁律）：任意时刻至多一处扫光/旋转——只有最末一条
-                    // 进行中的「动作行」是「当前活动」；其余进行中的行静态染色即可，满屏多处动效没有重点。
-                    // 正文/思考行（is-thought）永不参与活性点：codex 里正文段落从不扫光，
-                    // 流式文字的出现本身与顶部计时头就是活性信号，扫光只属于动作行。
-                    let liveKey = '';
-                    for (const item of mergedSteps) {
-                        const actsLikeTool = isActionStep(item.step) || getDisplayRole(item.step) === 'action';
-                        if (actsLikeTool && (item.step.status === 'running' || item.step.status === 'pending')) liveKey = item.key;
-                    }
+                    // 单一活性点原则（codex 铁律）：任意时刻至多一处扫光/旋转——判据见
+                    // resolveLiveActionKey；正文/思考行永不参与活性点（正文流式出现本身即活性信号）。
+                    const liveKey = resolveLiveActionKey(mergedSteps);
                     return mergedSteps.map(({ key: stepKey, step, repeat, members, aggregateLabel }) => {
                         const liveClass = stepKey === liveKey ? 'is-live' : '';
                     // 类别聚合组：状态行始终可见，逐条明细默认收起。
                     if (aggregateLabel && members) {
                         const expanded = Boolean(expandedStepIds[stepKey]);
-                        const AggIcon = aggregateLabel.startsWith('查看') ? Images : FileSearch;
+                        const AggIcon = resolveAggregateIcon(aggregateLabel);
                         return (
                             <div key={stepKey} className="pondering-step success is-action pondering-aggregate">
                                 <div className="step-body">

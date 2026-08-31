@@ -187,9 +187,12 @@
     overflow-wrap: anywhere;
 }
 
-/* ── 运行中：正在做的条目 / 标题扫光（与「正在设计」标题同一套光带参数） ── */
-.design-task-item-text.is-active,
-.design-task-card-title.is-active {
+/* ── 运行中的光带（is-shimmer）──
+ * 类名与状态类 is-active 分开：is-active 说的是「这是当前条目」（语义/布局），
+ * 光带归不归它由渲染层按单一活性点判据决定——内层动作行在扫光时，这里不点亮。
+ * 周期读 --de-shimmer-duration，与过程流动作行同源。 */
+.design-task-item-text.is-shimmer,
+.design-task-card-title.is-shimmer {
     color: var(--de-text-muted, #94a3b8);
     background-image: linear-gradient(
         100deg,
@@ -207,7 +210,7 @@
     animation: designTaskShimmer var(--de-shimmer-duration, 1.9s) linear infinite;
 }
 
-.design-task-card-title.is-active {
+.design-task-card-title.is-shimmer {
     white-space: normal;
     overflow: visible;
     text-overflow: clip;
@@ -264,8 +267,8 @@
         animation: none;
     }
 
-    .design-task-item-text.is-active,
-    .design-task-card-title.is-active {
+    .design-task-item-text.is-shimmer,
+    .design-task-card-title.is-shimmer {
         background-image: none;
         -webkit-text-fill-color: currentColor;
         color: var(--de-text, #f8fafc);

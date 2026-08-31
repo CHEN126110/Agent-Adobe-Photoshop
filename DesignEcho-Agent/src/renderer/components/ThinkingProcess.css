@@ -572,7 +572,9 @@
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    animation: de-action-shimmer 2.4s linear infinite;
+    /* 与任务卡条目/标题共用同一个节奏令牌：两处扫光曾是 2.4s vs 1.9s，
+       同屏出现时是「一快一慢两道光」，看着像两套动效各跑各的。 */
+    animation: de-action-shimmer var(--de-shimmer-duration, 1.9s) linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
     .pondering-step.is-action.is-live .step-action-state,

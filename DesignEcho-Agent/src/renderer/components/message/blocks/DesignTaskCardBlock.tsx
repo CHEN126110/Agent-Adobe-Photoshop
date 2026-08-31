@@ -24,7 +24,7 @@ import {
     resolveCurrentDesignTaskItemId,
     type DesignTaskItem
 } from '../../../../shared/design-task-card';
-import { ThinkingProcess, type ThinkingStep } from '../../ThinkingProcess';
+import { hasLiveActionStep, ThinkingProcess, type ThinkingStep } from '../../ThinkingProcess';
 import type { DesignTaskCardBlock as DesignTaskCardBlockType } from '../types';
 import './DesignTaskCardBlock.css';
 
@@ -118,6 +118,9 @@ function TaskItemRow({
 }: { item: DesignTaskItem; steps: ThinkingStep[]; isCurrent: boolean; live: boolean }): React.ReactElement {
     const showCount = typeof item.count === 'number' && item.count > 1;
     const active = live && isCurrent && item.status !== 'done' && item.status !== 'skipped';
+    // 单一活性点：条目下面已经有一条动作行在扫光时，条目文字让出光带。
+    // 两处同时扫光就是用户看到的「两个扫光效果」——同屏光带必须只有一道。
+    const shimmer = active && !hasLiveActionStep(steps);
     // 正在做：过程直接展开；其它条目：有过程就收成一行「过程 · N 步」
     return (
         <li
@@ -129,7 +132,7 @@ function TaskItemRow({
             <StatusBox status={active && item.status === 'todo' ? 'doing' : item.status} />
             <div className="design-task-item-body">
                 <div className="design-task-item-line">
-                    <span className={`design-task-item-text${active ? ' is-active' : ''}`}>{item.text}</span>
+                    <span className={`design-task-item-text${shimmer ? ' is-shimmer' : ''}`}>{item.text}</span>
                     {showCount ? (
                         <span className="design-task-item-count">{item.producedCount || 0}/{item.count}</span>
                     ) : null}
@@ -162,7 +165,18 @@ export function DesignTaskCardBlock({ block, steps: liveSteps, live = false }: D
         live
     );
     const ChevronIcon = expanded ? ChevronDown : ChevronRight;
-    const headActive = live && !completion.complete;
+    const currentItem = currentItemId ? items.find((item) => item.id === currentItemId) : undefined;
+    const currentItemActive = Boolean(
+        live && currentItem && currentItem.status !== 'done' && currentItem.status !== 'skipped'
+    );
+    // 开工过程只在还没进入任何条目时默认摊开：进了条目就该由条目那一段承载过程。
+    const openingOpenByDefault = live && byItem.size === 0;
+    // 卡体里已经有活性点（当前条目文字或它下面的动作行）时，标题不再扫光：
+    // 标题扫光只负责「卡刚立起来、还没有任何一段过程可看」这一小段空窗。
+    const bodyOwnsShimmer = expanded && (
+        currentItemActive || (openingOpenByDefault && hasLiveActionStep(opening))
+    );
+    const headActive = live && !completion.complete && !bodyOwnsShimmer;
 
     return (
         <section
@@ -179,7 +193,7 @@ export function DesignTaskCardBlock({ block, steps: liveSteps, live = false }: D
                 onClick={() => setExpanded((value) => !value)}
             >
                 <ChevronIcon className="design-task-card-chevron" size={14} strokeWidth={2} aria-hidden="true" />
-                <span className={`design-task-card-title${headActive ? ' is-active' : ''}`}>{card.title}</span>
+                <span className={`design-task-card-title${headActive ? ' is-shimmer' : ''}`}>{card.title}</span>
                 <span className="design-task-card-progress" title={completion.summary}>
                     {completion.complete ? <Check size={12} strokeWidth={2.4} aria-hidden="true" /> : null}
                     {completion.doneCount}/{items.length}
@@ -194,7 +208,7 @@ export function DesignTaskCardBlock({ block, steps: liveSteps, live = false }: D
                     </div>
                     {opening.length > 0 ? (
                         <div className="design-task-opening">
-                            <StepsFold steps={opening} defaultOpen={live && byItem.size === 0} label="开工" />
+                            <StepsFold steps={opening} defaultOpen={openingOpenByDefault} label="开工" />
                         </div>
                     ) : null}
                     <ol className="design-task-items">
