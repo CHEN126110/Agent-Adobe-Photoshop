@@ -593,7 +593,8 @@ const RUNTIME_CONTRACT_STATUS_SELECTION_SOURCES = new Set<NonNullable<RuntimeCon
     'skill_declaration_unique_match',
     'controlled_route_react_handoff',
     'user_explicit_selection',
-    'explicit_runtime_declaration'
+    'explicit_runtime_declaration',
+    'structured_run_resume'
 ]);
 
 const AGENT_RUN_CONVERSATION_SCOPE_ALLOWED_KEYS = new Set<string>([

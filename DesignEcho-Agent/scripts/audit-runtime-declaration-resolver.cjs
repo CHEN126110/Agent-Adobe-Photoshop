@@ -6014,6 +6014,73 @@ function assertAgenticManifestOwnerOnlyCapabilityBinding() {
     'pre-bound autonomous runtime exposed another workflow Skill'
   );
 
+  const runResumeContractBinding = {
+    version: 'run-resume-contract-binding/v0',
+    sourceRunId: 'run-main-image-unfinished',
+    selectedTaskType: 'ecommerce.main_image.v1',
+    manifestSkillId: 'ecommerce.main_image',
+    boundaries: {
+      taskIdentityOnly: true,
+      executesSkill: false,
+      grantsToolPermission: false,
+      grantsWritePermission: false
+    }
+  };
+  const resumedProductionRuntime = resolveAutonomousCapabilityRuntime({
+    runtimeResumeContractBinding: runResumeContractBinding,
+    resumeSourceRunId: runResumeContractBinding.sourceRunId,
+    agentIntentControlPlane: {
+      toolScope: 'write_photoshop',
+      executionAuthorization: 'confirmed_tool_required'
+    }
+  }, {});
+  assert.strictEqual(resumedProductionRuntime.runtimeContractStatus.status, 'resolved');
+  assert.strictEqual(
+    resumedProductionRuntime.runtimeContractStatus.selectionSource,
+    'structured_run_resume'
+  );
+  assert.strictEqual(
+    resumedProductionRuntime.agenticManifestBundle?.manifest?.skill_id,
+    'ecommerce.main_image'
+  );
+  assert.deepStrictEqual(
+    resumedProductionRuntime.capabilitySession.activeTools
+      .map((tool) => tool.name)
+      .filter((toolName) => workflowBridgeNameSet.has(toolName)),
+    ['main-image-design'],
+    'same-branch unfinished Run did not restore its unique Runtime owner'
+  );
+
+  const permissionEscalatingResumeBinding = JSON.parse(JSON.stringify(runResumeContractBinding));
+  permissionEscalatingResumeBinding.boundaries.grantsWritePermission = true;
+  const rejectedResumeRuntime = resolveAutonomousCapabilityRuntime({
+    runtimeResumeContractBinding: permissionEscalatingResumeBinding,
+    agentIntentControlPlane: {
+      toolScope: 'write_photoshop',
+      executionAuthorization: 'confirmed_tool_required'
+    }
+  }, {});
+  assert.strictEqual(rejectedResumeRuntime.runtimeContractStatus.status, 'selected_manifest_missing');
+  assert(!rejectedResumeRuntime.capabilitySession.activeTools.some((tool) => (
+    tool.name === 'main-image-design'
+  )), 'malformed resume binding exposed its historical workflow owner');
+
+  const mismatchedResumeBinding = {
+    ...runResumeContractBinding,
+    manifestSkillId: 'ecommerce.detail_page'
+  };
+  const mismatchedResumeRuntime = resolveAutonomousCapabilityRuntime({
+    runtimeResumeContractBinding: mismatchedResumeBinding,
+    agentIntentControlPlane: {
+      toolScope: 'write_photoshop',
+      executionAuthorization: 'confirmed_tool_required'
+    }
+  }, {});
+  assert.strictEqual(mismatchedResumeRuntime.runtimeContractStatus.status, 'selected_manifest_missing');
+  assert(!mismatchedResumeRuntime.capabilitySession.activeTools.some((tool) => (
+    tool.name === 'main-image-design'
+  )), 'resume manifest identity mismatch silently fell back to another owner');
+
   const unboundRuntime = resolveAutonomousCapabilityRuntime({
     agentIntentControlPlane: {
       toolScope: 'write_photoshop',

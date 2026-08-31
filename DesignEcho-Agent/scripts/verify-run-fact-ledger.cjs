@@ -54,7 +54,10 @@ const {
 const {
     buildRuntimeContractStatus
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-selected-skill-handoff.ts'));
-const { buildRunRecordResumeBrief } = require(path.join(root, 'src/shared/agent-run-resume.ts'));
+const {
+    buildRunRecordResumeBrief,
+    validateRunResumeContractBinding
+} = require(path.join(root, 'src/shared/agent-run-resume.ts'));
 const { extractUserDeclaredDeliverables } = require(path.join(root, 'src/shared/user-declared-deliverables.ts'));
 const {
     collectUserDeliverableFileEvidence,
@@ -3011,6 +3014,8 @@ const resolvedAgenticRuntimeContractStatus = buildRuntimeContractStatus({
 const agenticManifestBoundRecord = buildAgentRunRecord({
     now: '2026-08-24T00:00:01.590Z',
     goal: '普通自然语言声明后制作商品主图',
+    projectPath: 'C:\\resume-contract-project',
+    conversationScope,
     controlPlane: {
         requestKind: 'autonomous_execution',
         route: 'autonomous_agent'
@@ -3040,6 +3045,60 @@ check(
         && agenticManifestBoundRecord.decision?.skillId === undefined
         && validateAgentRunRecordForPersist(agenticManifestBoundRecord).ok,
     'agentic resolved Manifest 身份与 unscoped accounting 同时持久化且不改 initial decision'
+);
+const agenticManifestResumeBrief = buildRunRecordResumeBrief({
+    records: [agenticManifestBoundRecord],
+    nowMs: Date.parse('2026-08-24T00:01:01.590Z'),
+    conversationScope
+});
+check(
+    agenticManifestResumeBrief.applicable === true
+        && agenticManifestResumeBrief.sourceRunId === agenticManifestBoundRecord.runId
+        && agenticManifestResumeBrief.runtimeContractBinding?.sourceRunId === agenticManifestBoundRecord.runId
+        && agenticManifestResumeBrief.runtimeContractBinding?.selectedTaskType === 'ecommerce.main_image.v1'
+        && agenticManifestResumeBrief.runtimeContractBinding?.manifestSkillId === 'ecommerce.main_image'
+        && validateRunResumeContractBinding(agenticManifestResumeBrief.runtimeContractBinding),
+    '同会话未完成 agentic Run 恢复结构化任务身份而不靠续跑文本重猜'
+);
+const tamperedResumeContractBinding = JSON.parse(JSON.stringify(
+    agenticManifestResumeBrief.runtimeContractBinding
+));
+tamperedResumeContractBinding.boundaries.grantsToolPermission = true;
+check(
+    !validateRunResumeContractBinding(tamperedResumeContractBinding),
+    '续跑任务身份不能携带 Tool 权限升级'
+);
+const resumeContractBindingWithPayload = JSON.parse(JSON.stringify(
+    agenticManifestResumeBrief.runtimeContractBinding
+));
+resumeContractBindingWithPayload.taskText = '不应进入结构化续跑身份';
+check(
+    !validateRunResumeContractBinding(resumeContractBindingWithPayload),
+    '续跑任务身份拒绝任务正文和未知字段'
+);
+const resumedRuntimeContractStatus = buildRuntimeContractStatus({
+    selectedTaskType: agenticManifestResumeBrief.runtimeContractBinding.selectedTaskType,
+    manifestSkillId: agenticManifestResumeBrief.runtimeContractBinding.manifestSkillId,
+    selectionSource: 'structured_run_resume',
+    selectionExpected: true
+});
+const resumedRuntimeContractRecord = buildAgentRunRecord({
+    now: '2026-08-24T00:01:02.590Z',
+    goal: '继续',
+    projectPath: 'C:\\resume-contract-project',
+    conversationScope,
+    runtimeContractStatus: resumedRuntimeContractStatus,
+    result: {
+        success: false,
+        iterations: 1,
+        stopReason: 'error',
+        toolCallLog: []
+    }
+});
+check(
+    resumedRuntimeContractRecord.runtimeContractStatus?.selectionSource === 'structured_run_resume'
+        && validateAgentRunRecordForPersist(resumedRuntimeContractRecord).ok,
+    '结构化续跑来源可持久化并继续成为下一次精确续跑身份'
 );
 
 const agenticBindingWithoutBoundary = JSON.parse(JSON.stringify(agenticManifestBoundRecord));

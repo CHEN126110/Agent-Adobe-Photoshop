@@ -154,7 +154,10 @@ import {
     buildAgentRunRecord,
     type AgentRunConversationScope
 } from '../../../shared/agent-run-record';
-import { buildRunRecordResumeBrief } from '../../../shared/agent-run-resume';
+import {
+    buildRunRecordResumeBrief,
+    validateRunResumeContractBinding
+} from '../../../shared/agent-run-resume';
 import { AGENT_RESPONSE_PRESENTATION_PROMPT } from '../../../shared/agent-response-presentation';
 import {
     buildRuntimeResumeContextAnchor,
@@ -3676,7 +3679,16 @@ export function resolveAutonomousCapabilityRuntime(
     const runtimeSelectedSkillHandoff: RuntimeSelectedSkillHandoff | undefined = (
         validateRuntimeSelectedSkillHandoff(rawHandoff) ? rawHandoff : undefined
     );
-    const structuredTaskType = String(params?.declaredTaskType || '').trim() || undefined;
+    const rawRunResumeContractBinding = params?.runtimeResumeContractBinding;
+    const runResumeContractBinding = validateRunResumeContractBinding(rawRunResumeContractBinding)
+        ? rawRunResumeContractBinding
+        : undefined;
+    const runResumeBindingInvalid = rawRunResumeContractBinding !== undefined
+        && !runResumeContractBinding;
+    const explicitStructuredTaskType = String(params?.declaredTaskType || '').trim() || undefined;
+    const structuredTaskType = explicitStructuredTaskType
+        || runResumeContractBinding?.selectedTaskType
+        || undefined;
     const structuredWorkModeText = String(params?.declaredWorkMode || '').trim();
     const structuredWorkMode = normalizeRuntimeDesignWorkMode(structuredWorkModeText);
     const structuredWorkModeInvalid = Boolean(structuredWorkModeText && !structuredWorkMode);
@@ -3687,10 +3699,29 @@ export function resolveAutonomousCapabilityRuntime(
         && explicitStructuredSkillId
         && runtimeSelectedSkillHandoff.skillId !== explicitStructuredSkillId
     );
+    const resumeBindingConflictsWithDeclaration = Boolean(
+        runResumeContractBinding
+        && (
+            (explicitStructuredTaskType
+                && runResumeContractBinding.selectedTaskType
+                && explicitStructuredTaskType !== runResumeContractBinding.selectedTaskType)
+            || (explicitStructuredSkillId
+                && runResumeContractBinding.selectedSkillId
+                && explicitStructuredSkillId !== runResumeContractBinding.selectedSkillId)
+            || (runtimeSelectedSkillHandoff
+                && runResumeContractBinding.selectedSkillId
+                && runtimeSelectedSkillHandoff.skillId !== runResumeContractBinding.selectedSkillId)
+        )
+    );
     const structuredSkillId = runtimeSelectedSkillHandoff?.skillId
         || explicitStructuredSkillId
+        || runResumeContractBinding?.selectedSkillId
         || undefined;
-    const resolvedContractBundle = handoffInvalid || handoffConflictsWithDeclaration || structuredWorkModeInvalid
+    const resolvedContractCandidate = handoffInvalid
+        || handoffConflictsWithDeclaration
+        || runResumeBindingInvalid
+        || resumeBindingConflictsWithDeclaration
+        || structuredWorkModeInvalid
         ? undefined
         : buildRuntimeContractBundleForAgentTask({
             taskType: structuredTaskType,
@@ -3698,19 +3729,35 @@ export function resolveAutonomousCapabilityRuntime(
             ...(structuredWorkMode ? { workMode: structuredWorkMode } : {}),
             executableToolNames: candidateTools.map((tool) => tool.name)
         });
+    const resumeManifestMismatch = Boolean(
+        runResumeContractBinding
+        && resolvedContractCandidate
+        && resolvedContractCandidate.manifest.skill_id !== runResumeContractBinding.manifestSkillId
+    );
+    const resolvedContractBundle = resumeManifestMismatch
+        ? undefined
+        : resolvedContractCandidate;
     // 设计路径宪法：agentic 清单不进 Stage 机——它只留给知识/预算/任务类型识别，
     // 工具面与写入权限走 broad discovery + 执行点真红线（与 manifest 未命中时完全同一条路）。
     const agenticExecution = isAgenticExecutionModel(resolvedContractBundle?.manifest);
     const runtimeContractBundle = agenticExecution ? undefined : resolvedContractBundle;
     const agenticManifestBundle = agenticExecution ? resolvedContractBundle : undefined;
+    let runtimeContractSelectionSource: RuntimeContractStatus['selectionSource'];
+    if (runtimeSelectedSkillHandoff?.source) {
+        runtimeContractSelectionSource = runtimeSelectedSkillHandoff.source;
+    } else if (explicitStructuredSkillId || explicitStructuredTaskType) {
+        runtimeContractSelectionSource = 'explicit_runtime_declaration';
+    } else if (runResumeContractBinding) {
+        runtimeContractSelectionSource = 'structured_run_resume';
+    }
     const runtimeContractStatus = buildRuntimeContractStatus({
         selectedSkillId: structuredSkillId,
         selectedTaskType: structuredTaskType,
         manifestSkillId: resolvedContractBundle?.manifest.skill_id,
-        selectionSource: runtimeSelectedSkillHandoff?.source || (
-            structuredSkillId || structuredTaskType ? 'explicit_runtime_declaration' : undefined
-        ),
-        selectionExpected: rawHandoff !== undefined || Boolean(structuredSkillId || structuredTaskType)
+        selectionSource: runtimeContractSelectionSource,
+        selectionExpected: rawHandoff !== undefined
+            || rawRunResumeContractBinding !== undefined
+            || Boolean(structuredSkillId || structuredTaskType)
     });
     const intentControlPlane = params.agentIntentControlPlane as Partial<AgentIntentControlPlaneDecision> | undefined;
     // 基础设计手艺的可见性由结构化执行委托决定，不等模型先猜中品类或声明 Profile。

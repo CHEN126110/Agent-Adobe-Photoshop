@@ -44,7 +44,9 @@ export interface RuntimeContractStatus {
     selectedSkillId?: string;
     selectedTaskType?: string;
     manifestSkillId?: string;
-    selectionSource?: RuntimeSelectedSkillHandoffSource | 'explicit_runtime_declaration';
+    selectionSource?: RuntimeSelectedSkillHandoffSource
+        | 'explicit_runtime_declaration'
+        | 'structured_run_resume';
     reason: string;
     boundaries: {
         doesNotExecuteSkill: true;

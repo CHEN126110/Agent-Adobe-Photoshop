@@ -490,7 +490,8 @@ requireToken('executor', 'const capabilityRuntime = resolveAutonomousCapabilityR
 requireToken('executor', "intentControlPlane?.toolScope === 'write_photoshop'", 'Generic design craft visibility must follow the structured write delegation, not a task-text category guess.');
 requireToken('executor', "intentControlPlane.executionAuthorization === 'confirmed_tool_required'", 'Design craft schemas must not become visible from a candidate-only or non-authorizing intent.');
 requireToken('executor', '|| designExecutionCapabilityBaselineRequested', 'Ordinary delegated work must know its design craft capabilities before a task-type declaration exists.');
-requireToken('executor', "const structuredTaskType = String(params?.declaredTaskType || '').trim() || undefined;", 'Production Capability selection must use an explicit structured task type only.');
+requireToken('executor', "const explicitStructuredTaskType = String(params?.declaredTaskType || '').trim() || undefined;", 'Production Capability selection must preserve explicit structured task identity.');
+requireToken('executor', '|| runResumeContractBinding?.selectedTaskType', 'Production Capability selection may reuse only a validated same-branch Run identity.');
 requireToken('executor', 'const structuredSkillId = runtimeSelectedSkillHandoff?.skillId', 'Production Capability selection must use an explicit structured selected-Skill handoff or Planner declaration only.');
 forbidPattern('executor', /buildRuntimeContractBundleForAgentTask\([\s\S]{0,220}skillId:\s*String\(params\?\.skillId/, 'Legacy text-derived skillId must not select a Capability manifest.');
 forbidPattern('executor', /const structuredTaskType\s*=\s*[^;]*(disciplineContext|spec\?\.id|resolveDesignTaskTypeSpec)/, 'Production Capability selection must not reuse text-derived design-discipline categories.');
@@ -710,6 +711,12 @@ requireToken('runRecord', 'planningContextCarryDigestOnly', 'Reflexion planning-
 requireToken('runResume', "freshness?.status === 'verified'", 'Only verified freshness may expose old node state as current resume advice.');
 requireToken('runResume', 'record.designBrief', 'Run resume must preserve bounded R1 Brief readiness without copying full input coverage.');
 requireToken('runResume', '不能据此跳过当前需要的制作', 'Unchecked or invalid freshness must revoke old skip advice in the model context.');
+requireToken('runResume', 'runtimeContractBinding?: RunResumeContractBinding', 'Unfinished agentic runs must retain their resolved Runtime task identity.');
+requireToken('runResume', 'taskIdentityOnly: true', 'Resumed Runtime identity must remain a task-identity record rather than an execution grant.');
+requireToken('engine', 'bareContinuationResume.runtimeContractBinding', 'Bare continuation must carry the exact same-branch Runtime identity into the autonomous executor.');
+requireToken('engine', 'runtimeResumeContractBinding: governedResumeContractBinding', 'The Engine-to-executor bridge must keep resumed identity separate from user-selected Skill handoff.');
+requireToken('executor', 'validateRunResumeContractBinding', 'Production capability resolution must reject malformed resumed Runtime identities.');
+requireToken('executor', "runtimeContractSelectionSource = 'structured_run_resume'", 'Resolved resumed identity must remain attributable in the Run Record chain.');
 forbidPattern('runResume', /Runtime Session|Harness 控制|影子步骤|阶段状态覆盖|动作记录：写入\/导出成功/, 'Run resume must not expose the internal accounting dashboard to the design model.');
 requireToken('agent', 'isAgentHarnessControlTool', 'Agent completion logic must distinguish all Harness control tools from task progress.');
 requireToken('agent', 'buildModelVisibleToolsForIteration', 'Agent must expose the R3 control schema explicitly at the runtime boundary.');

@@ -67,12 +67,35 @@ export interface RunResumeFreshnessCandidate {
     resumeStepIds: string[];
 }
 
+export const RUN_RESUME_CONTRACT_BINDING_VERSION = 'run-resume-contract-binding/v0' as const;
+
+/**
+ * 同一会话分支的未完成 Run 已经由唯一 Runtime Resolver 解析出的任务身份。
+ *
+ * 这里只恢复“上一项任务是什么”，不恢复 Tool 权限、写入授权、完成状态或设计答案。
+ * 当前请求仍必须重新经过 Intent、Capability、preflight 与目标 / revision 校验。
+ */
+export interface RunResumeContractBinding {
+    version: typeof RUN_RESUME_CONTRACT_BINDING_VERSION;
+    sourceRunId: string;
+    selectedSkillId?: string;
+    selectedTaskType?: string;
+    manifestSkillId: string;
+    boundaries: {
+        taskIdentityOnly: true;
+        executesSkill: false;
+        grantsToolPermission: false;
+        grantsWritePermission: false;
+    };
+}
+
 export interface RunResumeBrief {
     applicable: boolean;
     reason: string;
     sourceRunId?: string;
     sourceSessionId?: string;
     sourceGeneration?: number;
+    runtimeContractBinding?: RunResumeContractBinding;
     freshnessCandidate?: RunResumeFreshnessCandidate;
     /** 注入系统提示的完整摘要节（含边界声明与验证优先指令） */
     brief?: string;
@@ -81,6 +104,78 @@ export interface RunResumeBrief {
 const DEFAULT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 // 1200→1800：摘要新增「上次做到」（≤600 字的画面事实），不能把尾部的续接指引挤掉。
 const DEFAULT_MAX_BRIEF_CHARS = 1800;
+
+function normalizeResumeIdentity(value: unknown, maxChars: number): string {
+    const normalized = String(value || '').trim().toLowerCase();
+    return /^[a-z][a-z0-9._-]*$/.test(normalized) && normalized.length <= maxChars
+        ? normalized
+        : '';
+}
+
+function buildRunResumeContractBinding(record: AgentRunRecord): RunResumeContractBinding | undefined {
+    const status = record.runtimeContractStatus;
+    if (!status || status.status !== 'resolved') return undefined;
+    const selectedSkillId = normalizeResumeIdentity(status.selectedSkillId, 80);
+    const selectedTaskType = normalizeResumeIdentity(status.selectedTaskType, 100);
+    const manifestSkillId = normalizeResumeIdentity(status.manifestSkillId, 100);
+    if (!manifestSkillId || (!selectedSkillId && !selectedTaskType)) return undefined;
+    return {
+        version: RUN_RESUME_CONTRACT_BINDING_VERSION,
+        sourceRunId: record.runId,
+        ...(selectedSkillId ? { selectedSkillId } : {}),
+        ...(selectedTaskType ? { selectedTaskType } : {}),
+        manifestSkillId,
+        boundaries: {
+            taskIdentityOnly: true,
+            executesSkill: false,
+            grantsToolPermission: false,
+            grantsWritePermission: false
+        }
+    };
+}
+
+export function validateRunResumeContractBinding(
+    value: unknown
+): value is RunResumeContractBinding {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    const allowedKeys = new Set([
+        'version',
+        'sourceRunId',
+        'selectedSkillId',
+        'selectedTaskType',
+        'manifestSkillId',
+        'boundaries'
+    ]);
+    if (Object.keys(record).some((key) => !allowedKeys.has(key))) return false;
+    const rawBoundaries = record.boundaries;
+    if (!rawBoundaries || typeof rawBoundaries !== 'object' || Array.isArray(rawBoundaries)) {
+        return false;
+    }
+    const allowedBoundaryKeys = new Set([
+        'taskIdentityOnly',
+        'executesSkill',
+        'grantsToolPermission',
+        'grantsWritePermission'
+    ]);
+    if (Object.keys(rawBoundaries).some((key) => !allowedBoundaryKeys.has(key))) return false;
+    const binding = value as Partial<RunResumeContractBinding>;
+    const selectedSkillId = normalizeResumeIdentity(binding.selectedSkillId, 80);
+    const selectedTaskType = normalizeResumeIdentity(binding.selectedTaskType, 100);
+    const manifestSkillId = normalizeResumeIdentity(binding.manifestSkillId, 100);
+    return binding.version === RUN_RESUME_CONTRACT_BINDING_VERSION
+        && typeof binding.sourceRunId === 'string'
+        && binding.sourceRunId.length > 0
+        && binding.sourceRunId.length <= 100
+        && manifestSkillId === binding.manifestSkillId
+        && Boolean(selectedSkillId || selectedTaskType)
+        && (!binding.selectedSkillId || selectedSkillId === binding.selectedSkillId)
+        && (!binding.selectedTaskType || selectedTaskType === binding.selectedTaskType)
+        && binding.boundaries?.taskIdentityOnly === true
+        && binding.boundaries?.executesSkill === false
+        && binding.boundaries?.grantsToolPermission === false
+        && binding.boundaries?.grantsWritePermission === false;
+}
 
 function isUnfinishedRun(record: AgentRunRecord): boolean {
     if (record.cancelled === true) return true;
@@ -235,6 +330,7 @@ export function buildRunRecordResumeBrief(input: BuildRunResumeBriefInput): RunR
         '如果本次任务与档案无关：忽略本节，正常开始。'
     ];
     const brief = lines.join('\n').slice(0, maxBriefChars);
+    const runtimeContractBinding = buildRunResumeContractBinding(record);
 
     return {
         applicable: true,
@@ -244,6 +340,7 @@ export function buildRunRecordResumeBrief(input: BuildRunResumeBriefInput): RunR
             sourceSessionId: record.runtimeSession.sessionId,
             sourceGeneration: record.runtimeSession.generation
         } : {}),
+        ...(runtimeContractBinding ? { runtimeContractBinding } : {}),
         ...(record.actionPlanReconciliation ? {
             freshnessCandidate: {
                 sourceRunId: record.runId,

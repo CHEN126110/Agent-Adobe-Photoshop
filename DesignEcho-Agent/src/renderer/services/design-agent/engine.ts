@@ -1,7 +1,11 @@
 import { getSkillExecutor, executeSkillWithExecutor } from '../skill-executors';
 import { executeSkillTool } from '../skill-executors/skill-tools';
 import { resolveBareContinuationResumeDecision } from '../../../shared/agent-bare-continuation-resume';
-import { buildRunRecordResumeBrief } from '../../../shared/agent-run-resume';
+import {
+    buildRunRecordResumeBrief,
+    type RunResumeBrief,
+    type RunResumeContractBinding
+} from '../../../shared/agent-run-resume';
 import type {
     AgentContext,
     AgentResult,
@@ -141,30 +145,33 @@ import {
 } from '../../../shared/agent-user-reply-mediation-policy';
 
 /**
- * GATE-SIMPLIFY-007：查询同会话分支是否存在可续接的未完成运行档案。
- * 只有「同会话分支 + 未完成 + 未过期」才返回 true；查询失败/桥缺失一律 false（安全侧降级）。
+ * GATE-SIMPLIFY-007：查询同会话分支可续接的未完成运行档案。
+ * 只返回摘要与已解析的任务身份；查询失败、跨分支或过期均返回不可续接，且不恢复权限。
  */
-async function resolveBareContinuationResumableRecord(input: {
+async function resolveBareContinuationResumeBrief(input: {
     conversationId?: string;
     conversationBranchId?: string;
     projectPath?: string;
-}): Promise<boolean> {
+}): Promise<RunResumeBrief> {
     const conversationId = String(input.conversationId || '').trim();
     const conversationBranchId = String(input.conversationBranchId || '').trim();
     const projectPath = String(input.projectPath || '').trim();
-    if (!conversationId || !conversationBranchId || !projectPath) return false;
+    if (!conversationId || !conversationBranchId || !projectPath) {
+        return { applicable: false, reason: '当前请求缺少可验证的会话分支或项目身份' };
+    }
     const listBridge = (window as any)?.designEcho?.listAgentRunRecords;
-    if (typeof listBridge !== 'function') return false;
+    if (typeof listBridge !== 'function') {
+        return { applicable: false, reason: '当前运行环境没有可用的运行档案读取能力' };
+    }
     try {
         const listed = await listBridge(projectPath, 5);
-        const brief = buildRunRecordResumeBrief({
+        return buildRunRecordResumeBrief({
             records: Array.isArray(listed?.records) ? listed.records : [],
             nowMs: Date.now(),
             conversationScope: { conversationId, branchId: conversationBranchId }
         });
-        return brief.applicable === true;
     } catch {
-        return false;
+        return { applicable: false, reason: '运行档案读取失败，未恢复历史任务身份' };
     }
 }
 import {
@@ -572,7 +579,8 @@ export function buildAutonomousSkillParams(
     context: AgentContext,
     intentControlPlane?: AgentIntentControlPlaneDecision,
     runtimeSelectedSkillHandoff?: RuntimeSelectedSkillHandoff,
-    capabilityConstraint?: AgentCapabilityConstraint
+    capabilityConstraint?: AgentCapabilityConstraint,
+    runResumeContractBinding?: RunResumeContractBinding
 ): Record<string, any> {
     const images = Array.isArray(context.attachedImages) && context.attachedImages.length > 0
         ? toAgentImageAttachments(context.attachedImages)
@@ -581,9 +589,13 @@ export function buildAutonomousSkillParams(
             : undefined;
     const explicitCapabilityConstraint = capabilityConstraint
         || extractExplicitUserCapabilityConstraint(context.userInput);
-    // 普通自然语言仍进入通用 Agent。Harness 只采信显式能力上限，以及上游形成的
-    // selection-only Runtime handoff；advisory recommendation 本身不会补造 Skill 身份或权限。
+    // 普通自然语言仍进入通用 Agent。Harness 只采信显式能力上限、上游形成的
+    // selection-only Runtime handoff，以及同分支未完成 Run 的结构化任务身份；
+    // advisory recommendation 本身不会补造 Skill 身份或权限。
     const skillBridgesForbidden = explicitCapabilityConstraint.skillBridgePolicy === 'forbid';
+    const governedResumeContractBinding = skillBridgesForbidden
+        ? undefined
+        : runResumeContractBinding;
     const resolvedCapabilityConstraint: AgentCapabilityConstraint = {
         ...explicitCapabilityConstraint,
         source: 'explicit_user_instruction',
@@ -621,6 +633,10 @@ export function buildAutonomousSkillParams(
         // 只有带 provenance 的 handoff / R0 声明能驱动运行期身份与 manifest。
         ...(governedDeclaredSkillId ? { declaredSkillId: governedDeclaredSkillId } : {}),
         ...(!skillBridgesForbidden && runtimeSelectedSkillHandoff ? { runtimeSelectedSkillHandoff } : {}),
+        ...(governedResumeContractBinding ? {
+            resumeSourceRunId: governedResumeContractBinding.sourceRunId,
+            runtimeResumeContractBinding: governedResumeContractBinding
+        } : {}),
         ...(skillBridgesForbidden ? { skillBridgePolicy: 'forbid' } : {}),
         ...(hasCapabilityConstraint ? { agentCapabilityConstraint: resolvedCapabilityConstraint } : {}),
         ...(intentControlPlane ? { agentIntentControlPlane: intentControlPlane } : {}),
@@ -3736,17 +3752,17 @@ export class DesignAgentEngine {
         // GATE-SIMPLIFY-007：同会话分支存在可续接的未完成运行档案时，裸「继续」是明确的
         // 续做意图——保留写权限并接入 Run Record 续接（执行点约束不变）；无档案（新会话/
         // 已完成/跨分支/过期/查询失败）一律维持旧降级，不恢复历史写权限。
-        const resumableRecordAvailable = unboundAcknowledgement
-            ? await resolveBareContinuationResumableRecord({
+        const bareContinuationResume: RunResumeBrief = unboundAcknowledgement
+            ? await resolveBareContinuationResumeBrief({
                 conversationId: context.conversationId,
                 conversationBranchId: context.conversationBranchId,
                 projectPath: context.projectContext?.projectPath
             })
-            : false;
+            : { applicable: false, reason: '当前请求不是裸续做输入' };
         const bareContinuationDecision = resolveBareContinuationResumeDecision({
             unboundAcknowledgement,
             executionAuthorization: intentControlPlane.executionAuthorization,
-            resumableRecordAvailable
+            resumableRecordAvailable: bareContinuationResume.applicable === true
         });
         if (bareContinuationDecision.demote) {
             intentControlPlane = {
@@ -3827,7 +3843,10 @@ export class DesignAgentEngine {
                 context,
                 intentControlPlane,
                 runtimeSelectedSkillHandoff,
-                capabilityConstraint
+                capabilityConstraint,
+                runtimeSelectedSkillHandoff
+                    ? undefined
+                    : bareContinuationResume.runtimeContractBinding
             ),
             callbacks,
             signal,
