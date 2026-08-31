@@ -4,7 +4,7 @@
 
 ## D-128 Main Image Skill 的正式交付必须由可持久化 workspace 与唯一 finalize 闭合
 
-- 状态：active；真实 Run 663 /664 已证明现状不满足，代码实现待完成。
+- 状态：active；正式 completion owner 已由 `36a1db51` 实现并通过 fresh 65 阶段核心闸门，workspace 持久化与重启 reconciliation 待完成。
 - prepare workspace 必须成为同一 Runtime TaskRun 拥有的有界、可持久化、可 reconciliation 身份事实，至少绑定项目、task type /manifest、document、标准 group、prepared revision、创建收据和失效状态。它不授予 Tool、写入、设计或完成权限，也不复制到 Design Project State；应用重启后只能按当前 Host /文件事实校验恢复，不能凭旧内存信用续写。
 - Agent 仍可自主调用通用保存 /导出作为原子工作动作，但一旦主图任务进入 prepare，这些调用不能签发 Main Image Skill 的正式 completion、不能替代同 workspace finalize，也不能把导出 JPG 再置入新文档后伪装成专业可编辑稿。正式交付只能由 finalize 对账唯一规格、同 TaskRun /document /revision、真实非空层级和 exact staged transaction 后闭合。
 - 依据：Run 663 先交付 800 稿，再建 1440 文档并重置入 JPG，形成两套正式文件；Run 664 虽技术成功，最终 1440 PSD 仍只有 3 层。文件存在与评测通过都没有证明生产 owner、可编辑性或专业设计成立。

@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：69c54867 已修复订阅通道条件 Tool Schema，b4998b65 已修复同分支裸续跑的 Runtime identity；正常程序 Run 663/664 证明两者生效并保持外部文档零变化，同时证伪主图 prepare/finalize 已成为真实唯一交付 owner。当前先闭合可持久化 workspace 与唯一 finalize，再购买新质量样本。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：36a1db51 已把 Manifest delivery_plan_binding_required 与 producer Skill typed receipt 贯穿 agentic Completion / E2，普通 PSD/JPG 保存不能再旁路正式 Skill 交付；当前只剩 prepare workspace 的 TaskRun 持久化与重启 reconciliation，完成后再购买新质量样本。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -29,7 +29,8 @@
       "Open-creative main-image production now uses an explicit prepare/finalize seam: prepare creates one Agent-selected standard document and eleven empty groups without save/export, an identity-only workspace binds the same Runtime TaskRun/project/created-document receipt/group/revision across Reflexion generations, the Agent authors content with broad atomic Tools, and finalize exports only live-readback-proven nonempty groups plus an asCopy editable artifact through the existing exact staged transaction.",
       "Codex strict Tool Schema projection now preserves unsupported conditional constraints as bounded advisory descriptions and repairs only failing Tool Calls while retaining valid siblings; it does not choose Tool parameters or business actions.",
       "Bare continuation of an unfinished same-branch Run now carries a structured Runtime identity binding only; malformed, cross-source or manifest-mismatched bindings fail closed and no Tool, write, completion or design authority is resumed.",
-      "The main-image prepare workspace is still Renderer-process memory and generic save/export can currently settle files outside Skill finalize; live Runs 663/664 therefore prove the intended unique delivery owner is not yet closed."
+      "Manifest-bound agentic completion now carries delivery_plan_binding_required and producer Skill identities; only a typed-plan-bound ready workflow receipt with complete result-ref, file-identity and Photoshop-revision evidence can settle delivery, and later mutations or generic saves invalidate it.",
+      "The main-image prepare workspace is still Renderer-process memory and cannot yet be safely reconciled after application restart; this remaining identity-lifecycle gap is separate from the now-closed formal completion owner."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
@@ -41,7 +42,8 @@
       "INTAKE-092 passed a fresh 65-stage maintenance:validate run covering empty skeletons, per-slot multi-asset geometry, safe-box rejection, 1200 conversion, full 27-slot capacity, explicit low-budget rejection, neutral pending design projections, complete one-document 11-group hierarchy execution, eight injected hierarchy failures, Main/Renderer typecheck, Agent/UXP tests and UXP production build; final independent review found no remaining P0/P1, while the live Host remains pending.",
       "The current owner/transaction increment passed Renderer typecheck plus runtime-declaration, capability, Skill Package, authorship, business-boundary and generic-executor audits. A real mainImageExecutor fixture completed one 800 document with 11 groups and an exact staged JPG/PSB commit; artifact, path, lease, commit-set and cross-executor identity drift all failed before Host dispatch. A fresh 65-stage maintenance:validate then passed, including Agent/UXP tests, Main/Renderer typecheck and the UXP production build.",
       "The prepare/finalize increment passes Renderer typecheck, design-authorship behavior, Runtime declaration, Tool, Skill Package, Skill coupling, Capability, business-boundary, generic-executor and simplification audits. The behavior fixture proves zero save/export during prepare, no final write for unchanged/empty/wrong-task/wrong-document/replaced-group/repeated finalize, and one exact cross-Skill JPG/PSB commit after Agent-authored generic Tool content. A fresh 65-stage maintenance:validate run then passed end to end, including Agent/UXP tests, Main/Renderer typecheck and the UXP production build.",
-      "Commit 69c54867 and commit b4998b65 each passed a fresh 65-stage maintenance:validate run and were pushed to legacy/codex/agent-uxp; matching Agent and UXP production builds were generated from b4998b65 with gitDirty=false."
+      "Commit 69c54867 and commit b4998b65 each passed a fresh 65-stage maintenance:validate run and were pushed to legacy/codex/agent-uxp; matching Agent and UXP production builds were generated from b4998b65 with gitDirty=false.",
+      "Commit 36a1db51 passed Runtime declaration, Capability, business-boundary, Design Reliability and Renderer type checks plus a fresh 65-stage maintenance:validate run; two transient native-process crashes were retained as failed attempts, their exact stages passed alone, and the final exact tree passed 65/65 from the start."
     ],
     "manual": [
       "r31 is the only recorded formal zero-intervention technical pass in the earlier main-image reliability evidence; the current S1 cohort is not complete.",
@@ -81,19 +83,19 @@
     "Open Photoshop documents with unresolved ownership must not be modified, saved or closed by the S1 test.",
     "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery.",
     "The new main-image production contract and staged delivery transaction are automatically verified but not yet Host-verified; path and dimensions must not be treated as proof that the model visually observed each assigned asset.",
-    "Live Runs 663/664 show generic save/export can bypass Skill finalize and produce duplicate specifications or a low-layer editable file; the in-memory workspace cannot safely resume after application restart.",
+    "Live Runs 663/664 produced duplicate specifications and a low-layer editable file; formal completion bypass is now closed in code, but the in-memory workspace cannot safely resume after application restart and the new code is not yet normal-app Host-verified.",
     "Automatic Evaluation passed a crop-dominant photography result at 89, so current commercial-quality calibration can still convert a technically valid artifact into a false professional success."
   ],
   "nextActions": [
-    "Make the main-image prepare workspace a bounded persistent TaskRun fact and make same-workspace finalize the only owner that can settle Main Image Skill completion; generic save/export remains an atomic Agent capability but cannot issue Skill delivery credit.",
-    "Add failure injection for generic-delivery bypass, duplicate specifications, flattened re-placement, process restart and TaskRun/document/revision drift before another live attempt.",
+    "Persist the main-image prepare workspace as a bounded TaskRun fact and reconcile it against current project, document, group and Photoshop revision after application restart without granting execution authority.",
+    "Add failure injection for process restart, consumed workspace, TaskRun/project/document/group/revision drift and Host file mismatch before another live attempt; the generic-delivery completion bypass already has reusable negative coverage.",
     "Rerun one natural request in a fresh ordinary project and require a unique specification, complex editable layers, exact finalize delivery, same-version PSD/JPG and zero external-document changes.",
     "Calibrate advisory Evaluation against the user's work and Eagle references so strong source photography is not mistaken for sufficient design increment.",
     "Implement request-scoped attachmentRef resolution before the full S1 cohort; then stage scoped external-file and CLI capabilities separately."
   ],
   "activeRequest": {
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
-    "summary": "Preserve trustworthy delivery and Evaluation ownership, keep design authorship with the same multimodal Agent, close a durable TaskRun-owned main-image workspace and unique finalize completion authority, then prove one professionally editable normal-app Photoshop delivery without cross-document effects or commercial-quality false pass.",
+    "summary": "Preserve trustworthy delivery and Evaluation ownership, keep design authorship with the same multimodal Agent, retain the now-closed Manifest-bound workflow completion authority, finish a durable TaskRun-owned main-image workspace, then prove one professionally editable normal-app Photoshop delivery without cross-document effects or commercial-quality false pass.",
     "status": "in_progress",
     "mustDo": [
       "Keep serializer-owned visual receipts, Final Judge binding, E2 delivery refs and Debug projection as one task-bound chain.",
@@ -119,7 +121,7 @@
       "Keep the already pushed anti-contamination baseline separate from unrelated UI work.",
       "Keep the pushed pre-bound/loop-bound ownership and staged whole-set delivery baseline unchanged.",
       "Keep the pushed prepare-to-Agent-layered-design-to-finalize seam without a second DesignIR or Skill-owned aesthetic decisions.",
-      "Persist the bounded workspace under the Runtime TaskRun and make same-workspace finalize the only Main Image Skill completion owner; reject generic-delivery bypass and reconcile after restart.",
+      "Persist the bounded workspace under the Runtime TaskRun and reconcile current Host identity after restart; same-workspace typed receipt is already the only Manifest-bound Skill completion owner.",
       "Rerun the natural request in a fresh ordinary project and verify a unique specification, model-authored selection rationale, complex editable layers, canonical finalize delivery, independent Final Judge and zero external-document mutation.",
       "Use user/Eagle comparison to calibrate advisory Evaluation against crop-only false passes before selecting another design variable.",
       "Close the generic uploaded-attachment source binding before expanding the S1 cohort; keep scoped CLI as a separate capability-provider phase."
