@@ -4081,8 +4081,8 @@ check(
         && composeExecutor.includes("code: 'candidate_structural_reduction_not_compared'")
         && composeExecutor.includes("closureKind: 'comparison'")
         && taskCompletion.includes("entry.name === 'renderLayout' || entry.name === 'composeDesign'")
-        && taskCompletion.includes("entry.name === 'evaluateDesign'")
-        && taskCompletion.includes("entry.result?.evaluationAuthority === 'advisory_visual_critique'"),
+        && !taskCompletion.includes("entry.name === 'evaluateDesign'")
+        && !taskCompletion.includes("entry.result?.evaluationAuthority === 'advisory_visual_critique'"),
     JSON.stringify(composeDesignProperties.document)
 );
 check(

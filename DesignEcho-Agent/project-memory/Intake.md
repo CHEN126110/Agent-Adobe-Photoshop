@@ -12,8 +12,8 @@
 
 - 来源：r23 / r24 / r25 / r36 / r38 多次出现 PSD/JPG 真实落盘但最终 Artifact 引用为空；合并早期 Artifact、Delivery、主图 QA 细分条目。
 - 归属层级：Runtime Delivery / Artifact Repository / same-revision visual binding。
-- 状态：in_progress
-- 下一步：在一次受控真机运行中记录 review binding、`finalArtifactObserved`、全画布 reviewed 状态和 source history，再只修首个失配 owner。
+- 状态：triaged
+- 下一步：代码级首个偏差已修复并通过核心验证；在一次 fresh 受控真机运行中确认 `finalArtifactObserved=true`、PSD/JPG 精确 `runtimeDeliveryResultRefs`、Debug `finalArtifactRefs` 与匹配的视觉出站收据。
 - 边界：不放宽收据、不扫描目录补造交付、不让 Harness 代 Agent 宣称完成。
 
 ### INTAKE-084 Evaluation 协议稳定性与人类校准
@@ -21,7 +21,7 @@
 - 来源：r36 / r37 / r38 的 evaluateDesign 失败，以及自动 85–90 分与人工 `needs_fix` 的偏差；合并早期 QA、评分卡和审美校准条目。
 - 归属层级：Evaluation Profile / model output protocol / reviewed calibration。
 - 状态：triaged
-- 下一步：聚合失败输出并执行缺陷注入集，分别测协议完整率、关键缺陷检出率和假通过率。
+- 下一步：协议完整性、authority 与失败副作用已修复并通过自动验证；下一步用固定缺陷图片和人工标签测关键缺陷检出率、假通过率与分数校准，不把协议通过等同于审美可靠。
 - 边界：评审失败不阻断 agentic 首次可逆写入；不建立第二评审器或默认分数兜底。
 
 ### INTAKE-085 设计师式视觉感知与构图关系
@@ -76,6 +76,6 @@
 
 - 来源：用户 2026-08-31 明确反馈 Agent 运行很慢，希望下一纵切定位并处理；它是现有 S5 目标的前置测量需求，不等同于现在提前牺牲质量提速。
 - 归属层级：Runtime Accounting / Model Provider / Tool orchestration / Photoshop Provider / Performance Evaluation。
-- 状态：planned
-- 下一步：当前 S1 根因纵切结束后，先在同一固定 Case 上拆分模型排队与首 token、推理、Tool 往返、Photoshop modal、重复观察、重复 transform、Reflexion / continuation 重入和 UI 等待的 p50 / p90，再选择占比最高且可逆的瓶颈做配对实验。
+- 状态：in_progress
+- 下一步：历史 r35/r38 已证明模型调用占墙钟约 92%/93%，但调用用途仍是 unscoped。先扩展现有 Runtime Accounting：100% 物理模型调用具备 call kind，100% Tool 调用具备 name/origin，视觉调用关联前一 revision，上下文记录脱敏来源桶；固定同一 Case 跑一次后再选择单变量配对实验。
 - 边界：没有同 Case 基线不宣称提速；不通过减少必要视觉观察、跳过写后读回、缩短到无法完成的预算、换低质量模型或隐藏等待状态获得速度；优化后技术成功率与人工质量不得显著退化。

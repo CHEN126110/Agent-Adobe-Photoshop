@@ -17,12 +17,13 @@
 
 ### 执行步骤
 
-1. `[进行中]` 保存 S0 可回滚基线；核对当前 Git、Agent Runtime、UXP Runtime、Debug Bridge、Photoshop 文档和 fixture 状态。
-2. `[进行中]` 并行审计 `finalArtifactRefs`、Evaluation / Review 复入链和 Design Reliability Case / Attempt 基础设施，确定首个偏差与唯一 owner。
-3. `[待执行]` 为交付引用建立失败夹具并实施最小根因修复；不得扫描目录、扩展完成权限或为主图写专属分支。
-4. `[待执行]` 为 Evaluation 协议建立缺陷注入与同 revision binding 验证；审美校准若需要人工数据，保持独立待验证项。
-5. `[待执行]` 运行专项测试、Agent Renderer 类型检查、UXP 相关测试和一次完整 `maintenance:validate`。
-6. `[待执行]` 在新一次性 fixture 上完成一轮受控真实 Case；记录 canonical Attempt、首个偏差、Artifact、Review 与外部文档保护事实。
+1. `[已完成]` 保存 S0 可回滚基线并提交 `d44ca46c`；核对历史 Runtime / Debug / Photoshop 证据。
+2. `[已完成]` 并行审计 `finalArtifactRefs`、Evaluation / Review 复入链和 Design Reliability 基础设施，确定 DeepSeek 视觉出站收据与 Evaluation authority 为首个偏差。
+3. `[已完成]` 建立 r38 失败形态回归并修复 OpenAI-compatible 图片传输、逐图回执、Final Judge binding 和同 revision PSD/JPG 引用链。
+4. `[已完成]` 建立 Evaluation 缺陷注入，移除 advisory 完成信用、无效输出副作用和错误的主 Agent terminal recovery；审美校准保持独立待验证项。
+5. `[已完成]` 通过专项测试、Agent Renderer 类型检查、UXP 测试与一次完整 65 阶段 `maintenance:validate`。
+6. `[进行中]` 提交代码基线；随后完成 INTAKE-090 现有 Runtime Accounting 的用途/来源归因，不改变行为。
+7. `[待执行]` 在同一固定 fresh Case 上完成一次 profiling，再在新一次性 fixture 上运行受控真实 Case；记录 canonical Attempt、Artifact、Review、性能归因与外部文档保护事实。
 
 ### 退出条件
 

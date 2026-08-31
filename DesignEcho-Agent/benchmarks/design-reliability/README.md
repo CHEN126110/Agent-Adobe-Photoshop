@@ -85,8 +85,9 @@ provenance，禁止 claim、商品类型、颜色或映射字段夹带选图、�
 带到 Debug Bridge，并由 `getProjectContext` 在构建 Agent 实际消费的上下文前后复核，最终把同一摘要写入完成收据；
 不能用 `handleSend` 前的一次旁路读取或事后 Run 中补写旧摘要冒充真实上下文已经绑定。
 
-正式 live 运行的质量优先预算由 Suite 固定为 900000ms。命令行只能显式重复同一个值，不能临时缩短或
-放宽后仍混进同一 cohort；该 timeout 会进入 cohort fingerprint。
+正式 live 运行的质量优先预算只以 `suites.manifest.json` 当前 Suite 的 `timeoutMs` 为准。命令行只能显式
+重复同一个值，不能临时缩短或放宽后仍混进同一 cohort；该 timeout 会进入 cohort fingerprint。README
+不复制具体数值，避免与可执行清单再次漂移。
 
 ## 命令
 
@@ -208,7 +209,7 @@ Agent Context、Prompt、TaskRun 或业务状态。Main 重新核对租约、bin
 和 Eagle 质量锚点仍在独立匿名组中随机化。目标参考不参与“候选与商业质量锚点”的 pairwise，避免把“是否读懂
 用户方向”和“是否达到同品类专业水平”混成一个分数。
 
-当前首条 active 真实 Case 是 `reference-replication-c1163-from-c1164-v1`。它已经冻结一张跨商品目标参考、
+`reference-replication-c1163-from-c1164-v1` 是当前 active Case 之一，不拥有执行顺序。它已经冻结一张跨商品目标参考、
 八张待设计商品摄影图、同商品隐藏用户成稿和一个 Eagle 品类锚点；只能证明这一条跨商品主图迁移基线，
 在完成至少五次正式 Attempt 与严格盲评前仍没有可用成功率。旧 `benchmarks/reference-replication/` 只保留
 合成几何、像素探针和历史机制材料，不再承担 live Attempt、商业质量或发布结论。

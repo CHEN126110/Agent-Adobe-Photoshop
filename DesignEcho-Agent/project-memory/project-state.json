@@ -1,53 +1,57 @@
 {
-  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：关闭 finalArtifactRefs 与 Evaluation/Review 重复 blocker，形成首条可重复的隔离 Photoshop 技术交付链。",
+  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：交付与评审代码根因已通过核心验证；当前提交基线并补 Runtime 性能归因，再运行首条 fresh 隔离 Photoshop 技术交付链。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
     "code": [
       "v3 remains the default production execution path; v5 supplies manifest and governance contracts; bridge is transitional; legacy does not expand.",
       "Agent, Harness, Design Kernel, Skill Package, Tool Provider and Evaluation ownership boundaries are guarded by current project rules and source audits.",
-      "Runtime Delivery Receipt, Artifact Repository, Debug final-artifact sidecar, Task completion and Design Reliability contracts already exist and must be traced before changing production behavior."
+      "OpenAI-compatible non-streaming Final Judge now binds serializer-owned outgoing image receipts to the exact ReviewSet and same-revision editable/raster delivery refs.",
+      "Invalid Evaluation batches fail closed without TaskCompletion, task-card, learning or primary-Agent recovery authority; advisory evaluateDesign cannot close canonical completion."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
-      "S1 startup read-only preflight reached Debug Bridge, Photoshop MCP and a real UXP Runtime, but correctly reported readyForLiveCapture=false."
+      "S1 delivery/review root-cause code passed a fresh 65-stage maintenance:validate run plus DeepSeek adapter, receipt, Evaluation authority and r38-shaped delivery regression tests.",
+      "S1 startup read-only preflight reached Debug Bridge, Photoshop MCP and a real UXP Runtime, but a new matching build, disposable fixture and write authorization must be rechecked before live capture."
     ],
     "manual": [
       "r31 is the only recorded formal zero-intervention technical pass in the earlier main-image reliability evidence; the current S1 cohort is not complete.",
       "r37 and r38 preserved pre-existing external dirty Photoshop document revisions while exposing abandoned-document settlement and final artifact reference gaps.",
+      "r35/r38 accounting attributes about 92-93% of wall time to model calls and only 8-10% to physical Tools; model call purpose is still unscoped.",
       "Human review has not verified stable commercial design quality; automatic scores have missed copy and composition defects."
     ]
   },
   "unverified": [
-    "The first exact owner that drops or clears finalArtifactRefs after paired PSD/JPG delivery.",
-    "Evaluation protocol completeness and same-revision Review binding under the current production build.",
+    "A fresh production sidecar Attempt proving finalArtifactObserved, exact PSD/JPG runtimeDeliveryResultRefs and non-empty Debug finalArtifactRefs under the current commit.",
+    "Human-calibrated Evaluation defect detection and false-pass rate under the current production build.",
+    "Purpose/origin attribution for every physical model and Tool call, visual revision chain and bounded context source buckets.",
     "Five-case technical success and repeatability for the current production build.",
     "Main-image, SKU and detail-page multi-sample Photoshop E2E with editable source and same-revision export delivery.",
     "No-Skill cross-scenario design quality comparable with the user's D:\\A1 neveralone旗舰店 work and Eagle references."
   ],
   "topRisks": [
-    "finalArtifactRefs can remain empty after real paired PSD/JPG delivery.",
-    "evaluateDesign has repeated protocol failures and false-high visual judgments.",
+    "The code-level finalArtifactRefs root is repaired, but the current commit still lacks a fresh real sidecar Attempt.",
+    "Evaluation protocol and authority are repaired, but false-high visual judgments remain uncalibrated.",
     "A dirty or commit-mismatched runtime would make new live evidence non-comparable.",
     "Open Photoshop documents with unresolved ownership must not be modified, saved or closed by the S1 test.",
     "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery."
   ],
   "nextActions": [
-    "Commit the validated S0 documentation baseline and rebuild a matching isolated runtime.",
-    "Locate and reproduce the first finalArtifactRefs projection failure with a reusable contract test.",
-    "Separate Evaluation protocol repair from aesthetic calibration and bind valid verdicts to the current review revision.",
-    "Run one capture-ready isolated Photoshop Case before opening the full S1 cohort."
+    "Commit the validated S1 delivery/review root-cause code baseline.",
+    "Add bounded purpose/origin instrumentation to the existing Runtime Accounting without changing Agent behavior.",
+    "Run one fixed profiling Case, then change only the highest-impact reversible variable.",
+    "Rebuild matching Agent/UXP runtimes and run one capture-ready isolated Photoshop Case before opening the full S1 cohort."
   ],
   "activeRequest": {
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
-    "summary": "Close final artifact reference loss and Evaluation/Review protocol instability, then prove one repeatable isolated Photoshop technical delivery without cross-document effects.",
+    "summary": "Preserve the validated final-artifact and Evaluation root fixes, attribute Runtime performance without quality shortcuts, then prove one repeatable isolated Photoshop technical delivery without cross-document effects.",
     "status": "in_progress",
     "mustDo": [
-      "Trace producer receipts, Agent delivery declarations, Repository projection, Debug receipt and reliability Attempt as one task-bound chain.",
-      "Reproduce each blocker before implementing the smallest root-owner fix.",
+      "Keep serializer-owned visual receipts, Final Judge binding, E2 delivery refs and Debug projection as one task-bound chain.",
+      "Instrument model/Tool/context/visual-loop purpose and origin in the existing observation-only accounting owner.",
       "Keep Evaluation protocol validity separate from human aesthetic calibration.",
       "Protect every pre-existing Photoshop document and use only an authorized disposable fixture for live writes.",
-      "Pass reusable tests, current type checks, core validation and one isolated live Case before buying the full S1 cohort."
+      "Preserve the passed reusable tests and core validation, then obtain one isolated live Case before buying the full S1 cohort."
     ],
     "mustNotDo": [
       "Do not scan directories or treat every export as an Agent-declared final artifact.",
@@ -61,11 +65,10 @@
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
     "source": "project-memory/Plan.md",
     "steps": [
-      "Preserve the S0 governance baseline and align Git, Agent Runtime, UXP Runtime and Debug identities.",
-      "Audit finalArtifactRefs, Evaluation/Review reentry and Design Reliability infrastructure in parallel.",
-      "Add reusable failing fixtures and repair only the first mismatched owner.",
-      "Run targeted validation, renderer typecheck and one full core validation.",
-      "Complete one authorized disposable-fixture Photoshop Case with canonical evidence."
+      "Commit the validated S1 delivery/review root-cause baseline.",
+      "Extend existing Runtime Accounting with bounded model-call, Tool, context and visual-revision attribution.",
+      "Run one fixed profiling Case without artificial behavior changes and select one reversible optimization variable.",
+      "Rebuild matching Agent/UXP runtimes and complete one authorized disposable-fixture Photoshop Case with canonical evidence."
     ]
   },
   "convergenceBaseline": {

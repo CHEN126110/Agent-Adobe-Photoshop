@@ -159,6 +159,38 @@ const {
   "model-visual-presentation-receipt.ts"
 ));
 const {
+  normalizeDebugFinalArtifactRefs
+} = require(path.join(ROOT, "src", "shared", "debug-final-artifact-refs.ts"));
+const {
+  resolveRuntimeExecutionTarget
+} = require(path.join(
+  ROOT,
+  "src",
+  "shared",
+  "agent-runtime-v5",
+  "runtime-execution-target.ts"
+));
+const {
+  projectAgenticFinalDeliveryEvidence
+} = require(path.join(
+  ROOT,
+  "src",
+  "renderer",
+  "services",
+  "agent-runtime",
+  "agentic-final-delivery-evidence.ts"
+));
+const {
+  collectAgentFinalDeliveryDebugProjection
+} = require(path.join(
+  ROOT,
+  "src",
+  "renderer",
+  "services",
+  "agent-runtime",
+  "final-delivery-artifact-collector.ts"
+));
+const {
   resolveDebugProjectReferenceTransportMetadata,
   runWithDebugProjectReferenceTransportScope
 } = require(path.join(
@@ -6734,6 +6766,77 @@ async function main() {
   assert.ok(
     partialReviewEvaluation.checksByFamily.main_image.failedChecks.includes("minimumHumanReviewedRunsPerFamily"),
     "门禁报告必须指出人工评审样本不足"
+  );
+
+  const r38Revision = { documentId: 6145, historyStateId: 6156 };
+  const r38ReviewedTarget = resolveRuntimeExecutionTarget({
+    result: { success: true, documentId: r38Revision.documentId }
+  });
+  assert.ok(r38ReviewedTarget, "r38 形态必须能建立不透明目标身份");
+  const r38ToolLog = [
+    {
+      callId: "mutation-call",
+      name: "transformLayer",
+      arguments: { documentId: r38Revision.documentId },
+      result: { success: true, documentId: r38Revision.documentId }
+    },
+    {
+      callId: "save-psd-call",
+      name: "saveDocument",
+      arguments: { documentId: r38Revision.documentId, format: "psd" },
+      result: {
+        success: true,
+        documentId: r38Revision.documentId,
+        savedPath: "C:\\fixture\\主图\\主图.psd",
+        sourceHistoryStateRef: r38Revision
+      }
+    },
+    {
+      callId: "save-jpg-call",
+      name: "saveDocument",
+      arguments: { documentId: r38Revision.documentId, format: "jpg" },
+      result: {
+        success: true,
+        documentId: r38Revision.documentId,
+        savedPath: "C:\\fixture\\主图\\主图.jpg",
+        sourceHistoryStateRef: r38Revision
+      }
+    }
+  ];
+  const r38DeliveryEvidence = projectAgenticFinalDeliveryEvidence({
+    deliveryOutputs: ["main_image_psd", "main_image_preview"],
+    requirements: [{ id: "production-delivery", label: "交付", status: "passed" }],
+    toolCallLog: r38ToolLog,
+    reviewedTarget: r38ReviewedTarget,
+    reviewedHistoryStateRef: r38Revision
+  });
+  assert.deepStrictEqual(
+    r38DeliveryEvidence.resultRefs,
+    ["save-psd-call", "save-jpg-call"],
+    "同 revision 的 saveDocument PSD + JPG 必须形成精确 E2 result refs"
+  );
+  const r38DebugProjection = collectAgentFinalDeliveryDebugProjection({
+    entries: r38ToolLog,
+    resultRefs: r38DeliveryEvidence.resultRefs,
+    includeProducerReceipts: true
+  });
+  assert.deepStrictEqual(
+    normalizeDebugFinalArtifactRefs(r38DebugProjection.paths, "C:\\fixture"),
+    ["主图/主图.psd", "主图/主图.jpg"],
+    "r38 producer refs 必须机械贯穿 Debug relative finalArtifactRefs"
+  );
+  const staleR38ToolLog = JSON.parse(JSON.stringify(r38ToolLog));
+  staleR38ToolLog[2].result.sourceHistoryStateRef.historyStateId += 1;
+  assert.strictEqual(
+    projectAgenticFinalDeliveryEvidence({
+      deliveryOutputs: ["main_image_psd", "main_image_preview"],
+      requirements: [{ id: "production-delivery", label: "交付", status: "passed" }],
+      toolCallLog: staleR38ToolLog,
+      reviewedTarget: r38ReviewedTarget,
+      reviewedHistoryStateRef: r38Revision
+    }).status,
+    "incomplete",
+    "任一交付 revision 不匹配时不得拼接旧文件或扫描目录补造最终稿"
   );
 
   console.log("Design Reliability 纯逻辑验证通过：TaskRun 合并、真实 mutation、假完成、人工评审分母、发布门禁与 cohort 可比性均已覆盖。");

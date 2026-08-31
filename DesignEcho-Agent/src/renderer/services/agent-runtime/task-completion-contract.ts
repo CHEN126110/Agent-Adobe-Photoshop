@@ -1624,37 +1624,6 @@ function collectRenderLayoutOwnerVisualReviewCounts(
     );
 }
 
-function hasVersionBoundIndependentCriticPass(
-    toolCallLog: AgentToolCallLogEntry[],
-    owner: LatestRenderLayoutQualityOwner,
-    afterIndex: number
-): boolean {
-    const timeline = buildAgentOperationDocumentTimeline(toolCallLog);
-    let latestRelevantMutationIndex = afterIndex;
-    for (let index = afterIndex + 1; index < toolCallLog.length; index += 1) {
-        if (timeline.entries[index]?.photoshopMutationObserved
-            && sameAgentOperationDocumentContext(owner.documentContext, timeline.entries[index])) {
-            latestRelevantMutationIndex = index;
-        }
-    }
-    const latestMutationProof = readCompletionMutationProof(toolCallLog[latestRelevantMutationIndex]);
-    const expectedRevision = latestMutationProof?.after
-        || readPhotoshopHistoryStateRef(toolCallLog[latestRelevantMutationIndex]?.result);
-    if (!expectedRevision) return false;
-    return toolCallLog.some((entry, index) => (
-        index > latestRelevantMutationIndex
-        && entry.name === 'evaluateDesign'
-        && completionOperationSucceeded(entry)
-        && entry.result?.evaluationAuthority === 'advisory_visual_critique'
-        && entry.result?.evaluation?.verdict === 'pass'
-        && sameAgentOperationDocumentContext(owner.documentContext, timeline.entries[index])
-        && samePhotoshopHistoryStateRef(
-            readPhotoshopHistoryStateRef(entry.result),
-            expectedRevision
-        )
-    ));
-}
-
 function hasSameDocumentComparativeVisualReviewPass(
     toolCallLog: AgentToolCallLogEntry[],
     owner: LatestRenderLayoutQualityOwner,
@@ -1750,9 +1719,6 @@ function collectRenderLayoutOwnerQualityState(
             if (visual.allPassed
                 && hasSameDocumentComparativeVisualReviewPass(toolCallLog, owner, layoutLogIndex)) {
                 verifiedClosureCount += 1;
-            } else if (hasVersionBoundIndependentCriticPass(toolCallLog, owner, layoutLogIndex)) {
-                verifiedClosureCount += 1;
-                criticClosureCount += 1;
             } else {
                 unresolvedFindingCount += 1;
             }
@@ -3364,7 +3330,7 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
     );
     let layoutQualityReason: string | undefined;
     if (renderLayoutQuality?.unresolved && unresolvedComparisonFinding) {
-        layoutQualityReason = '候选发生了结构性变化，但当前只有变化事实，没有更优证据。可在同文档最新画面上由模型给出明确比较理由，或使用绑定该版本的独立评审证据闭环；不要把删减本身当成好坏结论。';
+        layoutQualityReason = '候选发生了结构性变化，但当前只有变化事实，没有更优证据。需要主 Agent 在同文档最新画面上给出明确比较理由；advisory 评审只能提供修改建议，不能代替设计作者关闭完成条件。不要把删减本身当成好坏结论。';
     } else if (renderLayoutQuality?.unresolved) {
         layoutQualityReason = 'renderLayout 的结构化质量发现尚未按 finding 指定的同一工具、图层与参数完成闭环；写类修订后还必须有真实局部视觉复核，不能把任意成功动作当作问题已解决。';
     }

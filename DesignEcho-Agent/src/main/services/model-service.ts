@@ -10,6 +10,7 @@
 
 import {
     resolveToolUseVerdict,
+    resolveVisionVerdict,
     capabilityBlocksExecution,
     describeCapabilityBlock
 } from '../../shared/model-capability-verdict';
@@ -64,6 +65,7 @@ import {
     prepareDebugProjectReferenceProviderCandidate,
     readDebugProjectReferenceProviderCandidateKeys
 } from './debug-project-reference-provider-receipt';
+import { buildOpenAICompatibleSuccessfulVisualPresentationReceipt } from './openai-compatible-visual-presentation-receipt';
 import { ProviderSseDecoder } from './provider-sse-decoder';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -1252,8 +1254,15 @@ export class ModelService {
         messages: ModelMessage[],
         options?: ModelChatOptions
     ): Promise<ModelResponse> {
-        const textOnlyMessages = this.toTextOnlyMessages(messages);
-        return this.chatOpenAICompatible(this.deepseek, 'DeepSeek', model, textOnlyMessages, options);
+        const visionVerdict = resolveVisionVerdict({
+            declared: model.supportsVision,
+            provider: model.provider,
+            modelLabel: model.name
+        });
+        const transportMessages = capabilityBlocksExecution(visionVerdict)
+            ? this.toTextOnlyMessages(messages)
+            : messages;
+        return this.chatOpenAICompatible(this.deepseek, 'DeepSeek', model, transportMessages, options);
     }
 
     /**
@@ -1745,10 +1754,21 @@ export class ModelService {
             });
         }
 
+        const visualPresentationReceipt =
+            buildOpenAICompatibleSuccessfulVisualPresentationReceipt({
+                provider: model.provider,
+                modelId: model.apiModelId || model.id,
+                formattedMessages: openaiMessages,
+                candidateKeys: options?.visualPresentationCandidateKeys,
+                responseId: response?.id,
+                responseCreated: response?.created
+            });
+
         return {
             text: content,
             thinking: thinking || undefined,
-            usage: readOpenAICompatibleTokenUsage(providerName, response.usage)
+            usage: readOpenAICompatibleTokenUsage(providerName, response.usage),
+            ...(visualPresentationReceipt ? { visualPresentationReceipt } : {})
         };
     }
 
@@ -2243,10 +2263,13 @@ export class ModelService {
             }
             case 'openai': {
                 if (!this.openai) throw new Error('OpenAI API key not configured');
-                rawResponse = await this.openai.chat.completions.create({
-                    model: apiModelName,
-                    ...formatted
-                });
+                rawResponse = await this.openai.chat.completions.create(
+                    {
+                        model: apiModelName,
+                        ...formatted
+                    },
+                    { timeout: resolveOpenAICompatibleTimeoutMs(options) }
+                );
                 break;
             }
             case 'xiaomi': {
@@ -2257,7 +2280,7 @@ export class ModelService {
                             model: apiModelName,
                             ...formatted
                         },
-                        options?.timeoutMs ? { timeout: options.timeoutMs } : undefined
+                        { timeout: resolveOpenAICompatibleTimeoutMs(options) }
                     );
                 } catch (error: any) {
                     throw new Error(this.formatXiaomiError(error, apiModelName));
@@ -2268,10 +2291,13 @@ export class ModelService {
                 if (!this.deepseek) throw new Error('DeepSeek API key not configured');
                 // thinking 请求参数已由 adapter.formatMessages 按 thinkingEnabled + thinkingRequestParams 写入 formatted。
                 // 此处不再按 provider 名覆盖，避免把模型能力判断散落到调用点。
-                rawResponse = await this.deepseek.chat.completions.create({
-                    model: apiModelName,
-                    ...formatted
-                } as any);
+                rawResponse = await this.deepseek.chat.completions.create(
+                    {
+                        model: apiModelName,
+                        ...formatted
+                    } as any,
+                    { timeout: resolveOpenAICompatibleTimeoutMs(options) }
+                );
                 break;
             }
             case 'smile-ai': {
@@ -2281,7 +2307,7 @@ export class ModelService {
                         model: apiModelName,
                         ...formatted
                     } as any,
-                    options?.timeoutMs ? { timeout: options.timeoutMs } : undefined
+                    { timeout: resolveOpenAICompatibleTimeoutMs(options) }
                 );
                 break;
             }
@@ -2316,6 +2342,23 @@ export class ModelService {
 
         // Parse response using adapter
         const parsed = adapter.parseResponse(rawResponse);
+        const visualPresentationReceipt = (
+            parsed.stopReason === 'end_turn'
+            || parsed.stopReason === 'tool_use'
+            || parsed.stopReason === 'stop_sequence'
+        )
+            ? buildOpenAICompatibleSuccessfulVisualPresentationReceipt({
+                provider,
+                modelId: apiModelName,
+                formattedMessages: formatted?.messages,
+                candidateKeys: options?.visualPresentationCandidateKeys,
+                responseId: rawResponse?.id,
+                responseCreated: rawResponse?.created
+            })
+            : undefined;
+        if (visualPresentationReceipt) {
+            parsed.visualPresentationReceipt = visualPresentationReceipt;
+        }
         requireDebugProjectReferenceProviderReceipt(debugProjectReferenceCandidate, {
             provider,
             modelId: apiModelName,

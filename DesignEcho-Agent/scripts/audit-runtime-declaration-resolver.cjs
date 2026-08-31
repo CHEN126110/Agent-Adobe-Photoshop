@@ -9395,6 +9395,54 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
   });
   assert.strictEqual(requiredReceiptMismatch.status, 'judge_unavailable');
   assert.strictEqual(requiredReceiptMismatch.results, null, 'wrong image key/order/digest must not earn visual evidence credit');
+
+  let subMinimumBudgetJudgeCalled = false;
+  const subMinimumBudget = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 4_999,
+    terminalQualityReserveMs: 0,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 0,
+    callJudge: async () => {
+      subMinimumBudgetJudgeCalled = true;
+      return { content: judgeResponse };
+    },
+    callDiagnosisRepair: async () => ({ content: repairResponse }),
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(subMinimumBudget.status, 'judge_time_exhausted');
+  assert.strictEqual(subMinimumBudgetJudgeCalled, false,
+    'a sub-5s Final Judge window must settle before Main can clamp it upward and overrun the bounded reserve');
+
+  let invalidBatchRepairCalled = false;
+  const invalidInitialBatch = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async () => ({ content: 'not json' }),
+    callDiagnosisRepair: async () => {
+      invalidBatchRepairCalled = true;
+      return { content: repairResponse };
+    },
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(invalidInitialBatch.status, 'judge_unavailable');
+  assert.strictEqual(invalidInitialBatch.failureKind, 'score_batch_invalid');
+  assert.strictEqual(invalidInitialBatch.results, null,
+    'an unreadable initial score batch must not be projected as completed needs_review results');
+  assert.strictEqual(invalidInitialBatch.diagnosisRepairStatus, 'not_run');
+  assert.strictEqual(invalidBatchRepairCalled, false,
+    'diagnosis-only repair must not run before a complete reliable score batch exists');
 }
 
 /**
@@ -9474,23 +9522,41 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   const modelRequestOptions = [];
   const hostToolNames = [];
   const codexJudgeModelId = 'test-codex-vision';
+  const openAICompatibleJudgeModelId = 'test-deepseek-vision';
   const previousDynamicModels = getDynamicModels();
   clearDynamicModels();
-  setDynamicModels([{
-    id: codexJudgeModelId,
-    name: 'Test Codex Vision',
-    source: 'cloud',
-    provider: 'openai-codex',
-    apiModelId: 'gpt-test',
-    usageKind: 'conversation',
-    usageConfidence: 'declared',
-    roles: ['general', 'vision'],
-    capabilities: ['text-generation', 'vision'],
-    supportsVision: true,
-    supportsToolUse: true,
-    supportsStreaming: false,
-    maxTokens: 8192
-  }]);
+  setDynamicModels([
+    {
+      id: codexJudgeModelId,
+      name: 'Test Codex Vision',
+      source: 'cloud',
+      provider: 'openai-codex',
+      apiModelId: 'gpt-test',
+      usageKind: 'conversation',
+      usageConfidence: 'declared',
+      roles: ['general', 'vision'],
+      capabilities: ['text-generation', 'vision'],
+      supportsVision: true,
+      supportsToolUse: true,
+      supportsStreaming: false,
+      maxTokens: 8192
+    },
+    {
+      id: openAICompatibleJudgeModelId,
+      name: 'Test DeepSeek Vision',
+      source: 'cloud',
+      provider: 'deepseek',
+      apiModelId: 'deepseek-test-vision',
+      usageKind: 'conversation',
+      usageConfidence: 'declared',
+      roles: ['general', 'vision'],
+      capabilities: ['text-generation', 'vision'],
+      supportsVision: true,
+      supportsToolUse: true,
+      supportsStreaming: false,
+      maxTokens: 8192
+    }
+  ]);
   const config = buildAgentTestConfig({
     tools: [requireAgentTool('getDocumentInfo'), requireAgentTool('getAcceptanceSnapshot')],
     maxIterations: 2,
@@ -9776,7 +9842,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
     performanceBudget: config.performanceBudget,
     callbacks: { onStep: (step) => automaticSteps.push(step) }
   });
-  automaticConfig.modelId = codexJudgeModelId;
+  automaticConfig.modelId = openAICompatibleJudgeModelId;
   automaticConfig.agenticArtifactContract = {
     version: 'agentic-artifact-completion-contract/v0',
     skillId: 'design.single_canvas_visual',
@@ -9821,7 +9887,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
         ));
       assert(serializedImages.every(Boolean), JSON.stringify(automaticContentBlocks));
       const visualPresentationReceipt = buildModelVisualPresentationReceipt({
-        provider: 'openai-codex',
+        provider: 'openai-compatible',
         attemptId: 'e'.repeat(64),
         candidateKeys: options?.visualPresentationCandidateKeys,
         serializedImages
@@ -10024,7 +10090,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   assert.deepStrictEqual(automaticDelivery.finalDeliveryResultRefs, [
     'automatic-save-editable',
     'automatic-export-preview'
-  ]);
+  ], 'OpenAI-compatible Judge 回执必须贯穿完整 Agent 终审并机械投影同版本 E2 交付引用');
   setDynamicModels(previousDynamicModels);
 }
 
@@ -11231,6 +11297,9 @@ function buildPlanNeutralTerminalClosureGap(options = {}) {
   assert(evaluationProfile, 'general design evaluation profile must exist');
   const summary = {
     ...buildTerminalClosureBehaviorSummary('needs_review'),
+    ...(options.finalQualityModelProtocolDigest
+      ? { finalQualityModelProtocolDigest: options.finalQualityModelProtocolDigest }
+      : {}),
     designEvaluationProfileDigest: {
       version: 'design-evaluation-profile-digest/v0',
       profileId: evaluationProfile.profileId,
@@ -11270,6 +11339,10 @@ function buildPlanNeutralTerminalClosureGap(options = {}) {
     reviewHistoryStateRef: options.reviewHistoryStateRef || { documentId: 71, historyStateId: 10 },
     finalQualityJudgeAvailable: options.finalQualityJudgeAvailable !== false
   });
+  if (options.expectNoGap) {
+    assert.strictEqual(gap, undefined);
+    return gap;
+  }
   assert(gap && gap.kind === 'post_write_evidence');
   return gap;
 }
@@ -11288,6 +11361,25 @@ async function assertNaturalFinalResponseContinuesInSameAgentInstance() {
   });
   assert.deepStrictEqual(finalJudgeRetryGap.missingEvidenceKinds, ['fresh_visual'],
     'a fresh ReviewSet with a missing required Final Judge verdict must remain recoverable in-instance');
+  const explicitUnavailableJudgeGap = buildPlanNeutralTerminalClosureGap({
+    reviewHistoryStateRef: { documentId: 71, historyStateId: 11 },
+    expectNoGap: true,
+    finalQualityModelProtocolDigest: {
+      judgeStatus: 'unavailable',
+      judgeFailureKind: 'score_batch_invalid',
+      diagnosisRepairStatus: 'not_run',
+      diagnosisRepairTargetCount: 0,
+      actionableDiagnosisCount: 0,
+      evidenceScope: {
+        finalArtifactObserved: false,
+        selectedSourceCompared: false,
+        declaredReferenceCompared: false,
+        candidateSetCompared: false
+      }
+    }
+  });
+  assert.strictEqual(explicitUnavailableJudgeGap, undefined,
+    'an explicit Final Judge protocol failure belongs to Evaluation and must not wake the primary Agent as a missing-visual recovery');
   assert.strictEqual(projectTerminalClosureRuntimeBoundary({
     gap,
     signalAborted: false,

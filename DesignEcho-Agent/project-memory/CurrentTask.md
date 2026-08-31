@@ -11,10 +11,13 @@
 
 ### 当前事实
 
-- S0 文档真相源治理已经通过 65 项核心验证；当前项目路线、Owner 边界和 SMART 出口已经收口。
-- 只读 Design Reliability preflight 能连接 Debug Bridge、Photoshop MCP 和真实 UXP Runtime，但当前仍因 S0 工作树未提交、Agent Runtime 提交不匹配、未提供一次性 fixture、未签发 Debug 写授权以及打开文档 ownership 未解析而不可开始正式写入。
-- `finalArtifactRefs` 已在多次真实运行中出现“PSD / JPG 已产生但最终引用为空”；正式基准明确禁止扫描目录补造结果，只接受 Agent delivery receipt 与同 revision Repository 证据。
-- `evaluateDesign` 同时存在结构协议失败与高分漏检两类问题；协议完整性、同目标绑定和审美校准必须分开归因，不能用默认分数或第二评审器掩盖。
+- S0 文档真相源治理已提交为 `d44ca46c`；当前项目路线、Owner 边界和 SMART 出口已经收口。
+- r38 的首个偏差已经定位：DeepSeek 普通视觉调用曾被强制转为文本；非 Codex Final Judge 又没有 serializer-owned 出站图片收据，导致评分虽返回，`finalArtifactObserved` 仍为 false，后续同 revision PSD/JPG 无法取得 E2 引用信用。
+- 当前代码已让 OpenAI-compatible 非流式 Final Judge 保留真实图片、在完整 Provider 终态后签发逐图字节回执，并把回执绑定贯穿到全画布终审、同 revision PSD/JPG `resultRefs` 与 Debug 相对路径；残缺终态、拒绝、缺 response id、图片/候选不一致均不签发。
+- Evaluation 协议已 fail closed：非法批次不补默认分数；advisory `evaluateDesign` 不再取得 TaskCompletion 信用；协议失败不写任务卡、不触发重复设计问题，也不进入学习候选；明确 Evaluation 故障不会再被改写成“缺少画面检查”唤醒主 Agent。
+- 当前改动已通过相称专项测试和一次完整 65 阶段 `maintenance:validate`，含 Agent 类型检查、UXP 测试与 production build。
+- r35 / r38 性能账本显示模型耗时约占墙钟 92% / 93%，普通 Agent 模型回合 35 / 29 次；Photoshop 快照与 transform 本身只占数秒。当前直接瓶颈更像高轮次和少数长输出，巨大 history / reasoning / Tool Schema 是待归因的结构负担，不能直接靠删上下文或降 reasoning 处理。
+- 只读 Design Reliability preflight 曾可连接 Debug Bridge、Photoshop MCP 和真实 UXP Runtime；新的代码提交、匹配构建、一次性 fixture、Debug 写授权和打开文档 ownership 仍需重新核对后才可开始正式写入。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
 
 ### 实施边界
@@ -27,18 +30,19 @@
 
 ### 下一步
 
-1. 固化并提交 S0 文档治理基线，重建与当前提交一致的 Agent / UXP 调试运行身份。
-2. 追踪 `runtimeDeliveryReceipt → final-delivery-artifact-collector → debug sidecar → ChatPanel submit receipt → design-reliability` 全链，建立能复现空 `finalArtifactRefs` 的可复用契约测试。
-3. 只修首个丢失或错误清空交付引用的 owner；运行专项测试、Renderer 类型检查和核心验证。
-4. 聚合 Evaluation 协议失败，分别验证结构解析、同 revision Review binding、DesignVerdict 投影和用户可见状态；协议问题与审美校准分开处理。
-5. 准备一个新的隔离 fixture，完成一轮真实写入、读回、保存、导出和诚实终态；通过后再冻结剩余 5 Case × 2 队列。
+1. 提交已经通过完整核心验证的 S1 代码根因纵切，取得干净、可回滚的 Runtime 构建身份。
+2. 执行 INTAKE-090 instrumentation-only 性能归因：扩展现有 Runtime Accounting 的模型调用用途、Tool 名称/来源、视觉 revision 链和上下文来源桶；不改变 Agent 行为或质量预算。
+3. 用同一个固定 fresh Case 运行一次无人工纠正的 profiling，识别最慢 5 个调用与低增量视觉循环；随后一次只改一个可逆变量。
+4. 重建与提交一致的 Agent / UXP 调试运行，准备新的隔离 fixture 和授权，完成一轮真实写入、读回、保存、导出和诚实终态。
+5. fresh Attempt 同时证明 `finalArtifactObserved=true`、PSD/JPG 精确 `runtimeDeliveryResultRefs`、非空 Debug `finalArtifactRefs` 与外部文档零变化后，再冻结剩余 5 Case × 2 队列。
 
 ### 验证与未知
 
 - 必须验证：交付引用来自 Agent 声明且精确匹配 producer receipt；包含至少一个可编辑源稿和一个栅格导出；二者绑定同一任务目标与允许的 revision。
 - 必须验证：外部文档 revision 零变化；失败不会被表达成“已完成”或“结果需要复核”；同一 blocker 不会通过重试、换措辞或新 TaskRun 被隐藏。
-- 必须验证：Evaluation 输出非法时保留真实协议失败并给 Agent 可行动事实；合法结果只能消费当前 Review set，不得伪造人工裁决或默认高分。
-- 当前未知：空引用发生在 producer receipt、结果引用集合、Reflexion generation 清空、Debug sidecar 发布还是 Attempt 规范化；以代码追踪和失败夹具确定首个偏差。
+- 已自动验证：Evaluation 输出非法时保持协议失败且不污染 Agent、TaskCompletion、任务卡或学习；合法结果只能消费当前 ReviewSet，不得伪造人工裁决或默认高分。
+- 已自动验证：r38 形态的同 revision PSD/JPG 能机械投影 E2 refs 与 Debug 相对路径，任一 revision 不一致时整组失败。
+- 当前未知：新生产构建的完整真实 sidecar 链尚未运行，不能据此宣称 r38 实机已修好；自动 85–90 分漏检错字、标题重量和商业完成度的校准问题也仍未解决。
 - 当前未知：真实 Debug 写授权与一次性 fixture 尚未准备；在提交、构建和环境身份一致前不得启动 Photoshop 写入。
 
 ### 状态

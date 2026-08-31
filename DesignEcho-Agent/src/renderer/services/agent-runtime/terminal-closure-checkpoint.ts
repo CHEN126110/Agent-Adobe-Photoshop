@@ -246,6 +246,11 @@ export function projectRecoverableTerminalClosureGap(input: {
         ...(digest?.missingRequiredCheckKeys || []),
         ...(digest?.requiredNeedsReviewCheckKeys || [])
     ]);
+    // Final Judge 已经形成协议摘要时，fresh_visual 的缺口属于 Evaluation Owner 的结果，
+    // 不是主 Agent 尚未观察画面。协议无效、Provider 不可用、回执不可信或 revision 过期
+    // 都不能被改写成一条通用“继续设计”消息，否则会诱发重复看图甚至误改成品。
+    const finalQualityJudgeCanStillRun = input.finalQualityJudgeAvailable
+        && !summary.finalQualityModelProtocolDigest;
     const recoverableChecks = input.evaluationProfile?.checks
         .filter((check) => {
             const runtime = check.runtime;
@@ -256,7 +261,7 @@ export function projectRecoverableTerminalClosureGap(input: {
                 && runtime.repair.targetStage === 'R5'
                 && (runtime.evidence === 'fresh_structure'
                     || (runtime.evidence === 'fresh_visual'
-                        && input.finalQualityJudgeAvailable))
+                        && finalQualityJudgeCanStillRun))
             );
         })
         .map((check) => ({ key: check.key, evidence: check.runtime?.evidence })) || [];

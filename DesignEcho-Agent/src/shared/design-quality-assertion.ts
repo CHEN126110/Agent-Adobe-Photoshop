@@ -1053,6 +1053,11 @@ export type FinalQualityJudgeStatus =
     | 'unavailable'
     | 'time_exhausted';
 
+export type FinalQualityJudgeFailureKind =
+    | 'provider_call_failed'
+    | 'visual_presentation_unverified'
+    | 'score_batch_invalid';
+
 export type FinalQualityDiagnosisRepairDigestStatus =
     | 'not_run'
     | 'not_required'
@@ -1069,6 +1074,8 @@ export type FinalQualityDiagnosisRepairDigestStatus =
  */
 export interface FinalQualityModelProtocolDigest {
     judgeStatus: FinalQualityJudgeStatus;
+    /** 仅用于归属首个偏差；不会进入设计判断或用户文案。旧记录可以缺席。 */
+    judgeFailureKind?: FinalQualityJudgeFailureKind;
     diagnosisRepairStatus: FinalQualityDiagnosisRepairDigestStatus;
     diagnosisRepairTargetCount: number;
     actionableDiagnosisCount: number;
@@ -1096,6 +1103,11 @@ const FINAL_QUALITY_JUDGE_STATUSES = new Set<FinalQualityJudgeStatus>([
     'unavailable',
     'time_exhausted'
 ]);
+const FINAL_QUALITY_JUDGE_FAILURE_KINDS = new Set<FinalQualityJudgeFailureKind>([
+    'provider_call_failed',
+    'visual_presentation_unverified',
+    'score_batch_invalid'
+]);
 const FINAL_QUALITY_DIAGNOSIS_REPAIR_DIGEST_STATUSES = new Set<FinalQualityDiagnosisRepairDigestStatus>([
     'not_run',
     'not_required',
@@ -1107,20 +1119,25 @@ const FINAL_QUALITY_DIAGNOSIS_REPAIR_DIGEST_STATUSES = new Set<FinalQualityDiagn
     'invalid'
 ]);
 
-/** 只接受四个协议事实字段、布尔 evidenceScope 和 0..3 的有界计数。 */
+/** 只接受固定协议事实字段、可选失败归属、布尔 evidenceScope 和 0..3 的有界计数。 */
 export function readFinalQualityModelProtocolDigest(
     value: unknown
 ): FinalQualityModelProtocolDigest | undefined {
     if (!isRecord(value)) return undefined;
     const keys = Object.keys(value).sort();
-    if (keys.join(',') !== [
+    const requiredKeys = [
         'actionableDiagnosisCount',
         'diagnosisRepairStatus',
         'diagnosisRepairTargetCount',
         'evidenceScope',
         'judgeStatus'
-    ].join(',')) return undefined;
+    ];
+    const allowedKeys = value.judgeFailureKind === undefined
+        ? requiredKeys
+        : [...requiredKeys, 'judgeFailureKind'];
+    if (keys.join(',') !== allowedKeys.sort().join(',')) return undefined;
     const judgeStatus = value.judgeStatus as FinalQualityJudgeStatus;
+    const judgeFailureKind = value.judgeFailureKind as FinalQualityJudgeFailureKind | undefined;
     const diagnosisRepairStatus = value.diagnosisRepairStatus as FinalQualityDiagnosisRepairDigestStatus;
     const diagnosisRepairTargetCount = Number(value.diagnosisRepairTargetCount);
     const actionableDiagnosisCount = Number(value.actionableDiagnosisCount);
@@ -1139,6 +1156,8 @@ export function readFinalQualityModelProtocolDigest(
         return undefined;
     }
     if (!FINAL_QUALITY_JUDGE_STATUSES.has(judgeStatus)
+        || (judgeFailureKind !== undefined
+            && !FINAL_QUALITY_JUDGE_FAILURE_KINDS.has(judgeFailureKind))
         || !FINAL_QUALITY_DIAGNOSIS_REPAIR_DIGEST_STATUSES.has(diagnosisRepairStatus)
         || !Number.isSafeInteger(diagnosisRepairTargetCount)
         || diagnosisRepairTargetCount < 0
@@ -1158,8 +1177,10 @@ export function readFinalQualityModelProtocolDigest(
     if (judgeStatus !== 'completed' && actionableDiagnosisCount !== 0) return undefined;
     if ((judgeStatus === 'unavailable' || judgeStatus === 'time_exhausted')
         && Object.values(evidenceScope).some((observed) => observed === true)) return undefined;
+    if (judgeFailureKind !== undefined && judgeStatus !== 'unavailable') return undefined;
     return {
         judgeStatus,
+        ...(judgeFailureKind ? { judgeFailureKind } : {}),
         diagnosisRepairStatus,
         diagnosisRepairTargetCount,
         actionableDiagnosisCount,

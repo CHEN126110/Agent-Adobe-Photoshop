@@ -28,7 +28,7 @@ export interface ModelVisualPresentationReceiptImage {
  */
 export interface ModelVisualPresentationReceipt {
     version: typeof MODEL_VISUAL_PRESENTATION_RECEIPT_VERSION;
-    provider: 'openai-codex';
+    provider: 'openai-codex' | 'openai-compatible';
     binding: 'successful_provider_turn';
     /** Provider thread / turn 身份的不可逆摘要，不暴露原始远端标识。 */
     attemptId: string;
@@ -54,6 +54,35 @@ const MAX_VISUAL_PRESENTATION_CANDIDATE_KEY_CHARS = 512;
 const MAX_VISUAL_PRESENTATION_DECODED_BYTES = 64 * 1024 * 1024;
 const SERIALIZED_IMAGE_DATA_URL_PATTERN =
     /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]*={0,2})$/u;
+
+const MODEL_PROVIDERS_WITH_VISUAL_PRESENTATION_RECEIPTS = new Set([
+    'openai-codex',
+    'openai',
+    'deepseek',
+    'xiaomi',
+    'smile-ai'
+]);
+
+function isModelVisualPresentationReceiptProvider(
+    value: unknown
+): value is ModelVisualPresentationReceipt['provider'] {
+    return value === 'openai-codex' || value === 'openai-compatible';
+}
+
+/**
+ * 当前在非流式 chat / provider-adapter 终态真正实现 serializer-owned 逐图出站收据的模型 Provider。
+ *
+ * 这是 transport 能力，不是视觉模型能力：调用方仍需确认具体模型支持视觉。直接流式
+ * transport 目前不在此能力内；未列入的 Provider 保持 unknown，不能因请求成功或入站
+ * 消息带图就补造回执。
+ */
+export function modelProviderSupportsNonStreamingVisualPresentationReceipt(
+    provider: unknown
+): boolean {
+    return MODEL_PROVIDERS_WITH_VISUAL_PRESENTATION_RECEIPTS.has(
+        String(provider || '').trim().toLowerCase()
+    );
+}
 
 function readBase64Value(character: string): number {
     return BASE64_ALPHABET.indexOf(character);
@@ -151,7 +180,7 @@ export function buildModelVisualPresentationReceipt(input: {
     candidateKeys: readonly string[] | undefined;
     serializedImages: readonly SerializedVisualImageProjection[];
 }): ModelVisualPresentationReceipt | undefined {
-    if (input.provider !== 'openai-codex') return undefined;
+    if (!isModelVisualPresentationReceiptProvider(input.provider)) return undefined;
     const attemptId = String(input.attemptId || '').trim().toLowerCase();
     const candidateKeys = normalizeCandidateKeys(input.candidateKeys);
     if (!/^[a-f0-9]{64}$/u.test(attemptId)
@@ -194,7 +223,7 @@ export function readModelVisualPresentationReceipt(
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const record = value as Partial<ModelVisualPresentationReceipt>;
     if (record.version !== MODEL_VISUAL_PRESENTATION_RECEIPT_VERSION
-        || record.provider !== 'openai-codex'
+        || !isModelVisualPresentationReceiptProvider(record.provider)
         || record.binding !== 'successful_provider_turn'
         || !Array.isArray(record.images)
         || record.imageCount !== record.images.length

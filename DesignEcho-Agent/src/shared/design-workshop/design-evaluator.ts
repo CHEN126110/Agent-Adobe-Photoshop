@@ -19,6 +19,8 @@ export interface DesignEvaluationCriterionScore {
 
 export interface DesignEvaluationResult {
     version: 'design-evaluation/v1';
+    /** 模型输出是否完整通过当前结构化协议；invalid 不能产生任务卡或学习副作用。 */
+    protocolStatus: 'valid' | 'invalid';
     /** 独立视觉批评只提供改进证据，不拥有 canonical 质量或交付裁决权。 */
     authority: 'advisory_visual_critique';
     /** 0–10 加权总分 */
@@ -104,8 +106,9 @@ export function buildDesignEvaluationPrompt(input: {
         '4. 功能（function）：一眼看懂卖什么、主张是什么、下一步该干什么；文字可读；主体在实际使用尺寸下可辨，尺度、留白与裁切服务当前任务。',
         '',
         '整体感与原创性权重更高。给出 advisory verdict：pass（当前画面暂无明确修改建议，不代表正式质量通过或可交付）/ revise（方向可用，但需要解决仍在损害目标的视觉关系）/ pivot（核心素材、构图机制或方向本身没有解决任务）。',
+        '每个 criteria.note 必须写一条非空的画面依据；不得省略四个维度，也不得用字符串或越界数字表示 score。',
         'critiques 最多 5 条，必须按对用户目标的影响从高到低排列，不得因为字号、间距或边缘更容易描述就把它们放在方向、素材角色或主焦点失效之前。每条都要指向可见关系和预期效果，不要抽象词。',
-        'nextMoves 1–3 条：先说必须保留的有效关系，再给出能解决最高影响根因的语义级修订。如果根因是素材或方向，应明确说替换关系或换方向，不要用局部移动、缩放或叠加掩盖。'
+        'pass 时 critiques 必须是空数组；revise 或 pivot 时 critiques 至少一条。nextMoves 始终为 1–3 条：先说必须保留的有效关系，再给出能解决最高影响根因的语义级修订。如果根因是素材或方向，应明确说替换关系或换方向，不要用局部移动、缩放或叠加掩盖。'
     );
     if (input.deliverable) lines.push('', `交付物：${input.deliverable}`);
     if (input.rationale) {
@@ -127,25 +130,23 @@ export function buildDesignEvaluationPrompt(input: {
         lines.push(
             '',
             '只返回 JSON，不要其它文字：',
-            '{"referenceGap":{"gap":"large|medium|small","points":["与参考的具体差距"]},"criteria":{"coherence":{"score":0,"note":""},"originality":{"score":0,"note":""},"craft":{"score":0,"note":""},"function":{"score":0,"note":""}},"verdict":"pass|revise|pivot","critiques":[""],"nextMoves":[""],"intentAlignment":""}'
+            '{"referenceGap":{"gap":"large|medium|small","points":["与参考的具体差距"]},"criteria":{"coherence":{"score":0,"note":"整体关系的可见依据"},"originality":{"score":0,"note":"原创判断的可见依据"},"craft":{"score":0,"note":"工艺判断的可见依据"},"function":{"score":0,"note":"功能判断的可见依据"}},"verdict":"pass|revise|pivot","critiques":[],"nextMoves":["必须保留或优先修改的关系"],"intentAlignment":"设计说明与画面的对应关系"}'
         );
     } else {
         lines.push(
             '',
             '只返回 JSON，不要其它文字：',
-            '{"criteria":{"coherence":{"score":0,"note":""},"originality":{"score":0,"note":""},"craft":{"score":0,"note":""},"function":{"score":0,"note":""}},"verdict":"pass|revise|pivot","critiques":[""],"nextMoves":[""],"intentAlignment":""}'
+            '{"criteria":{"coherence":{"score":0,"note":"整体关系的可见依据"},"originality":{"score":0,"note":"原创判断的可见依据"},"craft":{"score":0,"note":"工艺判断的可见依据"},"function":{"score":0,"note":"功能判断的可见依据"}},"verdict":"pass|revise|pivot","critiques":[],"nextMoves":["必须保留或优先修改的关系"],"intentAlignment":"设计说明与画面的对应关系"}'
         );
     }
     return lines.join('\n');
 }
 
-function clamp10(value: unknown): number {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.min(10, Math.round(n * 10) / 10));
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function extractJson(text: string): any | null {
+function extractJson(text: string): unknown {
     const source = String(text || '');
     const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const candidate = fenced ? fenced[1] : source;
@@ -160,51 +161,115 @@ function extractJson(text: string): any | null {
 }
 
 function parseReferenceGap(value: unknown): DesignEvaluationResult['referenceGap'] {
-    if (!value || typeof value !== 'object') return undefined;
-    const record = value as Record<string, unknown>;
+    if (!isRecord(value)) return undefined;
+    const record = value;
     const gapRaw = String(record.gap || '').toLowerCase();
-    const gap: 'large' | 'medium' | 'small' = gapRaw === 'large' || gapRaw === 'small' ? gapRaw : 'medium';
+    if (gapRaw !== 'large' && gapRaw !== 'medium' && gapRaw !== 'small') return undefined;
+    const gap: 'large' | 'medium' | 'small' = gapRaw;
     const points = (Array.isArray(record.points) ? record.points : [])
         .map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5);
     if (points.length === 0) return undefined;
     return { gap, points };
 }
 
+function buildInvalidDesignEvaluation(
+    text: string,
+    model: string | undefined,
+    reason: string
+): DesignEvaluationResult {
+    return {
+        version: 'design-evaluation/v1',
+        protocolStatus: 'invalid',
+        authority: 'advisory_visual_critique',
+        overall: 0,
+        verdict: 'revise',
+        criteria: [],
+        critiques: [reason],
+        nextMoves: ['重新评审一次；若仍失败，检查视觉模型的结构化输出和读图能力。'],
+        rawText: String(text || '').slice(0, 2000),
+        model
+    };
+}
+
+function readStrictStringList(value: unknown, max: number): string[] | undefined {
+    if (!Array.isArray(value) || value.length > max) return undefined;
+    if (value.some((item) => typeof item !== 'string' || !item.trim())) return undefined;
+    return value.map((item) => String(item).trim());
+}
+
 /** 解析模型输出为结构化评审；解析失败时给出「无法解析」的诚实结果而不是伪分。 */
 export function parseDesignEvaluation(text: string, model?: string): DesignEvaluationResult {
     const json = extractJson(text);
-    if (!json || typeof json !== 'object') {
-        return {
-            version: 'design-evaluation/v1',
-            authority: 'advisory_visual_critique',
-            overall: 0,
-            verdict: 'revise',
-            criteria: [],
-            critiques: ['评审器输出无法解析为 JSON；本次没有可用分数。'],
-            nextMoves: ['重新评审一次；若仍失败，检查视觉模型是否支持读图。'],
-            rawText: String(text || '').slice(0, 2000),
-            model
-        };
+    if (!isRecord(json)) {
+        return buildInvalidDesignEvaluation(
+            text,
+            model,
+            '评审器输出无法解析为 JSON；本次没有可用分数。'
+        );
     }
-    const criteria: DesignEvaluationCriterionScore[] = (Object.keys(WEIGHTS) as Array<DesignEvaluationCriterionScore['key']>).map((key) => {
-        const raw = json?.criteria?.[key] || {};
-        return { key, label: CRITERIA_LABEL[key], score: clamp10(raw.score), note: String(raw.note || '').trim() };
-    });
+    if (!isRecord(json.criteria)) {
+        return buildInvalidDesignEvaluation(text, model, '评审协议缺少完整 criteria 对象；本次没有可用分数。');
+    }
+    const criteria: DesignEvaluationCriterionScore[] = [];
+    for (const key of Object.keys(WEIGHTS) as Array<DesignEvaluationCriterionScore['key']>) {
+        const raw = json.criteria[key];
+        if (!isRecord(raw)
+            || typeof raw.score !== 'number'
+            || !Number.isFinite(raw.score)
+            || raw.score < 0
+            || raw.score > 10
+            || typeof raw.note !== 'string'
+            || !raw.note.trim()) {
+            return buildInvalidDesignEvaluation(
+                text,
+                model,
+                `评审协议中的 ${key} 必须包含 0–10 数字分数和非空说明；本次没有可用分数。`
+            );
+        }
+        criteria.push({
+            key,
+            label: CRITERIA_LABEL[key],
+            score: Math.round(raw.score * 10) / 10,
+            note: raw.note.trim()
+        });
+    }
     const overall = Math.round(criteria.reduce((sum, item) => sum + item.score * WEIGHTS[item.key], 0) * 10) / 10;
     const verdictRaw = String(json.verdict || '').toLowerCase();
-    const verdict: DesignEvaluationResult['verdict'] = verdictRaw === 'pass' || verdictRaw === 'pivot' ? verdictRaw : 'revise';
-    const list = (value: unknown, max: number) => (Array.isArray(value) ? value : [])
-        .map((item) => String(item || '').trim()).filter(Boolean).slice(0, max);
+    if (verdictRaw !== 'pass' && verdictRaw !== 'revise' && verdictRaw !== 'pivot') {
+        return buildInvalidDesignEvaluation(text, model, '评审协议的 verdict 非法；本次没有可用分数。');
+    }
+    const verdict = verdictRaw as DesignEvaluationResult['verdict'];
+    const critiques = readStrictStringList(json.critiques, 5);
+    const nextMoves = readStrictStringList(json.nextMoves, 3);
+    if (!critiques
+        || !nextMoves
+        || nextMoves.length === 0
+        || (verdict === 'pass' && critiques.length > 0)
+        || (verdict !== 'pass' && critiques.length === 0)) {
+        return buildInvalidDesignEvaluation(
+            text,
+            model,
+            '评审协议的 critiques、nextMoves 与 verdict 不一致；本次没有可用分数。'
+        );
+    }
+    const referenceGap = parseReferenceGap(json.referenceGap);
+    if (json.referenceGap !== undefined && !referenceGap) {
+        return buildInvalidDesignEvaluation(text, model, '评审协议的 referenceGap 不完整；本次没有可用分数。');
+    }
+    if (json.intentAlignment !== undefined && typeof json.intentAlignment !== 'string') {
+        return buildInvalidDesignEvaluation(text, model, '评审协议的 intentAlignment 类型非法；本次没有可用分数。');
+    }
     return {
         version: 'design-evaluation/v1',
+        protocolStatus: 'valid',
         authority: 'advisory_visual_critique',
         overall,
         verdict,
         criteria,
-        critiques: list(json.critiques, 5),
-        nextMoves: list(json.nextMoves, 3),
+        critiques,
+        nextMoves,
         intentAlignment: String(json.intentAlignment || '').trim() || undefined,
-        ...(parseReferenceGap(json.referenceGap) ? { referenceGap: parseReferenceGap(json.referenceGap) } : {}),
+        ...(referenceGap ? { referenceGap } : {}),
         rawText: undefined,
         model
     };

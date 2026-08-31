@@ -19,12 +19,16 @@
 - 图片 targetBounds、contain / cover / fill、anchor、focal point、subjectFillRatio 与写后几何读回已有共享契约和 UXP 实现。
 - 现有设计知识覆盖构图、层级、留白、排版、色彩、主图方法和 Photoshop Craft；知识存在不等于已在具体图片上稳定使用。
 - D-113 / D-114 已修复新建文档生命周期收据和首写前置对象 revision 字段的 producer / consumer 漂移；最新未完成问题已进入 Intake，而不是继续占据当前任务入口。
+- OpenAI-compatible 非流式视觉终审现会从真实 serializer 图片序列签发出站回执，并把当前 ReviewSet 绑定到同 revision 的可编辑源稿与栅格导出；非完整终态、拒绝、缺 response id 或候选不一致均无回执。
+- `evaluateDesign` 明确保持 advisory：不能关闭 TaskCompletion；协议失败不写任务卡或设计学习，也不会被 Harness 伪装成缺少画面检查后拉回主 Agent。
+- Final Judge 不足 5 秒时在 Evaluation Owner 内结算 time exhausted；DeepSeek 图片保留使用三态能力裁决，只有明确 unsupported 才降为文本。
 
 ## 已核实（构建与自动检查）
 
 - 整理前最近记录的代码切片曾通过 65 阶段核心验证、Agent / UXP production build 和相关专项审计；这只证明当时提交的工程边界，不证明当前文档改动或真实设计质量。
 - 本轮整理开始前 `maintenance:planning-check` 与入口文档同步审计退出 0，但前者同时暴露 CurrentTask 与 project-state ID 漂移；因此旧“绿色”不能作为语义一致性证明。
 - 本轮文档改动后的 `maintenance:planning-check`、入口文档审计、编码、仓库卫生、变更边界、Skill /门禁专项及完整 `maintenance:validate` 均通过；核心回归为 65 项，并包含 Agent 类型检查、UXP 测试与 production build。
+- S1 交付 /评审根因代码纵切新增后，再次完成一轮 65 阶段 `maintenance:validate`；专项覆盖真实 DeepSeek `chatWithTools(..., tools=[])` 图片出站、OpenAI-compatible receipt、全画布 Final Judge binding、r38 形态 PSD/JPG E2 refs、Evaluation 非法输出和 advisory authority。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -34,6 +38,7 @@
 - r31 的自动视觉结论为 `85 / needs_review`；r35 等运行暴露标题过重、文字错误和自动评分高估，专业商业质量尚未通过人工盲评。
 - r37 / r38 在外部 dirty Photoshop 文档仍打开的条件下证明了对象级保护可以成立；两次运行仍分别暴露弃稿文档结算和最终 Artifact 引用问题。
 - 多次真实运行证明 Agent 偶尔能说明选图和构图理由，但设计感知、创意方向与后续 Photoshop 参数之间缺少稳定中间表达，常出现连续 transform 搜索。
+- r35 / r38 性能账本显示模型调用耗时分别约占墙钟 92.0% / 93.2%，普通 Agent 模型调用 35 / 29 次；11 次快照本身合计不足 1 秒，Final Judge 约 7–8 秒。当前优先归因高轮次、长输出与低增量视觉往返，不先删终审或降低 reasoning。
 
 ## 当前未核实
 
@@ -46,14 +51,14 @@
 
 ## 当前主要风险
 
-1. `finalArtifactRefs` 在真实 PSD/JPG 已产生时仍可能为空，导致可靠性收据拒绝。
-2. `evaluateDesign` 存在连续协议 /解析失败和自动高分失真。
+1. `finalArtifactRefs` 的代码级首个偏差已修复，但尚无当前提交的 fresh 真实 sidecar Attempt，运行态闭环仍未核实。
+2. `evaluateDesign` 的协议与 authority 已修复；自动高分漏检错字、标题重量和商业完成度的校准仍未解决。
 3. 图片内容被压缩成单主体 bbox、矩形目标区和粗锚点，不能完整表达负空间、保护部位、多主体和视觉重量。
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
 5. 历史 Markdown、旧命令和旧模型配置可能再次进入上下文并误导开发。
 
 ## 当前下一步
 
-1. 当前已激活 `S1-DELIVERY-REVIEW-ROOT-CAUSE-001`，先关闭 INTAKE-083 的真实交付引用，再处理 INTAKE-084 的 Evaluation 协议稳定性。
-2. 当前纵切结束后先执行 INTAKE-090 的同 Case 运行效率剖析；只定位主要耗时 owner 和做可逆测量，不提前删除必要观察或验真。
-3. 两个重复 blocker 闭合并取得首轮隔离实机技术交付后，才启动 S1 固定 5 Case × 2 次正式队列；S1 达标后再进入 S2 设计认知与首次构图。
+1. 当前 `S1-DELIVERY-REVIEW-ROOT-CAUSE-001` 的代码根因与核心验证已闭合，先提交可回滚基线；fresh Photoshop Attempt 仍是退出条件。
+2. 紧接着执行 INTAKE-090 instrumentation-only 纵切：沿用现有 Runtime Accounting 补 call kind、Tool name/origin、视觉 revision 链和上下文来源桶，再固定同一 Case 跑一次，不改变设计行为。
+3. 新提交与 Agent / UXP 构建身份一致、一次性 fixture 和写授权都就绪后，运行首轮隔离实机 Case；只有同时取得真实交付引用和外部文档零变化，才启动 S1 固定 5 Case × 2 次正式队列。

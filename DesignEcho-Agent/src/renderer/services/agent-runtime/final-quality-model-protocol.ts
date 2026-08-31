@@ -8,12 +8,14 @@
 import {
     buildVlmJudgeDiagnosisRepairPrompt,
     evaluateVlmJudgeDiagnosisCoverage,
+    isReliableVlmJudgeBatchComplete,
     mergeVlmJudgeDiagnosisRepairs,
     parseVlmJudgeDiagnosisRepairResponse,
     parseVlmJudgeResponse,
     type DesignAssertion,
     type DesignAssertionResult,
     type FinalQualityDiagnosisRepairDigestStatus,
+    type FinalQualityJudgeFailureKind,
     type FinalQualityModelProtocolDigest
 } from '../../../shared/design-quality-assertion';
 import {
@@ -33,6 +35,7 @@ import type { AgentMessage, ModelTransportAttemptAccounting } from './types';
  * 让一次最慢 Judge 仍可完成，同时为 Host 读回、收据发布与外层终态留出余量。
  */
 export const FINAL_QUALITY_TERMINAL_RESERVE_MS = 240_000;
+const FINAL_QUALITY_MIN_REQUEST_TIMEOUT_MS = 5_000;
 
 export type FinalQualityDiagnosisRepairStatus =
     | 'not_run'
@@ -97,6 +100,7 @@ export type FinalQualityModelProtocolResult =
         status: 'judge_unavailable';
         results: null;
         error: unknown;
+        failureKind: FinalQualityJudgeFailureKind;
         diagnosisRepairStatus: 'not_run';
         diagnosisRepairTargetCount: 0;
     }
@@ -146,6 +150,9 @@ export function projectFinalQualityModelProtocolDigest(
     });
     return {
         judgeStatus,
+        ...(result.status === 'judge_unavailable' && result.failureKind
+            ? { judgeFailureKind: result.failureKind }
+            : {}),
         diagnosisRepairStatus: result.diagnosisRepairStatus as FinalQualityDiagnosisRepairDigestStatus,
         diagnosisRepairTargetCount: Math.max(0, Math.min(
             3,
@@ -281,8 +288,11 @@ function resolveRequestTimeoutMs(input: RunFinalQualityModelProtocolInput): numb
             + terminalQualityReserveMs
             - input.readActiveElapsedMs()
         : input.maxRequestTimeoutMs;
-    if (remainingMs <= 0) return undefined;
-    return Math.max(1, Math.min(input.maxRequestTimeoutMs, Math.floor(remainingMs)));
+    const boundedTimeoutMs = Math.min(input.maxRequestTimeoutMs, Math.floor(remainingMs));
+    // Main 的 OpenAI-compatible transport 对有效请求使用 5s 最小超时。剩余窗口不足时
+    // 在协议 Owner 内直接结算 time_exhausted，不能把 1ms 请求暗中抬到 5s 越过总预算。
+    if (boundedTimeoutMs < FINAL_QUALITY_MIN_REQUEST_TIMEOUT_MS) return undefined;
+    return boundedTimeoutMs;
 }
 
 function buildQualityMessages(
@@ -352,6 +362,7 @@ export async function runFinalQualityModelProtocol(
             status: 'judge_unavailable',
             results: null,
             error,
+            failureKind: 'provider_call_failed',
             diagnosisRepairStatus: 'not_run',
             diagnosisRepairTargetCount: 0
         };
@@ -388,6 +399,7 @@ export async function runFinalQualityModelProtocol(
             status: 'judge_unavailable',
             results: null,
             error: new Error('模型返回了文字评分，但无法确认它实际收到本次画面；本次评分未被采信。'),
+            failureKind: 'visual_presentation_unverified',
             diagnosisRepairStatus: 'not_run',
             diagnosisRepairTargetCount: 0
         };
@@ -399,6 +411,18 @@ export async function runFinalQualityModelProtocol(
         }),
         input.allowedDiagnosisTargets
     );
+    if (!isReliableVlmJudgeBatchComplete(firstResults, input.pending)) {
+        return {
+            status: 'judge_unavailable',
+            results: null,
+            error: new Error(
+                '视觉评审返回了不完整或不可可靠消费的评分批次；本次不会标记为已完成，也不会用默认分数补齐。'
+            ),
+            failureKind: 'score_batch_invalid',
+            diagnosisRepairStatus: 'not_run',
+            diagnosisRepairTargetCount: 0
+        };
+    }
     const coverage = evaluateVlmJudgeDiagnosisCoverage(firstResults, input.pending);
     if (coverage.status !== 'missing') {
         return {

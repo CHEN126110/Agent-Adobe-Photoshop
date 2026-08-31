@@ -11843,17 +11843,17 @@ async function run() {
       && requirementById(reviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.criticClosureCount === 0
       ? []
       : ['compose-design-comparison:same-document-visual-review-did-not-close-comparison']),
-    ...(criticComposeAlternativeContract?.status === 'completed'
-      && requirementById(criticComposeAlternativeContract, 'creative-review')?.status === 'passed'
-      && requirementById(criticComposeAlternativeContract, 'creative-review')?.actual?.independentCriticReviewCount === 1
-      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.status === 'passed'
+    ...(criticComposeAlternativeContract?.status !== 'completed'
+      && requirementById(criticComposeAlternativeContract, 'creative-review')?.status === 'needs_review'
+      && requirementById(criticComposeAlternativeContract, 'creative-review')?.actual?.independentCriticReviewCount === 0
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.status === 'needs_review'
       && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.ownerCount === 2
-      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedOwnerCount === 0
-      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedFindingCount === 0
-      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.verifiedClosureCount === 1
-      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.criticClosureCount === 1
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedOwnerCount === 1
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedFindingCount === 1
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.verifiedClosureCount === 0
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.criticClosureCount === 0
       ? []
-      : ['compose-design-comparison:version-bound-critic-did-not-close-comparison']),
+      : ['compose-design-comparison:advisory-critic-overrode-primary-agent-comparison']),
     ...(requirementById(missingExplicitCopyContract, 'creative-copy')?.status === 'failed'
       && requirementById(missingExplicitCopyContract, 'creative-copy')?.method === 'deterministic'
       && requirementById(missingExplicitCopyContract, 'creative-copy')?.blockerKind === 'required_artifact_missing'

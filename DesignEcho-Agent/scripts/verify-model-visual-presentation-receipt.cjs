@@ -10,6 +10,10 @@ const {
     buildCodexSuccessfulVisualPresentationReceipt
 } = require(path.join(root, 'src/main/services/codex-visual-presentation-receipt.ts'));
 const {
+    buildOpenAICompatibleSuccessfulVisualPresentationReceipt,
+    projectOpenAICompatibleSerializedOutgoingImages
+} = require(path.join(root, 'src/main/services/openai-compatible-visual-presentation-receipt.ts'));
+const {
     projectModelVisualPresentationReceiptRef,
     projectSerializedVisualImageDataUrl,
     readModelVisualPresentationReceipt
@@ -22,6 +26,7 @@ const { OpenAIAdapter } = require(path.join(root, 'src/main/services/provider-ad
 const { AnthropicAdapter } = require(path.join(root, 'src/main/services/provider-adapters/anthropic-adapter.ts'));
 const { GeminiAdapter } = require(path.join(root, 'src/main/services/provider-adapters/gemini-adapter.ts'));
 const { OllamaAdapter } = require(path.join(root, 'src/main/services/provider-adapters/ollama-adapter.ts'));
+const { ModelService } = require(path.join(root, 'src/main/services/model-service.ts'));
 const {
     resolveModelReasoningEffort
 } = require(path.join(root, 'src/shared/model-reasoning-effort.ts'));
@@ -167,7 +172,7 @@ check(
     '逐图摘要与整体 manifest 都会复算'
 );
 
-console.log('[7] 未实现 serializer receipt 的普通 Provider adapter 保持字段缺席');
+console.log('[7] Provider adapter parser 本身无权签发出站回执');
 const ordinaryProviderResponse = new OpenAIAdapter('openai').parseResponse({
     choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 1, completion_tokens: 1 }
@@ -193,7 +198,7 @@ check(
     ordinaryProviderResponses.every((response) => (
         response.visualPresentationReceipt === undefined
     )),
-    '其他 Provider 不用入站消息或成功布尔补造回执'
+    'adapter parser 不用入站消息或成功布尔补造回执；签发只属于 ModelService 的真实 serializer 终态'
 );
 
 console.log('[8] 只有成功 transport attempt 能绑定回执引用');
@@ -247,9 +252,179 @@ check(
     '支持 high 时按质量偏好请求；不支持时最近降级；未披露能力时不伪造档位'
 );
 
-if (failed > 0) {
-    console.error(`\nModel visual presentation receipt 测试失败：${failed} 项`);
-    process.exit(1);
+console.log('[11] OpenAI-compatible 回执只从实际格式化的 image_url 序列签发');
+const openAICompatibleMessages = [{
+    role: 'user',
+    content: [
+        { type: 'text', text: '评分' },
+        { type: 'image_url', image_url: { url: dataUrl('image/jpeg', currentJpegBytes) } },
+        { type: 'image_url', image_url: { url: dataUrl('image/webp', currentWebpBytes) } }
+    ]
+}];
+const openAICompatibleReceipt = buildOpenAICompatibleSuccessfulVisualPresentationReceipt({
+    provider: 'deepseek',
+    modelId: 'deepseek-v4-flash-vision-exp',
+    formattedMessages: openAICompatibleMessages,
+    candidateKeys: ['judge:final', 'judge:candidate'],
+    responseId: 'chatcmpl-internal-1',
+    responseCreated: 123
+});
+const mismatchedOpenAICompatibleReceipt =
+    buildOpenAICompatibleSuccessfulVisualPresentationReceipt({
+        provider: 'deepseek',
+        modelId: 'deepseek-v4-flash-vision-exp',
+        formattedMessages: openAICompatibleMessages,
+        candidateKeys: ['judge:final'],
+        responseId: 'chatcmpl-internal-1',
+        responseCreated: 123
+    });
+check(
+    projectOpenAICompatibleSerializedOutgoingImages(openAICompatibleMessages)?.length === 2
+        && openAICompatibleReceipt?.provider === 'openai-compatible'
+        && openAICompatibleReceipt.images[0].candidateKey === 'judge:final'
+        && openAICompatibleReceipt.images[1].decodedByteSha256 === nodeSha256(currentWebpBytes)
+        && !JSON.stringify(openAICompatibleReceipt).includes('chatcmpl-internal-1')
+        && mismatchedOpenAICompatibleReceipt === undefined,
+    '真实 serializer 顺序、字节摘要、候选键与不可逆 attempt 身份完整绑定'
+);
+
+async function verifyDeepSeekVisionDispatch() {
+    console.log('[12] DeepSeek 视觉型号在 plain chat 与真实 Final Judge adapter 路径都保留图片');
+    const service = new ModelService({});
+    const capturedBodies = [];
+    const capturedRequestOptions = [];
+    const responseModes = ['complete', 'complete', 'complete', 'length', 'refusal', 'missing-id'];
+    service.deepseek = {
+        chat: {
+            completions: {
+                create: async (body, requestOptions) => {
+                    capturedBodies.push(body);
+                    capturedRequestOptions.push(requestOptions);
+                    const responseMode = responseModes[capturedBodies.length - 1] || 'complete';
+                    return {
+                        ...(responseMode === 'missing-id'
+                            ? {}
+                            : { id: `chatcmpl-test-${capturedBodies.length}` }),
+                        created: 456 + capturedBodies.length,
+                        choices: [{
+                            message: responseMode === 'refusal'
+                                ? { content: '', refusal: 'blocked' }
+                                : { content: '完整评分结果' },
+                            finish_reason: responseMode === 'length' ? 'length' : 'stop'
+                        }],
+                        usage: { prompt_tokens: 10, completion_tokens: 3 }
+                    };
+                }
+            }
+        }
+    };
+    const messages = [{
+        role: 'user',
+        content: [
+            { type: 'text', text: '请看图' },
+            {
+                type: 'image',
+                image: {
+                    data: Buffer.from(currentJpegBytes).toString('base64'),
+                    mediaType: 'image/jpeg'
+                }
+            }
+        ]
+    }];
+    const visionResponse = await service.chat(
+        'deepseek-v4-flash-vision-exp',
+        messages,
+        {
+            thinkingEnabled: false,
+            visualPresentationCandidateKeys: ['judge:final']
+        }
+    );
+    const textResponse = await service.chat(
+        'deepseek-v4-pro',
+        messages,
+        {
+            thinkingEnabled: false,
+            visualPresentationCandidateKeys: ['must-not-sign']
+        }
+    );
+    const visionContent = capturedBodies[0]?.messages?.[0]?.content;
+    const textContent = capturedBodies[1]?.messages?.[0]?.content;
+    const adapterMessages = [{
+        role: 'user',
+        content: '请看图',
+        contentBlocks: [{
+            type: 'image',
+            data: Buffer.from(currentWebpBytes).toString('base64'),
+            mediaType: 'image/webp'
+        }]
+    }];
+    const adapterResponse = await service.chatWithTools(
+        'deepseek-v4-flash-vision-exp',
+        adapterMessages,
+        [],
+        {
+            thinkingEnabled: false,
+            timeoutMs: 12_345,
+            visualPresentationCandidateKeys: ['judge:adapter-final']
+        }
+    );
+    const adapterContent = capturedBodies[2]?.messages?.[0]?.content;
+    const adapterReceipt = readModelVisualPresentationReceipt(
+        adapterResponse.visualPresentationReceipt
+    );
+    check(
+        Array.isArray(visionContent)
+            && visionContent.some((block) => block?.type === 'image_url')
+            && readModelVisualPresentationReceipt(visionResponse.visualPresentationReceipt)?.imageCount === 1
+            && typeof textContent === 'string'
+            && textResponse.visualPresentationReceipt === undefined
+            && Array.isArray(adapterContent)
+            && adapterContent.some((block) => block?.type === 'image_url')
+            && adapterReceipt?.provider === 'openai-compatible'
+            && adapterReceipt?.images[0]?.candidateKey === 'judge:adapter-final'
+            && capturedRequestOptions[2]?.timeout === 12_345,
+        'supportsVision=true 才保留实际图片；Final Judge 的 provider_adapter 路径签发真实出站回执并执行有界超时，文本型号不签发伪回执'
+    );
+
+    console.log('[13] 非完整终态与缺失 Provider response id 不能签发视觉回执');
+    const lengthResponse = await service.chatWithTools(
+        'deepseek-v4-flash-vision-exp',
+        adapterMessages,
+        [],
+        { visualPresentationCandidateKeys: ['judge:length'] }
+    );
+    const refusalResponse = await service.chatWithTools(
+        'deepseek-v4-flash-vision-exp',
+        adapterMessages,
+        [],
+        { visualPresentationCandidateKeys: ['judge:refusal'] }
+    );
+    const missingIdResponse = await service.chatWithTools(
+        'deepseek-v4-flash-vision-exp',
+        adapterMessages,
+        [],
+        { visualPresentationCandidateKeys: ['judge:missing-id'] }
+    );
+    check(
+        lengthResponse.stopReason === 'max_tokens'
+            && refusalResponse.stopReason === 'content_blocked'
+            && missingIdResponse.stopReason === 'end_turn'
+            && lengthResponse.visualPresentationReceipt === undefined
+            && refusalResponse.visualPresentationReceipt === undefined
+            && missingIdResponse.visualPresentationReceipt === undefined,
+        'length、refusal 与缺 response id 都保持无回执，不能用成功 HTTP 或入站图片补造'
+    );
 }
 
-console.log('\nModel visual presentation receipt 测试通过。');
+verifyDeepSeekVisionDispatch()
+    .then(() => {
+        if (failed > 0) {
+            console.error(`\nModel visual presentation receipt 测试失败：${failed} 项`);
+            process.exit(1);
+        }
+        console.log('\nModel visual presentation receipt 测试通过。');
+    })
+    .catch((error) => {
+        console.error('\nModel visual presentation receipt 测试异常：', error);
+        process.exit(1);
+    });

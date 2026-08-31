@@ -15,7 +15,6 @@ import {
 import type { RuntimeDesignStrategyDeclaration } from '../../../shared/agent-runtime-v5/runtime-design-strategy-declaration';
 import type { ReflexionHandoff } from '../../../shared/agent-runtime-v5/reflexion-contract';
 import { getModelById, isAgentMultimodalModelId } from '../../../shared/config/models.config';
-import { isCodexSubscriptionModel } from '../../../shared/codex-subscription-contract';
 import { sanitizeUserVisibleDiagnosticText } from '../../../shared/chat-response-cleaner';
 import {
     extractDesignQualityMeasurements,
@@ -28,6 +27,7 @@ import {
     type FinalQualityModelProtocolDigest
 } from '../../../shared/design-quality-assertion';
 import type { PhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
+import { modelProviderSupportsNonStreamingVisualPresentationReceipt } from '../../../shared/model-visual-presentation-receipt';
 import {
     planDesignReviewImages,
     selectDesignReviewSetForFinalJudge
@@ -582,7 +582,9 @@ export async function runFinalQualityReviewRuntime(
         contextMessage: judgeContextMessage,
         contentBlocks: judgeContentBlocks,
         visualPresentationCandidateKeys: judgeVisionCandidateKeys,
-        visualPresentationReceiptPolicy: isCodexSubscriptionModel(getModelById(judgeModelId))
+        visualPresentationReceiptPolicy: modelProviderSupportsNonStreamingVisualPresentationReceipt(
+            getModelById(judgeModelId)?.provider
+        )
             ? 'required'
             : 'optional',
         allowedDiagnosisTargets: reviewTargetInventory.length > 1
