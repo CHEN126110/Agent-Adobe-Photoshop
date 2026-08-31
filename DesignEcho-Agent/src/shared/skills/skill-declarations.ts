@@ -69,6 +69,113 @@ const objParam = (name: string, description: string, required = false) => ({
     required
 });
 
+function mainImagePlacementBoxSchema(name: string, description: string, required: boolean): SkillParameter {
+    return {
+        name,
+        type: 'object',
+        description,
+        required,
+        additionalProperties: false,
+        properties: [
+            numParam('x', '画布像素坐标 X。', true),
+            numParam('y', '画布像素坐标 Y。', true),
+            numParam('width', '区域像素宽度，必须大于 0。', true, { minimum: 1 }),
+            numParam('height', '区域像素高度，必须大于 0。', true, { minimum: 1 })
+        ]
+    };
+}
+
+function mainImageSlotAssignmentsParam(): SkillParameter {
+    const assetSchema: SkillParameter = {
+        name: 'asset',
+        type: 'object',
+        description: 'Agent 为当前精确槽位选定的项目素材；不同槽复用同一文件也必须再次显式声明。',
+        required: true,
+        additionalProperties: false,
+        properties: [
+            strParam('id', '可选的项目素材身份。'),
+            strParam('name', '素材文件名。'),
+            strParam('path', '已观察并选定的素材绝对路径。', true),
+            numParam('width', '源素材像素宽度。', true, { minimum: 1 }),
+            numParam('height', '源素材像素高度。', true, { minimum: 1 })
+        ]
+    };
+    const subjectBoundsSchema: SkillParameter = {
+        name: 'subjectBounds',
+        type: 'object',
+        description: '与当前 asset 精确绑定的主体像素范围，不能复用另一张图的 bounds。',
+        required: true,
+        additionalProperties: false,
+        properties: [
+            numParam('left', '主体左边界。', true),
+            numParam('top', '主体上边界。', true),
+            numParam('right', '主体右边界。', true),
+            numParam('bottom', '主体下边界。', true),
+            numParam('width', '主体宽度。', true, { minimum: 1 }),
+            numParam('height', '主体高度。', true, { minimum: 1 })
+        ]
+    };
+    const presetSchema: SkillParameter = {
+        name: 'preset',
+        type: 'object',
+        description: 'Agent 对当前槽位声明的完整缩放、锚点与裁切意图；Harness 不提供品类默认。',
+        required: true,
+        additionalProperties: false,
+        properties: [
+            strParam('scaleMode', '缩放方式。', true, { enum: ['contain', 'cover'] }),
+            numParam('targetFill', '目标填充比例。', true, { minimum: 0.01 }),
+            numParam('minFill', '最小填充比例。', true, { minimum: 0.01 }),
+            numParam('maxFill', '最大填充比例。', true, { minimum: 0.01 }),
+            strParam('anchor', '主体锚点。', true, {
+                enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center']
+            }),
+            strParam('cropPolicy', '裁切策略。', true, {
+                enum: ['avoid-crop', 'protect-subject', 'allow-crop']
+            }),
+            numParam('visualBiasY', '垂直视觉偏移。', true),
+            numParam('minScale', '最小缩放倍率。', true, { minimum: 0.01 }),
+            numParam('maxScale', '最大缩放倍率。', true, { minimum: 0.01 })
+        ]
+    };
+    const placementSchema: SkillParameter = {
+        name: 'placement',
+        type: 'object',
+        description: 'Agent 对当前槽位声明的目标区域和完整缩放意图。',
+        required: true,
+        additionalProperties: false,
+        properties: [
+            mainImagePlacementBoxSchema('targetBox', '当前素材在工作画布中的目标区域。', true),
+            mainImagePlacementBoxSchema('safeBox', '可选的安全边界；省略时只使用完整画布机械边界。', false),
+            presetSchema,
+            strParam('decisionReason', '为什么这张素材以该区域、锚点和裁切方式进入这个槽。', true)
+        ]
+    };
+    const assignmentSchema: SkillParameterSchema = {
+        type: 'object',
+        description: '一个精确主图槽位的 Agent/用户作者化内容分配。',
+        additionalProperties: false,
+        properties: [
+            strParam('sizeKey', '工作文档规格。', true, { enum: ['800', '750', '1200'] }),
+            strParam('imageType', '槽位所属父组。', true, { enum: ['click', 'conversion'] }),
+            strParam('slotName', '精确子组名，例如 800-1 或转化槽 2。', true),
+            strParam('variantId', 'Agent 声明的当前方向稳定身份。', true),
+            strParam('objective', '当前槽位要完成的设计目标。', true),
+            strParam('visualHook', '可选的视觉重点。'),
+            strParam('layoutFocus', '可选的版式重点。'),
+            strParam('copyRole', '可选的文案角色；无文字设计可省略。'),
+            assetSchema,
+            subjectBoundsSchema,
+            placementSchema
+        ]
+    };
+    return arrParam(
+        'slotAssignments',
+        'Agent/用户对精确 size/imageType/slot 的内容、素材和几何分配。没有条目的槽保持空，不会被 Harness 按数组顺序自动填充。',
+        false,
+        { items: assignmentSchema, maxItems: 27 }
+    );
+}
+
 function semanticMattingGuidanceParam(): SkillParameter {
     const pointSchema: SkillParameterSchema = {
         type: 'object',
@@ -1718,13 +1825,13 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 三规格基线。普通主图交付包含点击图和转化图规则，1200 只出点击图不出转化图；白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
+        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 店铺工作文档基线。三个标准文档都保留 5 个点击槽和 4 个转化槽；每个非空槽必须通过 slotAssignments 精确声明 sizeKey/imageType/slotName/variantId、该槽自己的 asset、subjectBounds 与 placement，跨规格或跨槽复用也要逐条明示。用户明确只要空骨架时才设置 createEmptySkeleton=true，此时不置入素材、不导出 raster。白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
             '如果用户是在处理现有主图的优化、导出或排版，使用这个 skill，而不是模板创建 skill。',
             '普通“做主图”未给规格时，先让 Agent 从当前项目的同类成品与已确认 delivery 规则中选择交付规格；800/750/1200 是无更可靠项目证据时的 Skill 基线，不能由早期参数默认器抢先冻结。',
-            '1200/9:16 只允许点击图，不能生成转化图；白底图是 SKU 源文件导出，不从点击图或转化图裁切。',
+            '800/750/1200 都保留点击图和转化图容器；槽位是否填充由当前 Agent/用户决定，空槽不导出。白底图是 SKU 源文件导出，不从点击图或转化图裁切。',
             '先判断用户是在询问/规划还是明确要求生成文件；工具边界负责限制写入范围，不要用固定规则禁止模型根据任务选择工具。',
             '普通创意主图请求默认先形成策略和设计计划；明确的 SKU 白底图导出请求属于确定性素材生产，可使用 product-disposable-live 白底图专用工具。'
         ],
@@ -1740,6 +1847,11 @@ export const MainImageSkill: SkillDeclaration = {
             enum: ['800', '750', '1200', 'custom']
         }),
         objParam('customSize', 'Custom size object {width,height}'),
+        objParam('agentDesignDecision', 'Agent-authored main-image direction; no Harness default visual plan is supplied'),
+        mainImageSlotAssignmentsParam(),
+        boolParam('createEmptySkeleton', '只创建并保存当前规格的标准空骨架（白底文档、2 个父组、5+4 空槽），不置入素材或导出 raster；仅在用户明确要求空骨架时设置 true。'),
+        numParam('desiredClickImageCount', 'Agent- or user-declared number of authored click directions, capped by authored directions and five structural slots'),
+        numParam('desiredConversionImageCount', 'Agent- or user-declared number of authored conversion directions, capped by authored directions and four structural slots'),
         numParam('productScale', 'Agent- or user-declared subject scale ratio; no Harness default is supplied'),
         strParam('outputDir', 'Output directory'),
         strParam('imageType', 'Main image type', false, {

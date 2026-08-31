@@ -5,7 +5,8 @@
  * - 按名匹配已打开文档 800/750/1200/详情页（去扩展名）；未打开记 notFound 不中断
  * - 目录结构：<导出目录>/主图/800、/主图/750、/主图/1200；详情页切片导出到 <导出目录>
  * - 主图文档：隐藏全部顶层 → 逐个处理「转化图」「点击图」父组 → 其下每个非空子组
- *   单独显示并导出 JPEG（文件名=子组名，非法字符清理）
+ *   单独显示并导出 JPEG（文件名=子组名，非法字符清理）。原 JSX 未先隐藏
+ *   父组内已可见的兄弟子组，这里在每次导出前显式隔离，避免多个方案叠加输出
  * - JPEG 质量自适应：从 12 起，文件 >maxFileSizeMB(默认3MB) 逐级降质，最低 10
  * - 详情页：Save For Web 导出全部切片（JPEG quality 100 optimized）
  * - 每个文档处理后恢复历史状态（不污染文档）；四态报告 success/failure/skipped/notFound
@@ -120,6 +121,12 @@ function hideAllTopLevelLayers(doc) {
     }
 }
 
+function hideAllChildLayerSets(parentGroup) {
+    for (var i = 0; i < parentGroup.layerSets.length; i++) {
+        parentGroup.layerSets[i].visible = false;
+    }
+}
+
 function isEmptyLayerSet(layerSet) {
     if (layerSet.artLayers.length > 0) return false;
     for (var i = 0; i < layerSet.layerSets.length; i++) {
@@ -154,6 +161,7 @@ function exportLayerSets(doc, parentGroupName, exportFolder) {
         var parentGroup = doc.layerSets.getByName(parentGroupName);
         hideAllTopLevelLayers(doc);
         parentGroup.visible = true;
+        hideAllChildLayerSets(parentGroup);
         var exportedSomething = false;
         for (var i = 0; i < parentGroup.layerSets.length; i++) {
             var childSet = parentGroup.layerSets[i];

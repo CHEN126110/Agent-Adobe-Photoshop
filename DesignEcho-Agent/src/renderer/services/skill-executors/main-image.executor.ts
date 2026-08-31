@@ -61,6 +61,7 @@ import type {
 import { buildMainImageAgentDraftPlan } from '../../../shared/main-image-agent-draft-plan';
 import { buildMainImageStrategyInputs } from '../../../shared/main-image-strategy-input-builder';
 import { buildMainImagePlatformSizeProfile } from '../../../shared/main-image-production-document-structure';
+import { resolveMainImageProductionSizeKey } from '../../../shared/main-image-production-spec';
 import {
     buildMainImageStateContext,
     buildMainImageStateVersionPatch,
@@ -233,14 +234,7 @@ function resolveSizeKeyFromTargetSize(targetSize: unknown): string {
     const width = readNumber(targetSize.width);
     const height = readNumber(targetSize.height);
     if (!width || !height) return '';
-    const exact = Object.entries(MAIN_IMAGE_SIZE_SPECS)
-        .find(([, spec]) => spec.width === Math.round(width) && spec.height === Math.round(height));
-    if (exact) return exact[0];
-    const ratio = width / height;
-    if (Math.abs(ratio - 1) < 0.03) return '800';
-    if (Math.abs(ratio - 0.75) < 0.03) return '750';
-    if (Math.abs(ratio - 0.5625) < 0.03) return '1200';
-    return '';
+    return resolveMainImageProductionSizeKey(`${Math.round(width)}x${Math.round(height)}`) || '';
 }
 
 function buildMainImageSizePlan(input: {
@@ -1180,6 +1174,8 @@ async function runControlledMainImageProductPath(input: {
         userText,
         imageType,
         selectedAsset,
+        slotAssignments: input.params.slotAssignments,
+        createEmptySkeleton: input.params.createEmptySkeleton === true,
         projectAssets,
         subjectBounds,
         sizePlans,
@@ -1194,6 +1190,9 @@ async function runControlledMainImageProductPath(input: {
         deliveryVersion: input.params.deliveryVersion,
         toolNames: MAIN_IMAGE_PRODUCT_PATH_TOOL_NAMES,
         visionSignal,
+        agentDesignDecision: input.params.agentDesignDecision,
+        desiredClickImageCount: input.params.desiredClickImageCount,
+        desiredConversionImageCount: input.params.desiredConversionImageCount,
         mainImagePlatformProfile: explicitCustomSize ? buildExplicitMainImagePlatformProfile(explicitCustomSize) : undefined,
         allowPendingRatioExecution: input.params.allowPendingRatioExecution !== false,
         userCheckpointApproved: input.params.userCheckpointApproved === true
@@ -1202,11 +1201,13 @@ async function runControlledMainImageProductPath(input: {
         ...strategy.strategyInputs,
         ...parentHandoffStrategyInputs
     };
-    const controlledAgentDraft = buildMainImageAgentDraftPlan({
+    const controlledAgentDraft = input.params.createEmptySkeleton === true ? null : buildMainImageAgentDraftPlan({
         userText,
         imageType,
         projectAssets,
         selectedAsset,
+        slotAssignments: input.params.slotAssignments,
+        createEmptySkeleton: input.params.createEmptySkeleton === true,
         subjectBounds,
         sizePlans,
         copyCandidates,
@@ -1218,6 +1219,9 @@ async function runControlledMainImageProductPath(input: {
         outputDir,
         toolNames: MAIN_IMAGE_PRODUCT_PATH_TOOL_NAMES,
         visionSignal,
+        agentDesignDecision: input.params.agentDesignDecision,
+        desiredClickImageCount: input.params.desiredClickImageCount,
+        desiredConversionImageCount: input.params.desiredConversionImageCount,
         strategyInputs: effectiveStrategyInputs
     });
     const photoshopConnection = await resolveControlledPhotoshopConnection(input.params);
@@ -1245,7 +1249,7 @@ async function runControlledMainImageProductPath(input: {
         approvedLiveExecution: input.params.approvedLiveExecution === true,
         photoshopConnection,
         executionScope,
-        maxOperationCount: Number(input.params.maxOperationCount || 80)
+        maxOperationCount: readNumber(input.params.maxOperationCount)
     });
     const adapterContract = buildMainImageLivePhotoshopAdapterContract({
         checkpoint,
@@ -1356,10 +1360,7 @@ async function runControlledMainImageProductPath(input: {
         const deliverySummary = strategy.designCorePlan.deliveryDocuments
             .map((doc) => `${doc.folderKey}=${doc.canvasSize.width}x${doc.canvasSize.height}`)
             .join('；');
-        const document1200 = strategy.designCorePlan.deliveryDocuments.find((doc) => doc.folderKey === '1200');
-        const imageTypeBoundary = document1200?.excludedImageTypes.includes('conversion')
-            ? '1200 只出点击图，不出转化图。'
-            : '按当前主图交付规则执行。';
+        const imageTypeBoundary = '三个标准文档都保留 5 个点击槽与 4 个转化槽；实际填充和交付哪些非空槽由 Agent 或用户决定。';
         input.emitStep(
             'verification',
             whiteBackgroundExportContract ? '白底图生产路径已生成' : '主图受控产品路径已生成',

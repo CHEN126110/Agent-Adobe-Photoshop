@@ -2,7 +2,8 @@
  * 获取文档信息工具
  */
 
-import { Tool, ToolSchema, DocumentInfo } from '../types';
+import { constants } from 'photoshop';
+import { resolvePhotoshopBitDepth } from '../../core/photoshop-bit-depth';
 import {
     observeActiveDocumentAtHistoryState,
     PhotoshopDocumentObservationError,
@@ -10,13 +11,14 @@ import {
 } from '../../core/photoshop-document-observation';
 import type { PhotoshopHistoryStateRef } from '../../core/photoshop-history-state-ref';
 import { observePhotoshopDocumentEditState } from '../../core/photoshop-document-state';
+import { Tool, ToolSchema, DocumentInfo } from '../types';
 
 export class GetDocumentInfoTool implements Tool {
     name = 'getDocumentInfo';
 
     schema: ToolSchema = {
         name: 'getDocumentInfo',
-        description: '获取当前文档的基本信息、保存后的修改状态和当前活动图层',
+        description: '获取当前文档的基本信息（含颜色模式与可读的每通道位深）、保存后的修改状态和当前活动图层',
         parameters: {
             type: 'object',
             properties: {}
@@ -44,6 +46,10 @@ export class GetDocumentInfoTool implements Tool {
                 this.countLayers(doc, (count) => { layerCount = count; });
                 const activeLayer = doc.activeLayers?.[0];
                 const editState = observePhotoshopDocumentEditState(doc);
+                const bitDepth = resolvePhotoshopBitDepth(
+                    doc.bitsPerChannel,
+                    (constants as any)?.BitsPerChannelType
+                );
                 const documentInfo: DocumentInfo = {
                     id: doc.id,
                     name: doc.name,
@@ -51,6 +57,7 @@ export class GetDocumentInfoTool implements Tool {
                     height: doc.height,
                     resolution: doc.resolution,
                     colorMode: this.getColorModeName(doc.mode),
+                    ...(bitDepth ? { bitDepth } : {}),
                     layerCount,
                     editState: editState.editState,
                     ...(editState.editStateReason

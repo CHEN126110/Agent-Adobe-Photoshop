@@ -3,6 +3,7 @@ import type {
     MainImageProductionDocumentPlan,
     MainImageProductionDocumentStructure
 } from './main-image-production-document-structure';
+import { MAIN_IMAGE_DELIVERY_DOCUMENTS } from './main-image-production-spec';
 
 export type MainImageGroupHierarchyContractStatus =
     | 'blocked_missing_production_structure'
@@ -125,6 +126,47 @@ function validateProductionStructure(
     for (const document of production.documents) {
         if (!hasRequiredParentGroups(document)) {
             blockers.push(`document_missing_required_parent_groups=${cleanString(document.id) || 'unknown'}`);
+        }
+        const standard = MAIN_IMAGE_DELIVERY_DOCUMENTS.find((item) => (
+            item.documentBaseName === document.name
+        ));
+        if (!standard) continue;
+        const clickGroup = document.parentGroups.find((group) => group.name === '点击图');
+        const conversionGroup = document.parentGroups.find((group) => group.name === '转化图');
+        const clickNames = clickGroup?.childGroups.map((group) => group.name) || [];
+        const conversionNames = conversionGroup?.childGroups.map((group) => group.name) || [];
+        const expectedClickNames = standard.slots.click.map((slot) => slot.name);
+        const expectedConversionNames = standard.slots.conversion.map((slot) => slot.name);
+        if (JSON.stringify(clickNames) !== JSON.stringify(expectedClickNames)
+            || JSON.stringify(conversionNames) !== JSON.stringify(expectedConversionNames)) {
+            blockers.push(`document_standard_slot_names_mismatch=${document.name}`);
+        }
+        if (document.canvasSize.width !== standard.canvasSize.width
+            || document.canvasSize.height !== standard.canvasSize.height) {
+            blockers.push(`document_standard_canvas_mismatch=${document.name}`);
+        }
+        if (document.resolutionPpi !== standard.resolutionPpi
+            || document.colorMode !== standard.colorMode
+            || document.bitDepth !== standard.bitDepth) {
+            blockers.push(`document_standard_mode_mismatch=${document.name}`);
+        }
+        for (const parentGroup of document.parentGroups) {
+            for (const childGroup of parentGroup.childGroups) {
+                const exportSpec = production.exportSpecs.find((spec) => (
+                    spec.documentId === document.id
+                    && spec.groupPath[0] === parentGroup.name
+                    && spec.groupPath[1] === childGroup.name
+                ));
+                if (childGroup.populationStatus === 'assigned' && !exportSpec) {
+                    blockers.push(`assigned_slot_missing_export_spec=${document.name}/${childGroup.name}`);
+                }
+                if (childGroup.populationStatus === 'unassigned' && exportSpec) {
+                    blockers.push(`unassigned_slot_has_export_spec=${document.name}/${childGroup.name}`);
+                }
+                if (exportSpec && exportSpec.fileName !== `${childGroup.name}.jpg`) {
+                    blockers.push(`slot_export_name_mismatch=${document.name}/${childGroup.name}`);
+                }
+            }
         }
     }
     if (production.exportSpecs.some((spec) => spec.groupPath.length !== 2)) {

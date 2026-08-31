@@ -2,7 +2,17 @@ import type {
     MainImageProjectStyleStrategy,
     MainImageVariantDirection
 } from './main-image-project-style-strategy';
-import { MAIN_IMAGE_DELIVERY_DOCUMENTS } from './main-image-design-core';
+import {
+    buildMainImageSlotAssignmentKey,
+    getMainImageParentCreationOrder,
+    MAIN_IMAGE_DELIVERY_DOCUMENTS,
+    listMainImageProductionSizeAliases,
+    resolveMainImageProductionSizeKey,
+    resolveMainImageSlotAssignments,
+    type MainImageDeliveryDocumentSpec,
+    type MainImageProductionSlotSpec,
+    type MainImageSlotAssignment
+} from './main-image-production-spec';
 
 export type MainImagePlatformSizeProfileStatus =
     | 'ready_platform_size_profile'
@@ -14,6 +24,7 @@ export type MainImageProductionDocumentStructureStatus =
     | 'blocked_missing_project_style_strategy'
     | 'blocked_missing_visual_context'
     | 'blocked_missing_variant_plan'
+    | 'blocked_invalid_slot_assignments'
     | 'ready_production_document_structure';
 
 export type MainImageSizeSourceLevel =
@@ -82,9 +93,12 @@ export interface MainImageProductionChildGroup {
     id: string;
     name: string;
     variantId: string;
+    assignmentKey?: string;
     objective: string;
     imageType: 'click' | 'conversion';
     exportRole: 'click-image' | 'conversion-image';
+    labelNumber: number;
+    populationStatus: 'assigned' | 'unassigned';
     requiredInputs: string[];
 }
 
@@ -101,6 +115,16 @@ export interface MainImageProductionDocumentPlan {
     ratio: string;
     canvasSize: MainImageSize;
     exportSize: MainImageSize;
+    resolutionPpi: number;
+    colorMode: 'RGB';
+    bitDepth: 8;
+    backgroundLayer: {
+        name: string;
+        fill: 'white';
+        locked: boolean;
+        exportRole: 'none';
+    };
+    parentGroupPanelOrderTopDown: Array<'转化图' | '点击图'>;
     sizeProfileId: string;
     sourceLevel: MainImageSizeSourceLevel;
     parentGroups: [MainImageProductionParentGroup, MainImageProductionParentGroup];
@@ -114,6 +138,7 @@ export interface MainImageProductionExportSpec {
     exportSize: MainImageSize;
     fileName: string;
     imageType: 'click' | 'conversion';
+    canvasPolicy: 'preserve_document_canvas';
     qualityBoundary: string;
 }
 
@@ -122,6 +147,8 @@ export interface MainImageProductionDocumentStructureInput {
     projectStyleStrategy?: MainImageProjectStyleStrategy | null;
     requestedSizeKeys?: string[];
     requestedImageType?: string;
+    slotAssignments?: unknown;
+    createEmptySkeleton?: boolean;
 }
 
 export interface MainImageProductionDocumentStructure {
@@ -130,6 +157,7 @@ export interface MainImageProductionDocumentStructure {
     scene: 'ecommerce-socks';
     status: MainImageProductionDocumentStructureStatus;
     platform: string;
+    slotAssignments: MainImageSlotAssignment[];
     documents: MainImageProductionDocumentPlan[];
     exportSpecs: MainImageProductionExportSpec[];
     verificationPolicy: {
@@ -200,18 +228,16 @@ function makeProfileEntry(input: {
     };
 }
 
-function buildBaseTmallProfiles(): MainImageSizeProfileEntry[] {
+function buildVerifiedProjectProfiles(): MainImageSizeProfileEntry[] {
     return MAIN_IMAGE_DELIVERY_DOCUMENTS.map((document) => makeProfileEntry({
         id: `tmall-${document.folderKey}-main-image`,
         ratio: document.ratio,
-        label: `天猫 ${document.ratio} 主图（${document.folderKey}）`,
+        label: `店铺 ${document.ratio} 主图工作文档（${document.folderKey}）`,
         designSize: document.canvasSize,
-        exportSize: document.canvasSize,
-        sourceLevel: document.folderKey === '1200' ? 'user_project_rule' : 'platform_developer_doc',
-        sourceSummary: document.folderKey === '1200'
-            ? '用户项目规范：1200 文件夹对应 9:16 主图文档，宽 1440，且不包含转化图。'
-            : `淘宝/天猫主图生产规范：${document.folderKey} 文件夹对应 ${document.ratio} 主图文档，内部工作宽度 1440。`,
-        officialClaimAllowed: document.folderKey !== '1200',
+        exportSize: document.batchExportSize,
+        sourceLevel: 'user_project_rule',
+        sourceSummary: `用户主图骨架与批量导出脚本：${document.folderKey} 文档使用 ${document.canvasSize.width}x${document.canvasSize.height} 工作画布，非空子组按原画布导出。`,
+        officialClaimAllowed: false,
         intendedUse: document.contentPolicy
     }));
 }
@@ -279,7 +305,7 @@ export function buildMainImagePlatformSizeProfile(
         };
     }
 
-    const sizeProfiles = buildBaseTmallProfiles();
+    const sizeProfiles = buildVerifiedProjectProfiles();
     const thirdProfile = buildProjectPreferenceThirdProfile(input);
     if (thirdProfile) sizeProfiles.push(thirdProfile);
     const warnings = buildProfileWarnings(sizeProfiles);
@@ -305,21 +331,9 @@ export function buildMainImagePlatformSizeProfile(
         warnings,
         limitations: [
             'profile 是尺寸和导出计划，不创建文档、不创建组、不导出文件。',
-            '设计源尺寸是内部工作尺寸；平台上传约束仍需要按后台实时校验。',
-            '1200/9:16 来自当前项目生产规范，不能在没有后台来源时宣称为平台官方强制规格。'
+            '设计源尺寸是当前店铺工作画布，脚本按原画布导出；平台上传约束仍需要按后台实时校验。',
+            '800/750/1200 三规格来自用户项目生产规范，不能宣称为平台官方强制规格。'
         ]
-    };
-}
-
-function getStyleVariants(
-    styleStrategy: MainImageProjectStyleStrategy
-): {
-    clickImages: MainImageVariantDirection[];
-    conversionImages: MainImageVariantDirection[];
-} {
-    return {
-        clickImages: styleStrategy.variantPlan.clickImages || [],
-        conversionImages: styleStrategy.variantPlan.conversionImages || []
     };
 }
 
@@ -341,16 +355,23 @@ function normalizeScopeKey(value: unknown): string {
     return cleanString(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+function findDeliverySpecForProfile(
+    profile: MainImageSizeProfileEntry
+): MainImageDeliveryDocumentSpec | undefined {
+    return MAIN_IMAGE_DELIVERY_DOCUMENTS.find((item) => (
+        profile.id === `tmall-${item.folderKey}-main-image`
+    ));
+}
+
 function getProfileScopeAliases(profile: MainImageSizeProfileEntry): string[] {
-    const deliverySpec = MAIN_IMAGE_DELIVERY_DOCUMENTS.find((item) => item.ratio === profile.ratio);
+    const deliverySpec = findDeliverySpecForProfile(profile);
     const rawAliases = [
         profile.id,
         profile.ratio,
         profile.label,
         `${profile.designSize.width}x${profile.designSize.height}`,
         `${profile.exportSize.width}x${profile.exportSize.height}`,
-        deliverySpec?.folderKey,
-        deliverySpec ? `${deliverySpec.folderKey}x${deliverySpec.folderKey}` : ''
+        ...(deliverySpec ? listMainImageProductionSizeAliases(deliverySpec.folderKey) : [])
     ];
     return Array.from(new Set(rawAliases.flatMap((alias) => {
         const cleanAlias = cleanString(alias);
@@ -362,12 +383,7 @@ function getProfileScopeAliases(profile: MainImageSizeProfileEntry): string[] {
 }
 
 function resolveMainImageScopeToken(value: unknown): '800' | '750' | '1200' | undefined {
-    const normalized = normalizeScopeKey(value);
-    if (!normalized) return undefined;
-    if (normalized.includes('800') || normalized.includes('1x1') || normalized.includes('1440x1440')) return '800';
-    if (normalized.includes('750') || normalized.includes('3x4') || normalized.includes('1440x1920')) return '750';
-    if (normalized.includes('1200') || normalized.includes('9x16') || normalized.includes('1440x2560')) return '1200';
-    return undefined;
+    return resolveMainImageProductionSizeKey(value);
 }
 
 function filterProfilesByRequestedScope(
@@ -402,7 +418,39 @@ function normalizeRequestedImageType(value: unknown): 'click' | 'conversion' | u
     return undefined;
 }
 
-function makeChildGroup(
+function makeStandardSlotChildGroup(
+    profile: MainImageSizeProfileEntry,
+    slot: MainImageProductionSlotSpec,
+    assignment: MainImageSlotAssignment | undefined
+): MainImageProductionChildGroup {
+    const assigned = Boolean(assignment);
+    const variantId = cleanString(assignment?.variantId)
+        || `unassigned-slot:${profile.id}:${slot.imageType}:${slot.name}`;
+    return {
+        id: `${profile.id}-${slot.imageType}-slot-${makeSafeName(slot.name)}`,
+        name: slot.name,
+        variantId,
+        assignmentKey: assignment ? buildMainImageSlotAssignmentKey(assignment) : undefined,
+        objective: assigned ? cleanString(assignment?.objective) : '',
+        imageType: slot.imageType,
+        exportRole: slot.imageType === 'click' ? 'click-image' : 'conversion-image',
+        labelNumber: slot.labelNumber,
+        populationStatus: assigned ? 'assigned' : 'unassigned',
+        requiredInputs: assigned
+            ? [
+                'agent_authored_slot_assignment',
+                'slot_scoped_asset_dimensions',
+                'slot_scoped_subject_bounds',
+                'slot_scoped_placement_decision',
+                'production_group_created',
+                'post_export_file_exists',
+                'post_export_screenshot_or_probe'
+            ].map(cleanString).filter(Boolean)
+            : ['production_group_created']
+    };
+}
+
+function makeCustomVariantChildGroup(
     profile: MainImageSizeProfileEntry,
     variant: MainImageVariantDirection,
     index: number
@@ -416,6 +464,8 @@ function makeChildGroup(
         objective,
         imageType: variant.imageType,
         exportRole: variant.imageType === 'click' ? 'click-image' : 'conversion-image',
+        labelNumber: variant.imageType === 'click' ? index + 1 : index + 2,
+        populationStatus: 'assigned',
         requiredInputs: [
             ...variant.requiredInputs,
             'production_group_created',
@@ -425,30 +475,80 @@ function makeChildGroup(
     };
 }
 
+function buildStandardSlotGroups(input: {
+    profile: MainImageSizeProfileEntry;
+    slots: MainImageProductionSlotSpec[];
+    assignments: MainImageSlotAssignment[];
+}): MainImageProductionChildGroup[] {
+    return input.slots.map((slot) => makeStandardSlotChildGroup(
+        input.profile,
+        slot,
+        input.assignments.find((assignment) => (
+            assignment.imageType === slot.imageType
+            && assignment.slotName === slot.name
+        ))
+    ));
+}
+
 function buildParentGroups(
     profile: MainImageSizeProfileEntry,
-    styleStrategy: MainImageProjectStyleStrategy,
-    requestedImageType?: 'click' | 'conversion'
+    assignments: MainImageSlotAssignment[]
 ): [MainImageProductionParentGroup, MainImageProductionParentGroup] {
-    const variants = getStyleVariants(styleStrategy);
-    const deliverySpec = MAIN_IMAGE_DELIVERY_DOCUMENTS.find((item) => item.ratio === profile.ratio);
-    const allowConversion = !deliverySpec || deliverySpec.includedImageTypes.includes('conversion');
-    const allowClickGroup = !requestedImageType || requestedImageType === 'click';
-    const allowConversionGroup = (!requestedImageType || requestedImageType === 'conversion') && allowConversion;
+    const deliverySpec = findDeliverySpecForProfile(profile);
+    if (deliverySpec) {
+        const groupsByName: Record<'点击图' | '转化图', MainImageProductionParentGroup> = {
+            点击图: {
+                name: '点击图',
+                role: 'click-images',
+                childGroups: buildStandardSlotGroups({
+                    profile,
+                    slots: deliverySpec.slots.click,
+                    assignments
+                })
+            },
+            转化图: {
+                name: '转化图',
+                role: 'conversion-images',
+                childGroups: buildStandardSlotGroups({
+                    profile,
+                    slots: deliverySpec.slots.conversion,
+                    assignments
+                })
+            }
+        };
+        const creationOrder = getMainImageParentCreationOrder();
+        return [groupsByName[creationOrder[0]], groupsByName[creationOrder[1]]];
+    }
+    const clickAssignments = assignments.filter((assignment) => assignment.imageType === 'click');
+    const conversionAssignments = assignments.filter((assignment) => assignment.imageType === 'conversion');
     return [
         {
             name: '点击图',
             role: 'click-images',
-            childGroups: allowClickGroup
-                ? variants.clickImages.map((variant, index) => makeChildGroup(profile, variant, index))
-                : []
+            childGroups: clickAssignments.map((assignment, index) => makeCustomVariantChildGroup(profile, {
+                id: assignment.variantId,
+                imageType: assignment.imageType,
+                objective: assignment.objective,
+                visualHook: assignment.visualHook || '',
+                layoutFocus: assignment.layoutFocus || '',
+                copyRole: assignment.copyRole || '',
+                referenceNeed: '',
+                requiredInputs: []
+            }, index))
         },
         {
             name: '转化图',
             role: 'conversion-images',
-            childGroups: allowConversionGroup
-                ? variants.conversionImages.map((variant, index) => makeChildGroup(profile, variant, index))
-                : []
+            childGroups: conversionAssignments.map((assignment, index) => makeCustomVariantChildGroup(profile, {
+                id: assignment.variantId,
+                imageType: assignment.imageType,
+                objective: assignment.objective,
+                visualHook: assignment.visualHook || '',
+                layoutFocus: assignment.layoutFocus || '',
+                copyRole: assignment.copyRole || '',
+                referenceNeed: '',
+                requiredInputs: []
+            }, index))
         }
     ];
 }
@@ -456,19 +556,30 @@ function buildParentGroups(
 function buildDocumentPlan(
     platform: string,
     profile: MainImageSizeProfileEntry,
-    styleStrategy: MainImageProjectStyleStrategy,
-    requestedImageType?: 'click' | 'conversion'
+    assignments: MainImageSlotAssignment[]
 ): MainImageProductionDocumentPlan {
+    const deliverySpec = findDeliverySpecForProfile(profile);
     return {
         id: `main-image-document-${profile.id}`,
-        name: makeSafePhotoshopDocumentName(`${platform}-${profile.ratio}-${profile.label}`),
+        name: deliverySpec?.documentBaseName
+            || makeSafePhotoshopDocumentName(`${platform}-${profile.ratio}-${profile.label}`),
         platform,
         ratio: profile.ratio,
         canvasSize: profile.designSize,
         exportSize: profile.exportSize,
+        resolutionPpi: deliverySpec?.resolutionPpi || 72,
+        colorMode: deliverySpec?.colorMode || 'RGB',
+        bitDepth: deliverySpec?.bitDepth || 8,
+        backgroundLayer: deliverySpec?.backgroundLayer || {
+            name: '背景',
+            fill: 'white',
+            locked: true,
+            exportRole: 'none'
+        },
+        parentGroupPanelOrderTopDown: deliverySpec?.parentGroupPanelOrderTopDown || ['转化图', '点击图'],
         sizeProfileId: profile.id,
         sourceLevel: profile.sourceLevel,
-        parentGroups: buildParentGroups(profile, styleStrategy, requestedImageType)
+        parentGroups: buildParentGroups(profile, assignments)
     };
 }
 
@@ -476,16 +587,18 @@ function buildExportSpecs(documents: MainImageProductionDocumentPlan[]): MainIma
     const specs: MainImageProductionExportSpec[] = [];
     for (const document of documents) {
         for (const parentGroup of document.parentGroups) {
-            parentGroup.childGroups.forEach((childGroup, index) => {
+            parentGroup.childGroups.forEach((childGroup) => {
+                if (childGroup.populationStatus !== 'assigned') return;
                 specs.push({
                     id: `${document.id}-${childGroup.id}-export`,
                     documentId: document.id,
                     documentName: document.name,
                     groupPath: [parentGroup.name, childGroup.name],
                     exportSize: document.exportSize,
-                    fileName: `${makeSafeName(document.name)}-${parentGroup.name}-${index + 1}.jpg`,
+                    fileName: `${makeSafeName(childGroup.name)}.jpg`,
                     imageType: childGroup.imageType,
-                    qualityBoundary: '导出规格只指向可导出的组；必须在 Photoshop 执行后读取文件、截图或像素 probe 才能验收。'
+                    canvasPolicy: 'preserve_document_canvas',
+                    qualityBoundary: '导出规格只指向 Agent 已分配的非空组；必须隔离兄弟组、保留完整工作画布，并在 Photoshop 执行后读取文件、截图或像素 probe 才能验收。'
                 });
             });
         }
@@ -505,6 +618,7 @@ function makeBlockedProductionStructure(input: {
         scene: 'ecommerce-socks',
         status: input.status,
         platform: input.platform,
+        slotAssignments: [],
         documents: [],
         exportSpecs: [],
         verificationPolicy: {
@@ -535,29 +649,29 @@ export function buildMainImageProductionDocumentStructure(
         });
     }
 
+    const assignmentResolution = resolveMainImageSlotAssignments(input.slotAssignments);
+    if (assignmentResolution.issues.length > 0) {
+        return makeBlockedProductionStructure({
+            status: 'blocked_invalid_slot_assignments',
+            platform,
+            blocker: `main_image_slot_assignments_invalid=${assignmentResolution.issues.join(',')}`
+        });
+    }
+    const createEmptySkeleton = input.createEmptySkeleton === true;
     const styleStrategy = input.projectStyleStrategy;
-    if (!styleStrategy) {
+    if (!styleStrategy && !createEmptySkeleton) {
         return makeBlockedProductionStructure({
             status: 'blocked_missing_project_style_strategy',
             platform,
             blocker: 'main_image_project_style_strategy_required'
         });
     }
-    if (styleStrategy.status !== 'ready_visual_context') {
+    if (styleStrategy && styleStrategy.status !== 'ready_visual_context' && !createEmptySkeleton) {
         return makeBlockedProductionStructure({
             status: 'blocked_missing_visual_context',
             platform,
             blocker: 'main_image_visual_context_required',
             warning: '缺少与所选素材绑定的可用视觉上下文时，不能生成点击图/转化图生产结构。'
-        });
-    }
-
-    const variants = getStyleVariants(styleStrategy);
-    if (variants.clickImages.length === 0 && variants.conversionImages.length === 0) {
-        return makeBlockedProductionStructure({
-            status: 'blocked_missing_variant_plan',
-            platform,
-            blocker: 'main_image_variant_plan_required'
         });
     }
 
@@ -572,11 +686,29 @@ export function buildMainImageProductionDocumentStructure(
     }
 
     const requestedImageType = normalizeRequestedImageType(input.requestedImageType);
+    const scopedSizeKeys = new Set(scopedProfiles
+        .map((profile) => findDeliverySpecForProfile(profile)?.folderKey)
+        .filter(Boolean));
+    const assignmentsOutsideScope = assignmentResolution.assignments.filter((assignment) => (
+        !scopedSizeKeys.has(resolveMainImageProductionSizeKey(assignment.sizeKey))
+        || Boolean(requestedImageType && assignment.imageType !== requestedImageType)
+    ));
+    if (assignmentsOutsideScope.length > 0) {
+        return makeBlockedProductionStructure({
+            status: 'blocked_invalid_slot_assignments',
+            platform,
+            blocker: `main_image_slot_assignments_outside_requested_scope=${assignmentsOutsideScope
+                .map(buildMainImageSlotAssignmentKey)
+                .join(',')}`
+        });
+    }
     const documents = scopedProfiles.map((profile) => buildDocumentPlan(
         platform,
         profile,
-        styleStrategy,
-        requestedImageType
+        assignmentResolution.assignments.filter((assignment) => (
+            resolveMainImageProductionSizeKey(assignment.sizeKey)
+                === findDeliverySpecForProfile(profile)?.folderKey
+        ))
     ));
     const exportSpecs = buildExportSpecs(documents);
     const pendingThirdRatio = scopedProfiles.some(
@@ -585,6 +717,9 @@ export function buildMainImageProductionDocumentStructure(
     const warnings = [
         ...platformSizeProfile.warnings
     ];
+    if (assignmentResolution.assignments.length === 0) {
+        warnings.push('固定主图骨架已建立，但 Agent 尚未为任何槽位声明内容方向；当前不会生成置入、变换或导出操作。');
+    }
     if (pendingThirdRatio) {
         warnings.push('生产结构包含待确认第三比例，执行前应允许用户或后台配置调整。');
     }
@@ -601,13 +736,14 @@ export function buildMainImageProductionDocumentStructure(
         scene: 'ecommerce-socks',
         status: 'ready_production_document_structure',
         platform,
+        slotAssignments: assignmentResolution.assignments,
         documents,
         exportSpecs,
         verificationPolicy: {
             requiredBeforePhotoshopExecution: [
                 'platform_size_profile',
                 'asset_bound_visual_context',
-                'variant_plan',
+                'agent_authored_slot_assignments_for_content_operations',
                 'user_or_config_confirmation_for_pending_ratios'
             ],
             requiredAfterPhotoshopExecution: [
@@ -628,7 +764,8 @@ export function buildMainImageProductionDocumentStructure(
         warnings,
         limitations: [
             '生产文档结构只描述文档、父组、子组和导出规格，不执行 Photoshop。',
-            '父级组固定为「点击图」和「转化图」，子组才是单张图的导出单元；1200/9:16 的「转化图」组必须保持空。',
+            '父级组固定为「点击图」和「转化图」，三个标准文档均保留 5 个点击槽与 4 个转化槽；空槽不会产生内容或导出。',
+            '槽位名称与画布是生产结构；填哪些槽、每槽素材、目标、构图和文案仍由 Agent 或用户决定。',
             '待确认比例必须保留来源状态，不能作为平台官方事实展示。'
         ]
     };

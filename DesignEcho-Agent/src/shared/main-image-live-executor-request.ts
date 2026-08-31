@@ -31,6 +31,7 @@ export interface MainImageLiveExecutorOperationRequest {
     documentId?: string;
     documentName?: string;
     groupPath?: string[];
+    assignmentKey?: string;
     payloadPreview: Record<string, unknown>;
     requiredReadback: string[];
     requiredPostRunReadbackTools: string[];
@@ -179,6 +180,7 @@ function toOperationRequest(
         documentId: operation.documentId,
         documentName: cleanString(operation.documentName) || undefined,
         groupPath: cleanStrings(operation.groupPath),
+        assignmentKey: cleanString(operation.assignmentKey) || undefined,
         payloadPreview: sanitizePayloadPreview(operation.payloadPreview),
         requiredReadback: cleanStrings(operation.requiredReadback),
         requiredPostRunReadbackTools: cleanStrings(operation.requiredPostRunReadbackTools),

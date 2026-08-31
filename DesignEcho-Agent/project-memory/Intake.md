@@ -76,8 +76,9 @@
 
 - 来源：用户 2026-08-31 提供 800 /750 /1200 Photoshop 空骨架截图与 `4.0主图导出所有主图文档.jsx`。截图确认工作画布分别为 1500×1500、1500×2000、1440×2160，三文档均含「点击图」5 个槽位与「转化图」2–5 四个槽位；脚本对三文档两个父组的所有非空子组逐一导出。
 - 归属层级：Main Image Skill production structure / delivery inventory / UXP exporter / Photoshop readback verification。
-- 状态：triaged
-- 下一步：建立一个 Skill-owned 生产结构真相源，把稳定 5+4 容器与 Agent 当前物料计划分开；同步修正 core、document structure、size aliases、Skill declaration、exact delivery naming 和现有核心回归。UXP 导出前必须先隐藏同父组全部兄弟子组，再单独显示目标并在结束 /失败后恢复原 history。
+- 状态：planned
+- 已实现：`main-image-production-spec.ts` 是 Skill-owned 唯一事实源；稳定 5+4 容器与 Agent 逐槽 `slotAssignments` 分离，assignmentKey 贯穿 structure / placement / operation / handoff / dry-run / live request。空骨架只保存 3 份可编辑稿，满 27 槽冻结为 120 步；非法主体 bounds、target /safe box 或低于冻结计划的显式预算写前拒绝。UXP 导出先隔离兄弟子组并保留工作画布，Adapter 以 documentId、Background id、父子路径和规格面板顺序读回。旧固定 DSL、Project State 三套方案、关键词痛点 /场景、local recipe 和 1200 禁转化已从生产投影清除。
+- 下一步：通过完整核心闸门和独立提交后，在正常程序的新普通项目里验证真实 800 /750 /1200 文档、5+4 层级、非空组逐图导出、源文档零意外修改及设计质量；补逐 assignment 视觉观察收据引用，自定义尺寸槽位契约另行立项，不用全局素材兜底恢复兼容。
 - 边界：截图只能证明容器，不能规定子组内部素材、图层、文案、版式或必须填满的数量；1200 的四个转化槽先保留，是否必须生产 /交付需用户规则或真实非空成稿证据。工作画布与平台上传尺寸分字段，不能从当前 JSX 猜 800×800 /750×1000 下采样。测试 fixture 不能反向成为生产 Skill 规则。
 
 ### INTAKE-089 工作流画布、交互 UI 与多 Agent 形态

@@ -24,7 +24,7 @@
 5. `[已完成]` 通过专项测试、Agent Renderer 类型检查、UXP 测试与一次完整 65 阶段 `maintenance:validate`。
 6. `[已完成]` 提交 S1 代码基线；完成 INTAKE-090 现有 Runtime Accounting 的用途、上下文、输出体量与视觉 revision 归因；同时修复“截断后未重发像素却可取得已观察信用”的事实错误。设计判断与普通任务预算 owner 不变，物理 recovery 成本如实记录。
 7. `[进行中]` 正常程序 Attempt 已在新项目取得真实 PSD/JPG、Final Judge 和同版本证据，但成品质量为 `needs_review`，且旧 requirement 推荐、项目历史摘要、默认调试项目与学习发布边界存在检索 /测试污染。提交前攻击审计发现的三个真实旁路已根修：Task Profile 绑定前后由工具身份强制中性浏览；旧 `published/promoted` 全部隔离为待审候选；Main 使用纯信封行为校验真实项目、旧状态、打包 /无 Bridge 和单独 CDP。`candidateSetId + G` 还绑定 scope 与文件版本；完成态审美复入要求当前 ReviewSet、可靠 Judge 和本次必需 E2 证据。限定复审已无 P0/P1，fresh 65 阶段 `maintenance:validate` 已通过；待提交推送和 fresh 正常程序复跑。
-8. `[待开始]` 按 INTAKE-092 修正主图生产结构：三个真实工作画布、每文档 5 个点击槽位 +4 个转化槽位、子组名即导出名，并把稳定容器与 Agent 物料计划分离；同步修正 UXP 兄弟组导出隔离，不把空骨架升级成固定设计配方。
+8. `[代码与自动验证已完成，fresh Host 待验证]` INTAKE-092 已收口三个真实工作画布、每文档 5 个点击槽 +4 个转化槽、子组名即导出名、空骨架 editable-only、逐槽 assignment、满槽动态预算、UXP 兄弟组隔离与保画布导出；固定容器与 Agent 的素材 /主体 bounds /几何 /文案决定已分离，fresh 65 阶段核心闸门与最终无 P0/P1 只读审查均已通过。独立提交推送后，用正常程序和新普通项目验证真实 Photoshop 层级、导出像素及零外部文档副作用。
 9. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 
 ### 退出条件

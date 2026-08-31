@@ -116,6 +116,8 @@ export interface DocumentInfo {
     height: number;
     resolution: number;
     colorMode: string;
+    /** Photoshop 实际文档的每通道位深；Host 返回未知枚举时省略，不默认为 8。 */
+    bitDepth?: 1 | 8 | 16 | 32;
     layerCount: number;
     /** clean=自上次保存后未修改；dirty=存在未保存修改；unknown=Host 无法读取。 */
     editState?: 'clean' | 'dirty' | 'unknown';

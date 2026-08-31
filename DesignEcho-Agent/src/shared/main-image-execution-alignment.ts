@@ -163,18 +163,32 @@ export function buildMainImageExecutionAlignment(input: MainImageExecutionAlignm
         successfulToolNames.filter((toolName) => /getsubjectbounds|getlayerbounds/i.test(normalizeToolName(toolName)))
     ));
 
-    const regionIds = new Set((draft.designDsl.regions || []).map((region) => region.id));
-    const requiredRegions = ['safe-area', 'hero-subject-slot', 'headline-slot', 'benefit-tag-slot'];
-    const missingRegions = requiredRegions.filter((id) => !regionIds.has(id));
+    const declaredRegions = draft.designDsl.regions || [];
+    const invalidRegions = declaredRegions.filter((region) => (
+        !cleanString(region.id)
+        || !cleanString(region.kind)
+        || !cleanString(region.role)
+        || !Number.isFinite(Number(region.box?.x))
+        || !Number.isFinite(Number(region.box?.y))
+        || !Number.isFinite(Number(region.box?.width))
+        || !Number.isFinite(Number(region.box?.height))
+        || Number(region.box?.width) <= 0
+        || Number(region.box?.height) <= 0
+    ));
+    const regionStatus: MainImageExecutionAlignmentStatus = invalidRegions.length > 0
+        ? 'blocked'
+        : declaredRegions.length > 0 ? 'aligned' : 'watch';
     checks.push(makeCheck(
         'dsl.regions',
         '主图 DSL 区域',
-        missingRegions.length > 0 ? 'blocked' : 'aligned',
-        missingRegions.length > 0
-            ? `主图 DSL 缺少区域：${missingRegions.join(', ')}。`
-            : '主图 DSL 包含安全区、主视觉槽、标题槽和卖点槽。',
-        requiredRegions.map((id) => `DesignDSL region ${id}`),
-        Array.from(regionIds)
+        regionStatus,
+        invalidRegions.length > 0
+            ? `Agent 声明的主图 DSL 含 ${invalidRegions.length} 个无效区域。`
+            : declaredRegions.length > 0
+                ? `已校验 Agent 声明的 ${declaredRegions.length} 个主图 DSL 区域；Harness 未补固定槽位。`
+                : 'Agent 本轮没有声明额外 DesignDSL 区域；保持待观察，不补安全区、标题或卖点槽。',
+        ['Agent-authored DesignDSL regions, when present'],
+        declaredRegions.map((region) => cleanString(region.id)).filter(Boolean)
     ));
 
     const plannedLayoutCount = sizePlans.length;

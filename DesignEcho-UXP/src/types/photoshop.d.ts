@@ -239,6 +239,8 @@ declare module 'photoshop' {
         height: number;
         resolution: number;
         mode: string;
+        bitsPerChannel: unknown;
+        backgroundLayer?: Layer | null;
         layers: Layer[];
         activeLayers: Layer[];
         activeHistoryState?: HistoryState;
@@ -263,6 +265,8 @@ declare module 'photoshop' {
         id: number;
         name: string;
         kind: constants.LayerKind;
+        isBackgroundLayer: boolean;
+        locked: boolean;
         visible: boolean;
         opacity: number;
         bounds: Bounds;

@@ -214,7 +214,7 @@ export const AVAILABLE_TOOLS = [
     // === 导出 ===
     { name: 'saveDocument', description: '正式保存或导出交付文件；省略 path 时使用当前文档的用户可读名称，不附加时间戳或内部状态词', params: '{ format?: "psd"|"psb"|"png"|"jpg"|"jpeg"|"tiff"|"pdf", path?: string, projectSubdir?: string, saveAs?: boolean, quality?: number, conflictPolicy?: "overwrite"|"fail_if_exists" }' },
     { name: 'quickExport', description: '快速导出到明确目录或完整 PNG/JPEG 文件路径；用户给 .png/.jpg/.jpeg 路径时不要删除扩展名，运行时会转为 saveDocument(path)', params: '{ outputPath: string, format?: "png"|"jpg", quality?: number, suffix?: string }' },
-    { name: 'exportGroup', description: '导出指定图层组或图层为 PNG 文件；需要 groupPath 或 layerId 以及完整 outputPath', params: '{ groupPath?: string[], layerId?: number, outputPath: string, format?: "png", targetWidth?: number, targetHeight?: number, maxSize?: number }' },
+    { name: 'exportGroup', description: '导出指定图层组或图层为 PNG/JPG；默认裁紧透明边缘，正式构图交付可显式使用 preserve_document_canvas 保留完整文档画布', params: '{ groupPath?: string[], layerId?: number, outputPath: string, format?: "png" | "jpg", targetWidth?: number, targetHeight?: number, maxSize?: number, canvasPolicy?: "trim_content" | "preserve_document_canvas" }' },
     { name: 'exportMainImageDocuments', description: '按用户导出规范 4.0 批量导出成品：主图文档（800/750/1200）的「转化图」「点击图」父组下每个非空子组各导一张 JPEG（质量自适应≤3MB）到 <导出目录>/主图/<尺寸>/，详情页文档按切片 Save For Web 导出到 <导出目录>；未打开的文档跳过不中断，处理后恢复历史状态', params: '{ outputDir: string, documents?: string[], mainImageGroups?: string[], maxFileSizeMB?: number }' },
     { name: 'exportWhiteBgFromSkuMaterial', description: '从项目 SKU PSD/PSB 源文件生成 800x800 白底图并保存到完整 JPEG 路径', params: '{ sourceDocumentPath: string, outputPath: string, preferredLayerName?: string, canvasWidth?: number, canvasHeight?: number, targetSubjectHeightPx?: number, horizontalMarginPx?: number, jpegQuality?: number }' },
     { name: 'smartSave', description: '建立项目内部可编辑恢复点；路径固定由宿主解析到 .designecho/recovery，不属于最终交付', params: '{ exportFormat?: "psd"|"psb" }' },
@@ -1413,9 +1413,9 @@ function safeChatTestFileName(value: unknown): string {
 }
 
 function inferChatTestDocumentDimensions(name: string): { width: number; height: number } {
-    if (/1200|9[:：]16/.test(name)) return { width: 1440, height: 2560 };
-    if (/750|3[:：]4/.test(name)) return { width: 1440, height: 1920 };
-    if (/800|1[:：]1/.test(name)) return { width: 1440, height: 1440 };
+    if (/1200|2[:：]3/.test(name)) return { width: 1440, height: 2160 };
+    if (/750|3[:：]4/.test(name)) return { width: 1500, height: 2000 };
+    if (/800|1[:：]1/.test(name)) return { width: 1500, height: 1500 };
     return { width: 800, height: 800 };
 }
 

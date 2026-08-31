@@ -34,7 +34,7 @@
 - 自动 Project State 摘要只展开全局适用的已确认规则、已确认事实、待核候选和历史记录数量；旧选图、版式、文案、评审、版本原因与旧 task/channel 不再自动进入当前方案或激活 scoped rule。明确当前 owner 提供 task/channel 时，scoped 已确认规则仍可按需解析。
 - Artifact 与 Evaluation 终态已分轴：PSD/JPG 保存完成继续保留 `artifact_completed`，但 `designVerdict=needs_review` 会让整体终态保持 `needs_review`，用户可见文案不得改称专业完成或“不影响交付”。
 - 测试启动器已不再默认指向用户真实项目，并会创建一次性临时项目和 OS-temp userData；Main 通过纯 resolver 独立重验项目 /userData realpath、旧 `.designecho`、目录重叠、打包 /Bridge 与 CDP 信封，正负行为测试已覆盖启动器旁路。
-- 主图生产结构审计已确认当前 Runtime 与用户真实空骨架不一致：正确工作画布为 1500×1500、1500×2000、1440×2160，三文档均保留 5 个点击槽和 4 个转化槽；现 core 尺寸、1200 禁转化、创意 variant 驱动物料组和导出命名属于 `INTAKE-092`，尚未修复。
+- `INTAKE-092` 主图生产结构已完成代码治理：唯一事实源保存 1500×1500、1500×2000、1440×2160 三份 72 ppi RGB/8 工作文档和每份 5+4 空槽；Agent /用户以逐槽 `slotAssignments` 拥有素材、主体 bounds、target /safe box、缩放 preset、目标和文案决定。空骨架为 39 步 editable-only，满 27 槽为 120 步并使用冻结计划动态预算。UXP 隔离兄弟子组、保留完整工作画布，live adapter 将父组归根、子组归父，并以真实 documentId、Background id、父子路径和规格面板顺序读回。专项行为测试、fresh 65 阶段 `maintenance:validate` 与最终无 P0/P1 独立审查均已通过；fresh Photoshop Host 尚未验证。
 
 ## 已核实（构建与自动检查）
 
@@ -45,6 +45,7 @@
 - INTAKE-090 性能归因纵切已通过一轮 fresh 65 阶段完整 `maintenance:validate`，其中包含 Runtime ledger、ContextManager、设计作者权与业务边界、Agent 简化棘轮、Renderer/Main 类型检查、Agent/UXP 测试和 UXP production build；尚无 fixed Case 新样本，因此不能把工程绿色表述为已经提速。
 - revision 5 实机后的最终整合树已通过 65 阶段 `maintenance:validate`；包含 Debug v5 producer→receipt→consumer 三态、Runtime declaration、TypeScript 控制流业务边界、零任务进展时零 Host /零模型调用、exact / stale / unavailable 终审缓存复入、Design Reliability、设计作者权、Renderer/Main 类型检查、Agent/UXP 测试和 UXP production build。Agent 核心简化棘轮由 12826 下调并锁定到 12825 行。
 - 当前防污染切片在首轮局部绿色后接受了独立攻击审计；发现的推荐回落、旧学习伪发布、Main 测试项目 /CDP 旁路、裸 G 集合碰撞和文件版本漂移均已根修。完成态审美复入资格已从主循环下沉到纯逻辑策略，要求产物闭合、`needs_review`、同 revision ReviewSet、完整可靠 Judge、无 blocker 与必需 E2 交付证据同时成立。限定复审已无 P0/P1，fresh 65 阶段 `maintenance:validate` 已通过，含作者权、业务边界、Final Comparison、Learning、Tool、Skill Package、Runtime、Run Ledger、调试信封、Agent 简化棘轮、Main /Renderer 类型检查、Agent /UXP 测试和 UXP production build。
+- INTAKE-092 当前整合树的持久行为回归已覆盖空骨架 39 步、两张不同素材逐槽几何、非法 safeBox 写前拒绝、1200 转化槽、27 槽 120 步、显式低预算拒绝、固定 DSL /旧 State /关键词文案 /local recipe 不再补设计答案，以及完整单文档 11 组执行与 documentId、父子关系、根 /子组顺序、Background id /role /locked /层级的八类故障注入；fresh 65 阶段 `maintenance:validate` 已通过，独立复审确认测试实际经过 production validator 且无剩余 P0/P1。真实 Host Attempt 仍待执行，不能把自动绿色登记为实机或视觉质量通过。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -81,12 +82,12 @@
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
 5. 历史 Markdown、旧命令和旧模型配置可能再次进入上下文并误导开发。
 6. 已上传图片若没有请求级 `attachmentRef`，Agent 会把 Harness 输入断链误判成“文件不在项目”，产生无效搜索并把路径问题退回用户；直接开放任意 CLI 会扩大权限面但不证明同名文件身份。
-7. 主图 Runtime 仍使用错误工作画布、错误 1200 规则和错误子组命名；在 `INTAKE-092` 修复前，Skill 可能稳定地产出结构错误的交付，即使 Agent 视觉判断正确也无法达成用户格式。
+7. 主图生产结构已从错误画布和固定方案中解耦，但新的逐槽 assignment 与层级读回尚未经过 fresh Photoshop Host；同时每 assignment 的“模型确实观察过该素材版本”仍缺少逐槽视觉观察收据引用，不能把路径 /尺寸完整误当作模型已经看图。
 
 ## 当前下一步
 
-1. 排除无关 UI 改动，提交并推送已通过 fresh 65 阶段核心验证的防污染切片。
-2. 修复 `INTAKE-092` 的主图生产结构和 UXP 逐子组隔离导出；稳定容器与 Agent 物料计划分离，工作画布与上传尺寸分离。
-3. 在新的正常项目中重跑自然短提示；不使用 fake /Debug fixture 或用户参考项目作为 active test project，核对候选覆盖、选图说明、参考取舍、真实 Photoshop 结果、诚实 Final Judge 和外部文档零变化。
+1. 防污染切片已以 `217368bd` 提交并推送；保持用户 5 个未提交 UI 文件在本轮主图提交之外。
+2. 独立提交并推送 INTAKE-092；完整 65 阶段核心闸门、项目记忆同步和最终无 P0/P1 只读审查已经完成。
+3. 在新的正常项目中重跑自然短提示；不使用 fake /Debug fixture 或用户参考项目作为 active test project，核对逐槽声明、候选覆盖、选图说明、参考取舍、真实 5+4 Photoshop 层级、保画布导出、诚实 Final Judge 和外部文档零变化。
 4. 只有取得新样本后才选择一个设计质量变量；若仍退化为相同安全构图，优先证伪 Agent 设计认知 /参考信息增益或 Evaluation 检出，不恢复推荐排序、固定 Eagle 步骤或品类 Prompt。
 5. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。

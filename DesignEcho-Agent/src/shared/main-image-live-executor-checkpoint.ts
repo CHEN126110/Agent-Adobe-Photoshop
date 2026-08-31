@@ -12,6 +12,7 @@ export type MainImageLiveExecutorCheckpointStatus =
     | 'blocked_missing_request_package'
     | 'blocked_request_not_ready'
     | 'blocked_missing_operation_requests'
+    | 'blocked_operation_budget_exceeded'
     | 'blocked_requires_explicit_checkpoint'
     | 'blocked_photoshop_unavailable'
     | 'ready_for_live_executor_run';
@@ -73,7 +74,8 @@ export interface MainImageLiveExecutorCheckpoint {
     verificationReport: VerificationReport;
 }
 
-const DEFAULT_MAX_OPERATION_COUNT = 80;
+const MIN_OPERATION_BUDGET = 80;
+const ABSOLUTE_MAX_OPERATION_COUNT = 256;
 
 function cleanString(value: unknown): string {
     return String(value || '').replace(/\s+/g, ' ').trim();
@@ -103,10 +105,16 @@ function normalizeScope(value: unknown): MainImageLiveExecutorScope {
     return 'disposable-document';
 }
 
-function normalizeMaxOperationCount(value: unknown): number {
+function hasExplicitOperationBudget(value: unknown): boolean {
     const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) return DEFAULT_MAX_OPERATION_COUNT;
-    return Math.max(1, Math.min(DEFAULT_MAX_OPERATION_COUNT, Math.floor(numeric)));
+    return Number.isFinite(numeric) && numeric > 0;
+}
+
+function normalizeMaxOperationCount(value: unknown, requiredOperationCount: number): number {
+    if (hasExplicitOperationBudget(value)) {
+        return Math.min(ABSOLUTE_MAX_OPERATION_COUNT, Math.floor(Number(value)));
+    }
+    return Math.min(ABSOLUTE_MAX_OPERATION_COUNT, Math.max(MIN_OPERATION_BUDGET, requiredOperationCount));
 }
 
 function inferStatus(input: MainImageLiveExecutorCheckpointInput): MainImageLiveExecutorCheckpointStatus {
@@ -116,6 +124,13 @@ function inferStatus(input: MainImageLiveExecutorCheckpointInput): MainImageLive
         return 'blocked_request_not_ready';
     }
     if (!requestPackage.operationRequests.length) return 'blocked_missing_operation_requests';
+    const maxOperationCount = normalizeMaxOperationCount(
+        input.maxOperationCount,
+        requestPackage.operationRequests.length
+    );
+    if (requestPackage.operationRequests.length > maxOperationCount) {
+        return 'blocked_operation_budget_exceeded';
+    }
     if (input.approvedLiveExecution !== true) return 'blocked_requires_explicit_checkpoint';
 
     const connection = normalizeConnection(input.photoshopConnection);
@@ -126,14 +141,15 @@ function inferStatus(input: MainImageLiveExecutorCheckpointInput): MainImageLive
 
 function buildRunGuard(
     input: MainImageLiveExecutorCheckpointInput,
-    connection: ReturnType<typeof normalizeConnection>
+    connection: ReturnType<typeof normalizeConnection>,
+    requiredOperationCount: number
 ): MainImageLiveExecutorRunGuard {
     return {
         executionScope: normalizeScope(input.executionScope),
         approvedLiveExecution: input.approvedLiveExecution === true,
         photoshopConnected: connection.connected,
         documentWriteAvailable: connection.documentWriteAvailable,
-        maxOperationCount: normalizeMaxOperationCount(input.maxOperationCount),
+        maxOperationCount: normalizeMaxOperationCount(input.maxOperationCount, requiredOperationCount),
         stopOnFirstFailure: true,
         requireReadbackAfterEachOperation: true,
         requireFinalAcceptanceSnapshot: true,
@@ -150,6 +166,9 @@ function collectBlockers(
     if (status === 'blocked_missing_request_package') blockers.push('main_image_live_executor_request_package_required');
     if (status === 'blocked_request_not_ready') blockers.push('main_image_live_executor_request_package_must_be_ready');
     if (status === 'blocked_missing_operation_requests') blockers.push('main_image_live_executor_operation_requests_required');
+    if (status === 'blocked_operation_budget_exceeded') {
+        blockers.push('main_image_live_executor_operation_budget_exceeded');
+    }
     if (status === 'blocked_requires_explicit_checkpoint') blockers.push('explicit_live_executor_checkpoint_required');
     if (status === 'blocked_photoshop_unavailable') blockers.push('photoshop_connection_and_document_write_required');
     return Array.from(new Set(blockers.map(cleanString).filter(Boolean)));
@@ -180,6 +199,12 @@ function buildChecks(input: {
             summary: `approved=${input.runGuard.approvedLiveExecution}`
         },
         {
+            id: 'operation-budget',
+            label: '冻结计划操作预算',
+            status: input.operationCount <= input.runGuard.maxOperationCount ? 'passed' : 'failed',
+            summary: `operations=${input.operationCount}; max=${input.runGuard.maxOperationCount}`
+        },
+        {
             id: 'photoshop-connection',
             label: 'Photoshop 写入连接',
             status: input.runGuard.photoshopConnected && input.runGuard.documentWriteAvailable ? 'passed' : 'failed',
@@ -199,7 +224,8 @@ export function buildMainImageLiveExecutorCheckpoint(
 ): MainImageLiveExecutorCheckpoint {
     const status = inferStatus(input);
     const connection = normalizeConnection(input.photoshopConnection);
-    const runGuard = buildRunGuard(input, connection);
+    const requestedOperationCount = input.requestPackage?.operationRequests.length || 0;
+    const runGuard = buildRunGuard(input, connection, requestedOperationCount);
     const canStartLiveExecutor = status === 'ready_for_live_executor_run';
     const operationRequests = canStartLiveExecutor ? input.requestPackage?.operationRequests || [] : [];
     const operationCount = operationRequests.length;
@@ -216,7 +242,7 @@ export function buildMainImageLiveExecutorCheckpoint(
             ? 'active-document execution can affect the user document; prefer disposable-document for validation runs.'
             : ''
     ].map(cleanString).filter(Boolean)));
-    const checks = buildChecks({ status, operationCount, runGuard });
+    const checks = buildChecks({ status, operationCount: requestedOperationCount, runGuard });
     const verificationReport: VerificationReport = {
         reportId: 'main-image-live-executor-checkpoint',
         scenario: 'main-image',

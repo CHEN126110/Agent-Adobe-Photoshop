@@ -21,6 +21,7 @@ export interface MainImageProductionExecutorDryRunOperationResult {
     documentId?: string;
     documentName?: string;
     groupPath?: string[];
+    assignmentKey?: string;
     payloadPreview: Record<string, unknown>;
     requiredReadback: MainImageProductionExecutorQueueItem['requiredReadback'];
     requiredPostRunReadbackTools: string[];
@@ -143,6 +144,7 @@ function toOperationResult(
         documentId: item.documentId,
         documentName: item.documentName,
         groupPath: cleanStrings(item.groupPath),
+        assignmentKey: item.assignmentKey,
         payloadPreview: sanitizePayloadPreview(item.payloadPreview),
         requiredReadback: item.requiredReadback,
         requiredPostRunReadbackTools: cleanStrings(item.requiredPostRunReadbackTools),

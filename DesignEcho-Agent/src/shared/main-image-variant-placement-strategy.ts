@@ -4,16 +4,16 @@ import {
     type ImagePlacementPlan,
     type ImagePlacementRequiredReadback
 } from './design-image-placement-core';
-import type { MainImageSizePlan } from './design-agent-os-contracts';
-import type {
-    MainImageDraftAsset,
-    MainImageDraftSubjectBounds
-} from './main-image-agent-draft-plan';
 import type {
     MainImageProjectStyleStrategy,
-    MainImageVariantDirection,
     MainImageVariantType
 } from './main-image-project-style-strategy';
+import {
+    buildMainImageSlotAssignmentKey,
+    getMainImageProductionDocumentSpec,
+    resolveMainImageProductionSizeKey,
+    type MainImageSlotAssignment
+} from './main-image-production-spec';
 
 export type MainImageVariantPlacementStrategyStatus =
     | 'blocked_missing_project_style_strategy'
@@ -27,13 +27,14 @@ export type MainImageVariantPlacementStrategyStatus =
 export interface MainImageVariantPlacementStrategyInput {
     userText?: string;
     projectStyleStrategy?: MainImageProjectStyleStrategy | null;
-    selectedAsset?: MainImageDraftAsset | null;
-    subjectBounds?: MainImageDraftSubjectBounds | null;
-    sizePlans?: MainImageSizePlan[];
+    slotAssignments?: MainImageSlotAssignment[];
+    createEmptySkeleton?: boolean;
 }
 
 export interface MainImageVariantPlacementPlan {
     id: string;
+    assignmentKey: string;
+    slotName: string;
     variantId: string;
     variantImageType: MainImageVariantType;
     sizeKey: string;
@@ -45,6 +46,13 @@ export interface MainImageVariantPlacementPlan {
         layoutReason: string;
     };
     placementPlan: ImagePlacementPlan;
+    asset: {
+        id?: string;
+        name?: string;
+        path: string;
+        width: number;
+        height: number;
+    };
 }
 
 export interface MainImageVariantPlacementStrategy {
@@ -52,12 +60,6 @@ export interface MainImageVariantPlacementStrategy {
     skillId: 'main-image-design';
     scene: 'ecommerce-socks';
     status: MainImageVariantPlacementStrategyStatus;
-    selectedAsset?: {
-        name?: string;
-        path?: string;
-        width?: number;
-        height?: number;
-    };
     projectStyle: {
         status: string;
         productType: string;
@@ -79,13 +81,6 @@ export interface MainImageVariantPlacementStrategy {
     limitations: string[];
 }
 
-interface NormalizedAsset {
-    name?: string;
-    path?: string;
-    width: number;
-    height: number;
-}
-
 interface NormalizedSubjectBounds {
     left: number;
     top: number;
@@ -93,15 +88,6 @@ interface NormalizedSubjectBounds {
     bottom: number;
     width: number;
     height: number;
-}
-
-interface NormalizedSizePlan {
-    sizeKey: string;
-    targetSize: { width: number; height: number };
-    subjectSize: { width: number; height: number };
-    targetX: number;
-    targetY: number;
-    decisionReason: string;
 }
 
 const FORBIDDEN_PAYLOAD_PATTERNS = [
@@ -119,28 +105,9 @@ function cleanString(value: unknown): string {
     return text.replace(/\s+/g, ' ').trim();
 }
 
-function toPositiveNumber(value: unknown): number | undefined {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
-}
-
-function normalizeAsset(asset: MainImageDraftAsset | null | undefined): NormalizedAsset | undefined {
-    if (!asset) return undefined;
-    const width = toPositiveNumber(asset.width);
-    const height = toPositiveNumber(asset.height);
-    if (!width || !height) return undefined;
-    return {
-        name: cleanString(asset.name) || undefined,
-        path: cleanString(asset.path) || undefined,
-        width: Math.round(width),
-        height: Math.round(height)
-    };
-}
-
 function normalizeSubjectBounds(
-    bounds: MainImageDraftSubjectBounds | null | undefined
+    bounds: MainImageSlotAssignment['subjectBounds']
 ): NormalizedSubjectBounds | undefined {
-    if (!bounds) return undefined;
     const left = Number(bounds.left ?? 0);
     const top = Number(bounds.top ?? 0);
     const right = Number(bounds.right ?? (left + Number(bounds.width || 0)));
@@ -159,43 +126,6 @@ function normalizeSubjectBounds(
     };
 }
 
-function normalizeSizePlans(sizePlans: MainImageSizePlan[] | undefined): NormalizedSizePlan[] {
-    return (sizePlans || [])
-        .map((plan) => {
-            const targetWidth = toPositiveNumber(plan.targetSize?.width);
-            const targetHeight = toPositiveNumber(plan.targetSize?.height);
-            if (!targetWidth || !targetHeight) return null;
-            const subjectWidth = toPositiveNumber(plan.subjectSize?.width);
-            const subjectHeight = toPositiveNumber(plan.subjectSize?.height);
-            if (!subjectWidth || !subjectHeight) return null;
-            return {
-                sizeKey: cleanString(plan.sizeKey) || `${Math.round(targetWidth)}x${Math.round(targetHeight)}`,
-                targetSize: {
-                    width: Math.round(targetWidth),
-                    height: Math.round(targetHeight)
-                },
-                subjectSize: {
-                    width: Math.round(subjectWidth),
-                    height: Math.round(subjectHeight)
-                },
-                targetX: Math.round(Number(plan.targetX || 0)),
-                targetY: Math.round(Number(plan.targetY || 0)),
-                decisionReason: cleanString(plan.decisionReason) || 'main image size plan'
-            };
-        })
-        .filter((plan): plan is NormalizedSizePlan => Boolean(plan));
-}
-
-function getStyleVariants(
-    styleStrategy: MainImageProjectStyleStrategy | null | undefined
-): MainImageVariantDirection[] {
-    if (!styleStrategy) return [];
-    return [
-        ...styleStrategy.variantPlan.clickImages,
-        ...styleStrategy.variantPlan.conversionImages
-    ];
-}
-
 function buildSafeBox(targetSize: { width: number; height: number }): ImagePlacementBox {
     return {
         x: 0,
@@ -205,110 +135,84 @@ function buildSafeBox(targetSize: { width: number; height: number }): ImagePlace
     };
 }
 
-function clampBoxToSafeArea(box: ImagePlacementBox, safeBox: ImagePlacementBox): ImagePlacementBox {
-    const width = Math.max(1, Math.min(box.width, safeBox.width));
-    const height = Math.max(1, Math.min(box.height, safeBox.height));
-    const maxX = safeBox.x + safeBox.width - width;
-    const maxY = safeBox.y + safeBox.height - height;
-    return {
-        x: Math.max(safeBox.x, Math.min(box.x, maxX)),
-        y: Math.max(safeBox.y, Math.min(box.y, maxY)),
-        width,
-        height
-    };
-}
-
 function buildTargetSlot(
-    variant: MainImageVariantDirection,
-    sizePlan: NormalizedSizePlan
+    assignment: MainImageSlotAssignment,
+    canvasSize: { width: number; height: number }
 ): MainImageVariantPlacementPlan['targetSlot'] {
-    const safeBox = buildSafeBox(sizePlan.targetSize);
-    const rawBox: ImagePlacementBox = {
-        x: sizePlan.targetX,
-        y: sizePlan.targetY,
-        width: sizePlan.subjectSize.width,
-        height: sizePlan.subjectSize.height
-    };
-    const box = clampBoxToSafeArea(rawBox, safeBox);
+    const safeBox = assignment.placement.safeBox || buildSafeBox(canvasSize);
+    const box: ImagePlacementBox = { ...assignment.placement.targetBox };
     return {
         box,
         safeBox,
-        slotRole: variant.imageType === 'click' ? 'click-hero' : 'conversion-hero',
-        layoutReason: `使用 Agent 或上游计划显式声明的主体区域：${sizePlan.decisionReason}`
+        slotRole: assignment.imageType === 'click' ? 'click-hero' : 'conversion-hero',
+        layoutReason: `使用 Agent 对当前槽位显式声明的主体区域：${assignment.placement.decisionReason}`
     };
 }
 
 function buildPlacementPlan(input: {
-    asset: NormalizedAsset;
-    subjectBounds: NormalizedSubjectBounds;
-    variant: MainImageVariantDirection;
-    sizePlan: NormalizedSizePlan;
+    assignment: MainImageSlotAssignment;
 }): MainImageVariantPlacementPlan {
-    const targetSlot = buildTargetSlot(input.variant, input.sizePlan);
+    const sizeKey = resolveMainImageProductionSizeKey(input.assignment.sizeKey);
+    if (!sizeKey) throw new Error(`Unsupported main-image assignment size: ${input.assignment.sizeKey}`);
+    const document = getMainImageProductionDocumentSpec(sizeKey);
+    const subjectBounds = normalizeSubjectBounds(input.assignment.subjectBounds);
+    if (!subjectBounds) throw new Error(`Invalid subject bounds for ${buildMainImageSlotAssignmentKey(input.assignment)}`);
+    const targetSlot = buildTargetSlot(input.assignment, document.canvasSize);
     const placementPlan = buildImagePlacementPlan({
         source: {
-            width: input.asset.width,
-            height: input.asset.height,
-            path: input.asset.path,
-            assetId: input.asset.name,
+            width: input.assignment.asset.width,
+            height: input.assignment.asset.height,
+            path: input.assignment.asset.path,
+            assetId: input.assignment.asset.id || input.assignment.asset.name,
             role: 'product',
             subjectBox: {
-                x: input.subjectBounds.left,
-                y: input.subjectBounds.top,
-                width: input.subjectBounds.width,
-                height: input.subjectBounds.height
+                x: subjectBounds.left,
+                y: subjectBounds.top,
+                width: subjectBounds.width,
+                height: subjectBounds.height
             }
         },
         target: {
             box: targetSlot.box,
             safeBox: targetSlot.safeBox,
-            slotId: `${input.variant.id}-${input.sizePlan.sizeKey}`,
+            slotId: buildMainImageSlotAssignmentKey(input.assignment),
             slotRole: targetSlot.slotRole
         },
-        canvas: input.sizePlan.targetSize,
+        canvas: document.canvasSize,
         designType: 'main-image',
         assetRole: 'product',
-        intent: input.variant.imageType === 'click' ? 'hero' : 'fit-slot',
-        presetOverride: {
-            scaleMode: 'contain',
-            targetFill: 1,
-            minFill: 1,
-            maxFill: 1,
-            anchor: 'center',
-            cropPolicy: 'protect-subject',
-            visualBiasY: 0,
-            minScale: 0.01,
-            maxScale: 100
-        },
-        cropPolicy: 'protect-subject',
+        intent: input.assignment.imageType === 'click' ? 'hero' : 'fit-slot',
+        presetOverride: input.assignment.placement.preset,
+        cropPolicy: input.assignment.placement.preset.cropPolicy,
         requireSubjectBounds: true,
         executionTool: 'transformLayer'
     });
 
+    const assignmentKey = buildMainImageSlotAssignmentKey(input.assignment);
+
     return {
-        id: `${input.variant.id}-${input.sizePlan.sizeKey}`,
-        variantId: input.variant.id,
-        variantImageType: input.variant.imageType,
-        sizeKey: input.sizePlan.sizeKey,
-        objective: input.variant.objective,
+        id: assignmentKey,
+        assignmentKey,
+        slotName: input.assignment.slotName,
+        variantId: input.assignment.variantId,
+        variantImageType: input.assignment.imageType,
+        sizeKey,
+        objective: input.assignment.objective,
         targetSlot,
-        placementPlan
+        placementPlan,
+        asset: { ...input.assignment.asset }
     };
 }
 
 function resolveStatus(input: {
     styleStrategy?: MainImageProjectStyleStrategy | null;
-    asset?: NormalizedAsset;
-    selectedAssetProvided: boolean;
-    subjectBounds?: NormalizedSubjectBounds;
-    sizePlans: NormalizedSizePlan[];
+    assignments: MainImageSlotAssignment[];
+    createEmptySkeleton: boolean;
 }): MainImageVariantPlacementStrategyStatus {
+    if (input.assignments.length === 0 && input.createEmptySkeleton) return 'ready_variant_placement_plan';
     if (!input.styleStrategy) return 'blocked_missing_project_style_strategy';
     if (input.styleStrategy.status !== 'ready_visual_context') return 'blocked_missing_visual_context';
-    if (!input.selectedAssetProvided) return 'blocked_missing_selected_asset';
-    if (!input.asset) return 'blocked_missing_source_dimensions';
-    if (!input.subjectBounds) return 'blocked_missing_subject_bounds';
-    if (input.sizePlans.length === 0) return 'blocked_missing_size_plans';
+    if (input.assignments.length === 0) return 'ready_variant_placement_plan';
     return 'ready_variant_placement_plan';
 }
 
@@ -335,18 +239,13 @@ function buildBlockers(status: MainImageVariantPlacementStrategyStatus): string[
 function buildWarnings(input: {
     status: MainImageVariantPlacementStrategyStatus;
     plans: MainImageVariantPlacementPlan[];
-    subjectBounds?: NormalizedSubjectBounds;
-    asset?: NormalizedAsset;
+    createEmptySkeleton: boolean;
 }): string[] {
     const warnings: string[] = [];
-    if (input.status === 'ready_variant_placement_plan') {
+    if (input.createEmptySkeleton && input.plans.length === 0) {
+        warnings.push('当前任务只创建标准空骨架，不包含素材置入或缩放计划。');
+    } else if (input.status === 'ready_variant_placement_plan') {
         warnings.push('当前只是主图变体置入/缩放计划，执行后必须读取 Photoshop actualBounds 和截图验收。');
-    }
-    if (input.subjectBounds && input.asset) {
-        const outsideSource = input.subjectBounds.right > input.asset.width || input.subjectBounds.bottom > input.asset.height;
-        if (outsideSource) {
-            warnings.push('主体 bounds 超出源图尺寸，可能是 Photoshop 画布坐标而非源图坐标，执行前需要重新映射。');
-        }
     }
     for (const plan of input.plans) {
         for (const warning of plan.placementPlan.warnings) {
@@ -372,28 +271,20 @@ function buildVerificationPolicy(plans: MainImageVariantPlacementPlan[]): MainIm
 export function buildMainImageVariantPlacementStrategy(
     input: MainImageVariantPlacementStrategyInput
 ): MainImageVariantPlacementStrategy {
-    const asset = normalizeAsset(input.selectedAsset);
-    const subjectBounds = normalizeSubjectBounds(input.subjectBounds);
-    const sizePlans = normalizeSizePlans(input.sizePlans);
+    const assignments = input.slotAssignments || [];
     const status = resolveStatus({
         styleStrategy: input.projectStyleStrategy,
-        asset,
-        selectedAssetProvided: Boolean(input.selectedAsset),
-        subjectBounds,
-        sizePlans
+        assignments,
+        createEmptySkeleton: input.createEmptySkeleton === true
     });
-    const variants = getStyleVariants(input.projectStyleStrategy);
-    const variantPlacementPlans = status === 'ready_variant_placement_plan' && asset && subjectBounds
-        ? variants.flatMap((variant) => (
-            sizePlans.map((sizePlan) => buildPlacementPlan({ asset, subjectBounds, variant, sizePlan }))
-        ))
+    const variantPlacementPlans = status === 'ready_variant_placement_plan'
+        ? assignments.map((assignment) => buildPlacementPlan({ assignment }))
         : [];
     const projectStyle = input.projectStyleStrategy;
     const warnings = buildWarnings({
         status,
         plans: variantPlacementPlans,
-        subjectBounds,
-        asset
+        createEmptySkeleton: input.createEmptySkeleton === true
     });
 
     return {
@@ -401,12 +292,6 @@ export function buildMainImageVariantPlacementStrategy(
         skillId: 'main-image-design',
         scene: 'ecommerce-socks',
         status,
-        selectedAsset: asset ? {
-            name: asset.name,
-            path: asset.path,
-            width: asset.width,
-            height: asset.height
-        } : undefined,
         projectStyle: {
             status: projectStyle?.status || 'missing',
             productType: projectStyle?.projectStyleUnderstanding.productType || 'unknown',
@@ -426,7 +311,7 @@ export function buildMainImageVariantPlacementStrategy(
             '主图变体置入策略只输出几何计划，不调用模型、不搜索网页、不读图片像素、不执行 Photoshop。',
             '款式判断必须来自 projectStyleStrategy 中与所选素材绑定的视觉上下文，不能从文件名猜测。',
             'destinationBox 和 subjectDestinationBox 是计划值，不是 Photoshop actualBounds。',
-            '点击图/转化图只是同一素材下的设计方向与置入策略，最终质量仍依赖执行后验收。'
+            '每个置入计划只消费其槽位 assignment 自己的素材尺寸、主体 bounds、目标区域和缩放预设；跨槽复用必须再次显式声明。'
         ]
     };
 }

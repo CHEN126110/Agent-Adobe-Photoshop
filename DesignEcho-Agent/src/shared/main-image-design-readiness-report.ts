@@ -25,6 +25,7 @@ export interface MainImageDesignReadinessReportInput {
 
 export interface MainImageDesignReadinessStrategyContext {
     status: string;
+    skeletonOnly?: boolean;
     missingInputs: string[];
     blockers: string[];
     warnings: string[];
@@ -112,10 +113,14 @@ function buildChecks(input: MainImageDesignReadinessReportInput): MainImageDesig
         makeCheck(
             'design-standards',
             '设计规范与知识来源',
-            designStandards
+            strategy?.skeletonOnly === true
+                ? 'not_run'
+                : designStandards
                 ? designStandards.status === 'ready_for_design_strategy' ? 'passed' : 'needs_review'
                 : 'not_run',
-            designStandards
+            strategy?.skeletonOnly === true
+                ? '空骨架任务不包含素材、构图、文案或审美判断，不需要设计规范取得写入资格。'
+                : designStandards
                 ? `status=${designStandards.status}; rules=${designStandards.rules.length}; recipes=${designStandards.recipeCandidates.length}`
                 : '没有主图设计规范。'
         ),
@@ -154,7 +159,7 @@ function inferStatus(input: MainImageDesignReadinessReportInput): MainImageDesig
     const strategy = input.strategyInputContext;
     if (!strategy) return 'blocked_missing_strategy_inputs';
     if (strategy.status !== 'ready_for_strategy_contract') return 'blocked_strategy_inputs_not_ready';
-    if (strategy.designStandards.status !== 'ready_for_design_strategy') {
+    if (strategy.skeletonOnly !== true && strategy.designStandards.status !== 'ready_for_design_strategy') {
         return 'blocked_design_standards_not_ready';
     }
     if (strategy.productionExecutorDryRunPreview.status !== 'completed_dry_run') {
@@ -179,7 +184,7 @@ function collectBlockers(
     const strategy = input.strategyInputContext;
     const blockers = [
         ...(strategy?.blockers || []),
-        ...(strategy?.designStandards.blockers || []),
+        ...(strategy?.skeletonOnly === true ? [] : strategy?.designStandards.blockers || []),
         ...(strategy?.productionExecutorDryRunPreview.blockers || []),
         ...(input.qaReport?.blockers || [])
     ];

@@ -1995,7 +1995,12 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             },
             maxSize: { type: 'number' },
             targetWidth: { type: 'number' },
-            targetHeight: { type: 'number' }
+            targetHeight: { type: 'number' },
+            canvasPolicy: {
+                type: 'string',
+                enum: ['trim_content', 'preserve_document_canvas'],
+                description: 'trim_content crops transparent margins (legacy default); preserve_document_canvas keeps the full composition canvas while isolating the target group.'
+            }
         }, ['outputPath'])
     },
     {

@@ -6,7 +6,7 @@
  * artifact paths. It never chooses assets, layout, copy, color, or aesthetics.
  */
 
-import { MAIN_IMAGE_DELIVERY_DOCUMENTS } from './main-image-design-core';
+import { MAIN_IMAGE_DELIVERY_DOCUMENTS } from './main-image-production-spec';
 import type {
     MainImageProductionDocumentPlan,
     MainImageProductionDocumentStructure,
@@ -93,6 +93,7 @@ export interface BuildMainImageSkillDeliveryPlanInput {
     deliveryConvention?: unknown;
     deliveryVersion?: string | null;
     productionDocumentStructure?: MainImageProductionDocumentStructure | null;
+    editableOnly?: boolean;
 }
 
 const SUPPORTED_EDITABLE_FORMATS = new Set<SkillDeliveryEditableFormat>(['psd', 'psb']);
@@ -109,15 +110,14 @@ function fallbackMainImageDeliveryConvention(): SkillDeliveryConvention {
         provenance: 'skill_fallback',
         supportRefs: [],
         editable: {
-            projectRelativeRoot: '主图/源文件',
-            folderPattern: '{size}',
-            fileNamePattern: '主图源稿',
+            projectRelativeRoot: 'PSD',
+            fileNamePattern: '{size}',
             format: 'psb'
         },
         raster: {
             projectRelativeRoot: '主图',
             folderPattern: '{size}',
-            fileNamePattern: '{kind}-{index}',
+            fileNamePattern: '{name}',
             format: 'jpg'
         },
         pairing: 'one_master_many_rasters',
@@ -341,7 +341,13 @@ export function buildMainImageSkillDeliveryPlan(
             blockers: resolved.blockers
         });
     }
-    const convention = resolved.convention;
+    const convention: SkillDeliveryConvention = input.editableOnly === true
+        ? {
+            ...resolved.convention,
+            raster: undefined,
+            pairing: 'editable_only'
+        }
+        : resolved.convention;
     const blockers: string[] = [];
     const warnings: string[] = [];
     if (!projectPath || !looksLikeAbsoluteProjectPath(projectPath)) {
@@ -361,13 +367,15 @@ export function buildMainImageSkillDeliveryPlan(
             blockers: ['主图精确交付计划需要已确定的生产文档与导出组结构。']
         });
     }
-    if (!convention.editable || !convention.raster) {
-        blockers.push('主图完整交付必须同时声明可编辑稿与 raster 导出图。');
+    if (!convention.editable || (input.editableOnly !== true && !convention.raster)) {
+        blockers.push(input.editableOnly === true
+            ? '主图空骨架交付必须声明可编辑稿。'
+            : '主图完整交付必须同时声明可编辑稿与 raster 导出图。');
     }
     if (convention.editable && !SUPPORTED_EDITABLE_FORMATS.has(convention.editable.format)) {
         blockers.push('当前主图 live runner 只能验真 PSD/PSB 可编辑稿。');
     }
-    if (convention.raster && !SUPPORTED_RASTER_FORMATS.has(convention.raster.format)) {
+    if (input.editableOnly !== true && convention.raster && !SUPPORTED_RASTER_FORMATS.has(convention.raster.format)) {
         blockers.push('当前主图 live runner 只支持 JPG/JPEG/PNG 导出。');
     }
     const deliveryVersion = cleanString(input.deliveryVersion);
@@ -382,7 +390,7 @@ export function buildMainImageSkillDeliveryPlan(
             blockers.push('new_version 的 raster 文件夹或文件名必须使用 {version}。');
         }
     }
-    if (blockers.length > 0 || !convention.editable || !convention.raster) {
+    if (blockers.length > 0 || !convention.editable || (input.editableOnly !== true && !convention.raster)) {
         return makePlan({
             status: 'blocked_invalid_convention',
             projectPath,
@@ -398,13 +406,11 @@ export function buildMainImageSkillDeliveryPlan(
     for (const [documentIndex, document] of structure.documents.entries()) {
         const sizeKey = sizeKeyForDocument(document);
         const exportSpecs = exportSpecsForDocument(structure, document.id);
-        if (exportSpecs.length === 0) {
-            blockers.push(`${sizeKey} 主图文档没有已确定的导出组。`);
-            continue;
-        }
-        if (convention.pairing === 'one_editable_per_raster' && exportSpecs.length !== 1) {
+        if (input.editableOnly !== true && convention.pairing === 'one_editable_per_raster' && exportSpecs.length !== 1) {
             blockers.push(
-                `${sizeKey} 主图文档包含 ${exportSpecs.length} 个 raster，当前 runner 不能把它们伪装成逐图可编辑稿。`
+                exportSpecs.length === 0
+                    ? `${sizeKey} 空骨架没有 raster，不能使用 one_editable_per_raster 配对。`
+                    : `${sizeKey} 主图文档包含 ${exportSpecs.length} 个 raster，当前 runner 不能把它们伪装成逐图可编辑稿。`
             );
             continue;
         }
@@ -427,13 +433,14 @@ export function buildMainImageSkillDeliveryPlan(
         });
         const rasterArtifactIds: string[] = [];
         exportSpecs.forEach((exportSpec, exportIndex) => {
+            if (!convention.raster) return;
             const artifactId = `raster:${exportSpec.id}`;
             const path = buildArtifactPath({
                 projectPath,
-                projectRelativeRoot: convention.raster!.projectRelativeRoot,
-                folderPattern: convention.raster!.folderPattern,
-                fileNamePattern: convention.raster!.fileNamePattern,
-                format: convention.raster!.format,
+                projectRelativeRoot: convention.raster.projectRelativeRoot,
+                folderPattern: convention.raster.folderPattern,
+                fileNamePattern: convention.raster.fileNamePattern,
+                format: convention.raster.format,
                 values: buildRasterValues({
                     document,
                     exportSpec,
@@ -462,7 +469,7 @@ export function buildMainImageSkillDeliveryPlan(
                 documentName: document.name,
                 sizeKey,
                 path,
-                format: convention.raster!.format,
+                format: convention.raster.format,
                 order: artifactOrder++,
                 sourceHistoryRole: 'same_document_revision',
                 exportSpecId: exportSpec.id,

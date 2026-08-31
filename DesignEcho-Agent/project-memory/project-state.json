@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：正常程序 Attempt 已证明技术交付可闭合但设计质量仍 needs_review；当前正在闭合测试 /历史状态 /推荐排序 /学习发布对生产 Agent 的污染，随后修正主图真实 5+4 生产结构并做 fresh 正常程序复跑。",
+  "currentFocus": "2026-08-31 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：防污染切片已提交推送；INTAKE-092 主图真实 5+4 生产结构、逐槽 Agent 作者权、保画布导出与精确 Photoshop 层级读回已完成代码、fresh 65 阶段核心验证和最终无 P0/P1 审查，正在独立提交，随后做 fresh 正常程序复跑。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -20,7 +20,10 @@
       "Automatic project-state context no longer expands prior selections, layouts, copy, reviews or version reasons, and persisted legacy task/channel values cannot silently activate scoped rules for a new run.",
       "Artifact completion and design quality are projected separately: saved editable/raster outputs remain artifact_completed while a needs_review DesignVerdict keeps the overall result needs_review.",
       "The debug launcher and a pure Main resolver enforce disposable projects, OS-temp userData, project/userData realpath separation, fresh state, unpackaged Bridge ownership and CDP gating before Renderer startup.",
-      "The user-provided main-image skeleton establishes 1500x1500, 1500x2000 and 1440x2160 working canvases with five click slots and four conversion slots per document; current production constants remain mismatched and are tracked as INTAKE-092."
+      "INTAKE-092 now has one Skill-owned production spec for 1500x1500, 1500x2000 and 1440x2160 72 ppi RGB/8 working documents with five click slots and four conversion slots each; empty slots remain empty unless an Agent/user slotAssignment binds its own asset, subject bounds, placement and reason.",
+      "Main-image empty-skeleton production compiles to 39 editable-only operations, while 27 explicit slot assignments compile to 120 operations with a dynamic default budget and fail-closed explicit lower limits.",
+      "Main-image Photoshop hierarchy verification now binds the created documentId and Background layer id/role/lock, moves parent groups to document root and children to their parent, and compares readback order with the independent production spec; UXP group export isolates siblings and preserves the working canvas.",
+      "Main-image production projection no longer supplies fixed DesignDSL regions, legacy Project State compositions, keyword-derived pain points/scenes, local visual recipes or array-index slot assignment when the Agent has not declared them."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
@@ -28,7 +31,8 @@
       "INTAKE-090 attribution and visual recovery passed one fresh 65-stage maintenance:validate run, including Runtime ledger, ContextManager, authorship/business boundaries, Agent simplification ratchet, Main/Renderer type checks, Agent/UXP tests and UXP production build.",
       "S1 startup read-only preflight reached Debug Bridge, Photoshop MCP and a real UXP Runtime, but a new matching build, disposable fixture and write authorization must be rechecked before live capture.",
       "The final integrated revision 5 follow-up tree passed a 65-stage maintenance:validate run covering Debug v5 producer-to-consumer provenance, runtime declaration behavior, TypeScript control-flow boundaries, zero-progress zero-Host behavior, exact/stale/unavailable Final Quality reentry, Design Reliability, design authorship, Main/Renderer type checks, Agent/UXP tests and the UXP production build.",
-      "Pre-commit attack review found and then closed recommendation fallback, legacy fake publication, Main project/CDP bypass and candidate-set file-version drift; the bounded re-review has no remaining P0/P1, and the integrated anti-contamination tree passed a fresh 65-stage maintenance:validate including the Agent simplification ratchet, authorship/business boundaries, Main/Renderer type checks, Agent/UXP tests and UXP production build."
+      "Pre-commit attack review found and then closed recommendation fallback, legacy fake publication, Main project/CDP bypass and candidate-set file-version drift; the bounded re-review has no remaining P0/P1, and the integrated anti-contamination tree passed a fresh 65-stage maintenance:validate including the Agent simplification ratchet, authorship/business boundaries, Main/Renderer type checks, Agent/UXP tests and UXP production build.",
+      "INTAKE-092 passed a fresh 65-stage maintenance:validate run covering empty skeletons, per-slot multi-asset geometry, safe-box rejection, 1200 conversion, full 27-slot capacity, explicit low-budget rejection, neutral pending design projections, complete one-document 11-group hierarchy execution, eight injected hierarchy failures, Main/Renderer typecheck, Agent/UXP tests and UXP production build; final independent review found no remaining P0/P1, while the live Host remains pending."
     ],
     "manual": [
       "r31 is the only recorded formal zero-intervention technical pass in the earlier main-image reliability evidence; the current S1 cohort is not complete.",
@@ -51,7 +55,9 @@
     "Main-image, SKU and detail-page multi-sample Photoshop E2E with editable source and same-revision export delivery.",
     "No-Skill cross-scenario design quality comparable with the user's D:\\A1 neveralone旗舰店 work and Eagle references.",
     "A fresh normal-app attempt proving neutral candidate browsing, prior-attempt isolation, honest needs_review projection and no test-state influence improve or at least correctly attribute selection and design behavior.",
-    "The main-image business decision for which of the 5+4 slots are mandatory, whether 1200 conversion slots must be populated, and the final platform upload sizes; the supplied empty skeleton and JSX only prove container and per-nonempty-group export semantics."
+    "The main-image business decision for which of the 5+4 slots are mandatory, whether 1200 conversion slots must be populated, and the final platform upload sizes; the supplied empty skeleton and JSX only prove container and per-nonempty-group export semantics.",
+    "A fresh Photoshop Host run proving the new root/child panel order, Background flags, preserve-document-canvas JPEG pixels and source-document history invariance.",
+    "Per-assignment visual-observation receipts proving the model saw the exact asset version used by each slot, and a first-class custom-size document/slot schema."
   ],
   "topRisks": [
     "The current receipt, context-causality and Evaluation-owner fixes still lack a fresh real sidecar Attempt.",
@@ -60,12 +66,11 @@
     "Without a request-scoped attachment provider, uploaded pixels can be visible to the model yet unusable by execution Tools; unrestricted CLI would widen permissions without proving source identity.",
     "Open Photoshop documents with unresolved ownership must not be modified, saved or closed by the S1 test.",
     "A symptom patch in Debug or benchmark code could make evidence look complete without repairing production delivery.",
-    "Until INTAKE-092 is fixed, main-image Runtime may create the wrong canvases, omit 1200 conversion containers and emit filenames that do not match the user's production script even when the Agent's visual decisions are correct."
+    "The new main-image production contract is automatically verified but not yet Host-verified; path and dimensions must not be treated as proof that the model visually observed each assigned asset."
   ],
   "nextActions": [
-    "Commit and push the fully validated anti-contamination slice without unrelated UI changes.",
-    "Fix the INTAKE-092 main-image production-structure owner and UXP sibling-isolated exporter while keeping slot structure separate from Agent-authored design content.",
-    "Rebuild matching normal Agent/UXP runtimes and rerun the same natural request in a new ordinary project without fake or reusable Debug fixture state.",
+    "Commit and push INTAKE-092 without the user's five unrelated UI changes; the fresh 65-stage maintenance gate and final no-P0/P1 review have passed.",
+    "Rebuild matching normal Agent/UXP runtimes and rerun a natural request in a new ordinary project without fake or reusable Debug fixture state; verify slot assignments, 5+4 hierarchy and preserve-canvas exports.",
     "Use the fresh result to choose one design-quality variable only if the output still collapses into the same safe composition.",
     "Implement request-scoped attachmentRef resolution before the full S1 cohort; then stage scoped external-file and CLI capabilities separately."
   ],
@@ -94,8 +99,8 @@
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
     "source": "project-memory/Plan.md",
     "steps": [
-      "Commit and push the anti-contamination slice that passed the full core gate.",
-      "Align main-image working canvases, 5+4 slot names, exact delivery names and UXP sibling-isolated export with the user-provided production evidence.",
+      "Keep the already pushed anti-contamination baseline separate from unrelated UI work.",
+      "Finish the core gate and independent commit for the implemented main-image working canvases, 5+4 slot assignments, exact delivery names and UXP sibling-isolated preserve-canvas export.",
       "Rebuild matching normal Agent/UXP runtimes and rerun the natural request in a clean ordinary project.",
       "Verify neutral candidate coverage, model-authored selection rationale, independent Final Judge execution, canonical delivery evidence and human visual comparison before selecting another variable.",
       "Close the generic uploaded-attachment source binding before expanding the S1 cohort; keep scoped CLI as a separate capability-provider phase."

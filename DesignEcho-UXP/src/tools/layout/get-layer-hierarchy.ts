@@ -15,6 +15,7 @@ interface LayerNode {
     id: number;
     name: string;
     kind: string;
+    isBackgroundLayer: boolean;
     visible: boolean;
     locked: boolean;
     opacity: number;
@@ -206,6 +207,7 @@ export class GetLayerHierarchyTool implements Tool {
                 id: layer.id,
                 name: layer.name,
                 kind: this.getLayerKind(layer),
+                isBackgroundLayer: layer.isBackgroundLayer === true,
                 visible: layer.visible,
                 locked: layer.locked || false,
                 opacity: layer.opacity,

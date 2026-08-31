@@ -10,6 +10,7 @@ import { Tool, ToolResult, ToolSchema } from '../types';
 
 type ExportGroupFormat = 'png' | 'jpg';
 type ExportGroupConflictPolicy = 'overwrite' | 'fail_if_exists';
+type ExportGroupCanvasPolicy = 'trim_content' | 'preserve_document_canvas';
 
 interface ExportGroupParams {
     groupPath?: string | string[];
@@ -17,6 +18,7 @@ interface ExportGroupParams {
     outputPath: string;
     format?: ExportGroupFormat;
     conflictPolicy?: ExportGroupConflictPolicy;
+    canvasPolicy?: ExportGroupCanvasPolicy;
     maxSize?: number;
     targetWidth?: number;
     targetHeight?: number;
@@ -26,6 +28,7 @@ interface ExportGroupResult {
     success: boolean;
     outputPath: string;
     format: ExportGroupFormat;
+    canvasPolicy: ExportGroupCanvasPolicy;
     width: number;
     height: number;
     targetName: string;
@@ -92,6 +95,13 @@ function normalizeConflictPolicy(value: unknown): ExportGroupConflictPolicy | un
     return undefined;
 }
 
+function normalizeCanvasPolicy(value: unknown): ExportGroupCanvasPolicy | undefined {
+    const normalized = cleanString(value).toLowerCase();
+    if (!normalized || normalized === 'trim_content') return 'trim_content';
+    if (normalized === 'preserve_document_canvas') return 'preserve_document_canvas';
+    return undefined;
+}
+
 function outputPathMatchesFormat(outputPath: string, format: ExportGroupFormat): boolean {
     if (format === 'png') return /\.png$/i.test(outputPath);
     return /\.jpe?g$/i.test(outputPath);
@@ -129,6 +139,11 @@ export class ExportGroupTool implements Tool {
                     enum: ['overwrite', 'fail_if_exists'],
                     description: '目标冲突策略。受治理生产应显式使用 fail_if_exists。'
                 },
+                canvasPolicy: {
+                    type: 'string',
+                    enum: ['trim_content', 'preserve_document_canvas'],
+                    description: '画布策略：trim_content 裁掉目标内容外的透明画布（默认）；preserve_document_canvas 仅隔离目标图层/组，保留源文档完整画布。'
+                },
                 maxSize: {
                     type: 'number',
                     description: '最大边长。0 或不传表示不缩放。'
@@ -158,12 +173,16 @@ export class ExportGroupTool implements Tool {
             const outputPath = cleanString(params.outputPath);
             const format = normalizeExportFormat(params.format);
             const conflictPolicy = normalizeConflictPolicy(params.conflictPolicy);
+            const canvasPolicy = normalizeCanvasPolicy(params.canvasPolicy);
 
             if (!format) {
                 return { success: false, data: null, error: 'exportGroup format 必须是 png 或 jpg' };
             }
             if (!conflictPolicy) {
                 return { success: false, data: null, error: 'exportGroup conflictPolicy 无效' };
+            }
+            if (!canvasPolicy) {
+                return { success: false, data: null, error: 'exportGroup canvasPolicy 必须是 trim_content 或 preserve_document_canvas' };
             }
             if (!outputPath) {
                 return { success: false, data: null, error: 'exportGroup requires outputPath' };
@@ -186,6 +205,7 @@ export class ExportGroupTool implements Tool {
                 outputPath,
                 format,
                 conflictPolicy,
+                canvasPolicy,
                 maxSize: normalizeMaxSize(params.maxSize),
                 targetWidth: normalizeDimension(params.targetWidth),
                 targetHeight: normalizeDimension(params.targetHeight)
@@ -194,6 +214,9 @@ export class ExportGroupTool implements Tool {
             if (!sameHistoryStateRef(sourceHistoryStateRef, afterExportHistoryStateRef)) {
                 return { success: false, data: null, error: 'exportGroup 导出后源文档版本发生变化' };
             }
+            if (cleanString(jsxData.canvasPolicy) !== canvasPolicy) {
+                return { success: false, data: null, error: 'exportGroup 无法确认导出产物使用了请求的画布策略' };
+            }
 
             return {
                 success: true,
@@ -201,6 +224,7 @@ export class ExportGroupTool implements Tool {
                     success: true,
                     outputPath: cleanString(jsxData.path) || outputPath,
                     format,
+                    canvasPolicy,
                     width: parseJsxNumber(jsxData.width),
                     height: parseJsxNumber(jsxData.height),
                     targetName: cleanString(jsxData.targetName),
@@ -229,6 +253,7 @@ export class ExportGroupTool implements Tool {
         outputPath: string;
         format: ExportGroupFormat;
         conflictPolicy: ExportGroupConflictPolicy;
+        canvasPolicy: ExportGroupCanvasPolicy;
         maxSize: number;
         targetWidth: number;
         targetHeight: number;
@@ -238,6 +263,7 @@ export class ExportGroupTool implements Tool {
         const outputPathJson = JSON.stringify(input.outputPath.replace(/\\/g, '/'));
         const formatJson = JSON.stringify(input.format);
         const conflictPolicyJson = JSON.stringify(input.conflictPolicy);
+        const canvasPolicyJson = JSON.stringify(input.canvasPolicy);
         const maxSizeJson = JSON.stringify(input.maxSize);
         const targetWidthJson = JSON.stringify(input.targetWidth);
         const targetHeightJson = JSON.stringify(input.targetHeight);
@@ -271,6 +297,7 @@ try {
     var OUTPUT_PATH = ${outputPathJson};
     var FORMAT = ${formatJson};
     var CONFLICT_POLICY = ${conflictPolicyJson};
+    var CANVAS_POLICY = ${canvasPolicyJson};
     var MAX_SIZE = ${maxSizeJson};
     var TARGET_WIDTH = ${targetWidthJson};
     var TARGET_HEIGHT = ${targetHeightJson};
@@ -379,9 +406,11 @@ try {
     var foundInTemp = pruneNonTarget(tempDoc, keepId);
     if (!foundInTemp) throw new Error('Target disappeared while pruning temp document');
 
-    try {
-        tempDoc.trim(TrimType.TRANSPARENT, true, true, true, true);
-    } catch (trimError) {}
+    if (CANVAS_POLICY === 'trim_content') {
+        try {
+            tempDoc.trim(TrimType.TRANSPARENT, true, true, true, true);
+        } catch (trimError) {}
+    }
 
     var width = Math.max(1, Math.round(asPixels(tempDoc.width) || 1));
     var height = Math.max(1, Math.round(asPixels(tempDoc.height) || 1));
@@ -431,6 +460,7 @@ try {
     __deResult({
         success: 1,
         path: targetFile.fsName,
+        canvasPolicy: CANVAS_POLICY,
         width: width,
         height: height,
         targetName: targetName,

@@ -126,14 +126,15 @@ function buildSharedConcept(input: {
         input.assetHeroStrategy?.heroSubjectSelection.subjectSummary
         || input.styleStrategy?.projectStyleUnderstanding.subjectSummary
     ) || '袜子主体';
-    const tone = cleanString(input.styleStrategy?.designDirection.recommendedTone) || '清爽、克制、商品优先';
+    const tone = cleanString(input.styleStrategy?.agentDesignDecision?.recommendedTone)
+        || 'pending-agent-design-decision';
     return {
-        subjectFocus: `主视觉围绕${subjectSummary}，优先保留主体关键部位、材质纹理、颜色和轮廓真实性。`,
+        subjectFocus: `已识别商品对象：${subjectSummary}。它在画面中的角色、比例与主次关系由 Agent 根据当前目标和像素决定。`,
         tone,
         copyPrinciple: input.copyStrategy?.contextChecklist.ready
             ? '文案围绕视觉事实、商品事实和用户场景展开，点击图短，转化图一图一个理由。'
             : '文案来源不足时只保留可编辑槽位，不写强卖点。',
-        sizingPrinciple: '800/750/1200 内容同源，按比例重排；1200 只做点击图，不做转化图。'
+        sizingPrinciple: '800/750/1200 使用各自已确认的工作画布；商品事实保持一致，具体内容与构图由 Agent 按槽位任务分别决定。'
     };
 }
 
@@ -191,20 +192,27 @@ function buildVisualHierarchy(input: {
     styleStrategy?: MainImageProjectStyleStrategy | null;
     copySlots: MainImageVariantConcept['copySlots'];
 }): string[] {
-    const hierarchy = [
-        '商品主体为第一层级，主体比例和安全区优先于装饰。',
-        input.imageType === 'click'
-            ? '短标题为第二层级，负责第一眼识别和点击动机。'
-            : '卖点说明为第二层级，负责解释一个购买理由。',
-        '背景、标签和辅助说明为第三层级，只服务主体和文案可读性。'
-    ];
-    if (input.document.folderKey === '1200') {
-        hierarchy.push('1200 长竖图保留更强纵向呼吸，不放转化图信息堆叠。');
-    }
+    const decision = input.styleStrategy?.agentDesignDecision;
+    const visualHooks = input.imageType === 'click'
+        ? decision?.clickVisualHooks
+        : decision?.conversionVisualHooks;
+    const layoutFocus = input.imageType === 'click'
+        ? decision?.clickLayoutFocus
+        : decision?.conversionLayoutFocus;
+    const copyRole = input.imageType === 'click'
+        ? decision?.clickCopyRole
+        : decision?.conversionCopyRole;
+    const hierarchy = uniqueClean([
+        cleanString(layoutFocus) ? `Agent 版式重点：${cleanString(layoutFocus)}` : '',
+        ...(visualHooks || []).map((hook) => `Agent 视觉重点：${cleanString(hook)}`),
+        cleanString(copyRole) ? `Agent 文案角色：${cleanString(copyRole)}` : ''
+    ]);
     if (input.copySlots.length === 0) {
-        hierarchy.push('文案槽位缺失时只保留主体与背景层级，不临场写入文案。');
+        hierarchy.push('当前没有已声明文案槽；不能由代码补写标题或卖点层级。');
     }
-    return hierarchy;
+    return hierarchy.length > 0
+        ? hierarchy
+        : ['pending-agent-visual-hierarchy-decision'];
 }
 
 function buildRiskFlags(input: {
@@ -217,9 +225,6 @@ function buildRiskFlags(input: {
     if (input.document.excludedImageTypes.includes(input.imageType)) {
         risks.push(`${input.document.folderKey}-${input.imageType}-forbidden`);
     }
-    if (input.document.folderKey === '1200' && input.imageType === 'click') {
-        risks.push('1200-no-conversion-export');
-    }
     if (input.factClaims.length === 0) risks.push('missing-product-fact-claims');
     if (input.copySlots.length === 0) risks.push('missing-copy-slots');
     return risks;
@@ -228,7 +233,6 @@ function buildRiskFlags(input: {
 function buildManualConfirmations(input: {
     copyStrategy?: MainImageCopyStrategy | null;
     imageType: MainImageDeliverableImageType;
-    folderKey: string;
 }): string[] {
     const confirmations: string[] = [];
     if (!input.copyStrategy || input.copyStrategy.status !== 'ready_copy_strategy') {
@@ -236,9 +240,6 @@ function buildManualConfirmations(input: {
     }
     if ((input.copyStrategy?.productCopyContext.referenceNotes.length || 0) === 0) {
         confirmations.push('尚未记录外部参考来源，设计参考只能按本地规则和项目图片执行。');
-    }
-    if (input.folderKey === '1200') {
-        confirmations.push('确认 1200 文件夹只输出点击图，不输出转化图。');
     }
     if (input.imageType === 'conversion') {
         confirmations.push('确认转化图卖点有商品事实或用户事实支撑。');
@@ -271,14 +272,13 @@ function buildVariantConcepts(
                     styleStrategy: input.projectStyleStrategy,
                     copySlots
                 }),
-                layoutIntent: layoutReason || document.contentPolicy,
+                layoutIntent: layoutReason || 'pending-agent-layout-decision',
                 copySlots,
                 factClaims,
                 riskFlags: buildRiskFlags({ document, imageType, factClaims, copySlots }),
                 manualConfirmations: buildManualConfirmations({
                     copyStrategy: input.copyStrategy,
-                    imageType,
-                    folderKey: document.folderKey
+                    imageType
                 }),
                 sourceContextIds: uniqueClean([
                     input.designCorePlan?.version,

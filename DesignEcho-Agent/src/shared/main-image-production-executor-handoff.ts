@@ -31,6 +31,7 @@ export interface MainImageProductionExecutorToolRequest {
     documentId?: string;
     documentName?: string;
     groupPath?: string[];
+    assignmentKey?: string;
     payloadPreview: Record<string, unknown>;
     requiredReadback: MainImageProductionExecutionOperation['requiredReadback'];
     sourceContextIds: string[];
@@ -134,6 +135,7 @@ function buildPayloadPreview(input: {
         documentId: cleanString(operation.documentId),
         documentName: cleanString(operation.documentName),
         groupPath: operation.groupPath?.map(cleanString).filter(Boolean),
+        assignmentKey: cleanString(operation.assignmentKey),
         variantId: cleanString(operation.variantId),
         placementPlanId: cleanString(operation.placementPlanId),
         exportSpecId: cleanString(operation.exportSpecId),
@@ -141,6 +143,11 @@ function buildPayloadPreview(input: {
         asset: cleanAsset(operation.asset),
         canvasSize: operation.canvasSize,
         exportSize: operation.exportSize,
+        resolutionPpi: operation.resolutionPpi,
+        colorMode: operation.colorMode,
+        bitDepth: operation.bitDepth,
+        backgroundColor: operation.backgroundColor,
+        canvasPolicy: operation.canvasPolicy,
         outputDir: operation.tool === 'exportGroup' ? cleanString(input.outputDir) : undefined,
         outputPath: cleanString(operation.outputPath),
         format: operation.tool === 'exportGroup' && operation.outputFormat === 'jpeg'
@@ -164,6 +171,7 @@ function buildToolRequests(input: {
         documentId: cleanString(operation.documentId) || undefined,
         documentName: cleanString(operation.documentName) || undefined,
         groupPath: operation.groupPath?.map(cleanString).filter(Boolean),
+        assignmentKey: cleanString(operation.assignmentKey) || undefined,
         payloadPreview: buildPayloadPreview({
             operation,
             outputDir: input.outputDir

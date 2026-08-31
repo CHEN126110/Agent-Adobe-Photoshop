@@ -1,6 +1,10 @@
 import type { VerificationCheck, VerificationReport } from './design-agent-os-contracts';
 import type { MainImageLiveExecutorCheckpoint } from './main-image-live-executor-checkpoint';
 import type { MainImageLiveExecutorOperationRequest } from './main-image-live-executor-request';
+import {
+    getMainImageProductionDocumentSpec,
+    resolveMainImageProductionSizeKey
+} from './main-image-production-spec';
 
 export type MainImageLivePhotoshopAdapterContractStatus =
     | 'blocked_missing_checkpoint'
@@ -167,7 +171,9 @@ function buildCreateDocumentParams(request: MainImageLiveExecutorOperationReques
         name: cleanString(request.documentName) || cleanString(payload.documentName),
         width: readNumber(canvasSize.width),
         height: readNumber(canvasSize.height),
-        backgroundColor: 'white'
+        resolution: readNumber(payload.resolutionPpi),
+        backgroundColor: cleanString(payload.backgroundColor),
+        colorMode: cleanString(payload.colorMode)
     });
 }
 
@@ -176,6 +182,24 @@ function buildCreateGroupParams(request: MainImageLiveExecutorOperationRequest):
     return sanitizeRecord({
         groupName: groupPath[groupPath.length - 1]
     });
+}
+
+function getExpectedPanelOrderTopDown(request: MainImageLiveExecutorOperationRequest): string[] {
+    const sizeKey = resolveMainImageProductionSizeKey(request.documentName || request.documentId);
+    if (!sizeKey) return [];
+    const document = getMainImageProductionDocumentSpec(sizeKey);
+    const groupPath = getGroupPath(request);
+    if (groupPath.length === 1) return [...document.parentGroupPanelOrderTopDown];
+    if (groupPath.length !== 2) return [];
+    if (groupPath[0] === '点击图') return [...document.slotPanelOrderTopDown.click];
+    if (groupPath[0] === '转化图') return [...document.slotPanelOrderTopDown.conversion];
+    return [];
+}
+
+function getExpectedRootPanelOrderTopDown(request: MainImageLiveExecutorOperationRequest): string[] {
+    const sizeKey = resolveMainImageProductionSizeKey(request.documentName || request.documentId);
+    if (!sizeKey) return [];
+    return [...getMainImageProductionDocumentSpec(sizeKey).parentGroupPanelOrderTopDown];
 }
 
 function buildNestedCreateGroupParams(request: MainImageLiveExecutorOperationRequest): Record<string, unknown> {
@@ -195,7 +219,32 @@ function buildNestedCreateGroupParams(request: MainImageLiveExecutorOperationReq
                 }
             }
         ],
-        groupPath
+        groupPath,
+        expectedPanelOrderTopDown: getExpectedPanelOrderTopDown(request),
+        expectedRootPanelOrderTopDown: getExpectedRootPanelOrderTopDown(request)
+    });
+}
+
+function buildRootCreateGroupParams(request: MainImageLiveExecutorOperationRequest): Record<string, unknown> {
+    const groupPath = getGroupPath(request);
+    return sanitizeRecord({
+        operationSequence: [
+            {
+                toolName: 'createGroup',
+                params: buildCreateGroupParams(request)
+            },
+            {
+                toolName: 'moveLayerToGroup',
+                params: {
+                    layerId: 'created_group_id_from_createGroup_result',
+                    targetGroupId: 0,
+                    position: 'inside'
+                }
+            }
+        ],
+        groupPath,
+        expectedPanelOrderTopDown: getExpectedPanelOrderTopDown(request),
+        expectedRootPanelOrderTopDown: getExpectedRootPanelOrderTopDown(request)
     });
 }
 
@@ -254,6 +303,7 @@ function buildExportGroupParams(request: MainImageLiveExecutorOperationRequest):
         outputPath,
         format,
         conflictPolicy: cleanString(payload.conflictPolicy),
+        canvasPolicy: cleanString(payload.canvasPolicy),
         targetWidth,
         targetHeight
     });
@@ -270,7 +320,7 @@ function buildSaveDocumentParams(request: MainImageLiveExecutorOperationRequest)
 
 function buildToolNames(request: MainImageLiveExecutorOperationRequest): string[] {
     if (request.tool === 'exportGroup') return ['exportGroup'];
-    if (request.tool === 'createGroup' && getGroupPath(request).length > 1) {
+    if (request.tool === 'createGroup') {
         return ['createGroup', 'moveLayerToGroup'];
     }
     if (request.tool === 'transformLayer' && hasDestinationBox(request)) {
@@ -302,11 +352,17 @@ function buildMapping(request: MainImageLiveExecutorOperationRequest): MainImage
         if (!readNumber(paramsPreview.width) || !readNumber(paramsPreview.height)) {
             blockers.push('createDocument_requires_canvas_width_and_height');
         }
+        if (!readNumber(paramsPreview.resolution)) {
+            blockers.push('createDocument_requires_resolution');
+        }
+        if (paramsPreview.backgroundColor !== 'white' || paramsPreview.colorMode !== 'RGB') {
+            blockers.push('createDocument_requires_verified_white_rgb_working_document');
+        }
     } else if (request.tool === 'createGroup') {
         const groupPath = getGroupPath(request);
         paramsPreview = groupPath.length > 1
             ? buildNestedCreateGroupParams(request)
-            : buildCreateGroupParams(request);
+            : buildRootCreateGroupParams(request);
         if (!paramsPreview.groupName) {
             const sequence = Array.isArray(paramsPreview.operationSequence)
                 ? paramsPreview.operationSequence
@@ -316,9 +372,9 @@ function buildMapping(request: MainImageLiveExecutorOperationRequest): MainImage
                 blockers.push('createGroup_requires_groupName');
             }
         }
+        requiredRuntimeState.push('created_group_id_from_createGroup_result');
         if (groupPath.length > 1) {
             requiredRuntimeState.push('parent_group_id_from_groupPath_readback');
-            requiredRuntimeState.push('created_group_id_from_createGroup_result');
         }
     } else if (request.tool === 'placeImage') {
         paramsPreview = buildPlaceImageParams(request);
@@ -357,6 +413,9 @@ function buildMapping(request: MainImageLiveExecutorOperationRequest): MainImage
         if (paramsPreview.conflictPolicy !== 'fail_if_exists') {
             blockers.push('exportGroup_requires_fail_if_exists');
         }
+        if (paramsPreview.canvasPolicy !== 'preserve_document_canvas') {
+            blockers.push('main_image_exportGroup_requires_preserve_document_canvas');
+        }
         const groupPath = Array.isArray(paramsPreview.groupPath)
             ? paramsPreview.groupPath
             : [];
@@ -367,6 +426,7 @@ function buildMapping(request: MainImageLiveExecutorOperationRequest): MainImage
             warnings.push('exportGroup has no explicit targetWidth/targetHeight; runner must verify exported PNG size.');
         }
         requiredRuntimeState.push('export_group_path_exists_in_layer_hierarchy');
+        requiredRuntimeState.push('export_preserves_document_canvas');
         requiredRuntimeState.push('export_file_exists_after_run');
     } else if (request.tool === 'saveDocument') {
         paramsPreview = buildSaveDocumentParams(request);

@@ -36,6 +36,13 @@ interface CreateDocumentParams {
     colorMode?: 'RGB' | 'CMYK' | 'Grayscale';
 }
 
+interface CreatedDocumentBackgroundLayerReadback {
+    id: number;
+    name: string;
+    isBackgroundLayer: boolean;
+    locked: boolean;
+}
+
 function isPositiveNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
@@ -61,6 +68,18 @@ function readCreatedDocumentId(result: unknown): number | null {
         if (typeof id === 'number' && Number.isFinite(id)) return id;
     }
     return null;
+}
+
+function readCreatedDocumentBackgroundLayer(doc: any): CreatedDocumentBackgroundLayerReadback | null {
+    const backgroundLayer = doc?.backgroundLayer;
+    const id = Number(backgroundLayer?.id);
+    if (!backgroundLayer || !Number.isFinite(id)) return null;
+    return {
+        id,
+        name: String(backgroundLayer.name || '').trim(),
+        isBackgroundLayer: backgroundLayer.isBackgroundLayer === true,
+        locked: backgroundLayer.locked === true
+    };
 }
 
 function documentMatchesExpected(doc: any, expected: {
@@ -175,12 +194,14 @@ export class CreateDocumentTool implements Tool {
         width?: number;
         height?: number;
         resolution?: number;
+        backgroundLayer?: CreatedDocumentBackgroundLayerReadback;
         document?: {
             id: number;
             name: string;
             width: number;
             height: number;
             resolution: number;
+            backgroundLayer?: CreatedDocumentBackgroundLayerReadback;
         };
         photoshopMutationCommit?: PhotoshopMutationCommit;
         message?: string;
@@ -328,12 +349,36 @@ export class CreateDocumentTool implements Tool {
                 }, false);
             }
 
+            const backgroundLayer = readCreatedDocumentBackgroundLayer(newDoc);
+            const shouldHaveBackgroundLayer = fillType !== 'transparent';
+            if (
+                shouldHaveBackgroundLayer
+                && (
+                    !backgroundLayer
+                    || !backgroundLayer.name
+                    || !backgroundLayer.isBackgroundLayer
+                    || !backgroundLayer.locked
+                )
+            ) {
+                return withCreationCommit({
+                    success: false,
+                    error: 'createDocument failed: the requested filled document did not read back a named, locked Photoshop Background layer.'
+                }, false);
+            }
+            if (!shouldHaveBackgroundLayer && backgroundLayer) {
+                return withCreationCommit({
+                    success: false,
+                    error: 'createDocument failed: the requested transparent document unexpectedly contains a Photoshop Background layer.'
+                }, false);
+            }
+
             const resultDocument = {
                 id: newDoc.id,
                 name: actualName,
                 width,
                 height,
-                resolution
+                resolution,
+                ...(backgroundLayer ? { backgroundLayer } : {})
             };
 
             return withCreationCommit({
@@ -344,6 +389,7 @@ export class CreateDocumentTool implements Tool {
                 width: resultDocument.width,
                 height: resultDocument.height,
                 resolution: resultDocument.resolution,
+                ...(backgroundLayer ? { backgroundLayer } : {}),
                 document: resultDocument,
                 message: `Created document "${resultDocument.name}" (${width}x${height}px @ ${resolution}dpi).`
             }, true);

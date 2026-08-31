@@ -61,6 +61,80 @@ function assertPhotoshopDocumentEditStateContract() {
     assert.match(inaccessibleState.editStateReason, /saved unavailable/);
 }
 
+function assertDocumentBitDepthAndBackgroundReadbackContract() {
+    const bitDepth = loadTypeScriptModule(
+        '../src/core/photoshop-bit-depth.ts',
+        'photoshop-bit-depth.ts'
+    );
+    const hostConstants = {
+        ONE: 'host-one',
+        EIGHT: 'host-eight',
+        SIXTEEN: 'host-sixteen',
+        THIRTYTWO: 'host-thirtytwo'
+    };
+    assert.equal(bitDepth.resolvePhotoshopBitDepth('host-one', hostConstants), 1);
+    assert.equal(bitDepth.resolvePhotoshopBitDepth('host-eight', hostConstants), 8);
+    assert.equal(bitDepth.resolvePhotoshopBitDepth('host-sixteen', hostConstants), 16);
+    assert.equal(bitDepth.resolvePhotoshopBitDepth('host-thirtytwo', hostConstants), 32);
+    assert.equal(bitDepth.resolvePhotoshopBitDepth(8, hostConstants), 8);
+    assert.equal(bitDepth.resolvePhotoshopBitDepth('16', hostConstants), 16);
+    assert.equal(bitDepth.resolvePhotoshopBitDepth('unknown-host-value', hostConstants), undefined);
+    assert.equal(bitDepth.resolvePhotoshopBitDepth(undefined, hostConstants), undefined);
+
+    const getDocumentInfoSource = fs.readFileSync(
+        path.resolve(__dirname, '../src/tools/canvas/get-document-info.ts'),
+        'utf8'
+    );
+    const toolTypesSource = fs.readFileSync(
+        path.resolve(__dirname, '../src/tools/types.ts'),
+        'utf8'
+    );
+    const photoshopTypesSource = fs.readFileSync(
+        path.resolve(__dirname, '../src/types/photoshop.d.ts'),
+        'utf8'
+    );
+    const createDocumentSource = fs.readFileSync(
+        path.resolve(__dirname, '../src/tools/canvas/create-document.ts'),
+        'utf8'
+    );
+    const layerHierarchySource = fs.readFileSync(
+        path.resolve(__dirname, '../src/tools/layout/get-layer-hierarchy.ts'),
+        'utf8'
+    );
+
+    assert.ok(
+        getDocumentInfoSource.includes('doc.bitsPerChannel')
+            && getDocumentInfoSource.includes('(constants as any)?.BitsPerChannelType')
+            && getDocumentInfoSource.includes('...(bitDepth ? { bitDepth } : {})'),
+        'getDocumentInfo must map the live Photoshop bitsPerChannel enum and omit unknown values'
+    );
+    assert.ok(
+        toolTypesSource.includes('bitDepth?: 1 | 8 | 16 | 32;')
+            && photoshopTypesSource.includes('bitsPerChannel: unknown;'),
+        'document contracts must expose a structured bit depth without guessing the host enum serialization'
+    );
+    assert.doesNotMatch(getDocumentInfoSource, /bitDepth[^\n]*\|\|\s*8/,
+        'getDocumentInfo must never silently default an unreadable bit depth to 8');
+
+    assert.ok(
+        createDocumentSource.includes('autoPromoteBackgroundLayer: false')
+            && createDocumentSource.includes('readCreatedDocumentBackgroundLayer(newDoc)')
+            && createDocumentSource.includes("const shouldHaveBackgroundLayer = fillType !== 'transparent';")
+            && createDocumentSource.includes('!backgroundLayer.name')
+            && createDocumentSource.includes('!backgroundLayer.isBackgroundLayer')
+            && createDocumentSource.includes('!backgroundLayer.locked')
+            && createDocumentSource.includes('...(backgroundLayer ? { backgroundLayer } : {})'),
+        'filled document creation must read back a named, locked Photoshop Background layer'
+    );
+    assert.doesNotMatch(createDocumentSource, /backgroundLayer\.name\s*===\s*['"]背景['"]/,
+        'background readback must preserve the host-localized name instead of hard-coding a main-image label');
+    assert.ok(
+        layerHierarchySource.includes('isBackgroundLayer: boolean;')
+            && layerHierarchySource.includes('isBackgroundLayer: layer.isBackgroundLayer === true'),
+        'layer hierarchy must expose the authoritative Photoshop Background role for exact readback'
+    );
+}
+
 function assertMattingSourceExportGeometryContract() {
     const geometry = loadTypeScriptModule(
         '../src/core/matting-source-export-geometry.ts',
@@ -369,13 +443,72 @@ function assertExportGroupDeliveryContract() {
     const sourcePath = path.resolve(__dirname, '../src/tools/image/export-group.ts');
     const source = fs.readFileSync(sourcePath, 'utf8');
     assert.match(source, /type ExportGroupFormat = 'png' \| 'jpg'/);
+    assert.match(source, /type ExportGroupCanvasPolicy = 'trim_content' \| 'preserve_document_canvas'/);
     assert.match(source, /enum: \['png', 'jpg'\]/);
+    assert.match(source, /enum: \['trim_content', 'preserve_document_canvas'\]/);
     assert.match(source, /conflictPolicy\?: ExportGroupConflictPolicy/);
+    assert.match(source, /canvasPolicy\?: ExportGroupCanvasPolicy/);
     assert.match(source, /CONFLICT_POLICY === 'fail_if_exists' && targetFile\.exists/);
     assert.match(source, /var jpgOptions = new JPEGSaveOptions\(\)/);
     assert.match(source, /sourceHistoryStateRef = readActiveHistoryStateRef\(doc\)/);
     assert.match(source, /sameHistoryStateRef\(sourceHistoryStateRef, afterExportHistoryStateRef\)/);
+    assert.match(source, /if \(!normalized \|\| normalized === 'trim_content'\) return 'trim_content'/);
+    assert.match(source, /var foundInTemp = pruneNonTarget\(tempDoc, keepId\)/);
+    assert.match(source, /if \(CANVAS_POLICY === 'trim_content'\) \{[\s\S]*?tempDoc\.trim\(TrimType\.TRANSPARENT/);
+    assert.equal((source.match(/tempDoc\.trim/g) || []).length, 1,
+        'preserve_document_canvas must have no second unconditional trim path');
+    assert.match(source, /var width = Math\.max\(1, Math\.round\(asPixels\(tempDoc\.width\) \|\| 1\)\)/);
+    assert.match(source, /if \(TARGET_WIDTH > 0 && TARGET_HEIGHT > 0\) \{[\s\S]*?tempDoc\.resizeImage/);
+    assert.match(source, /canvasPolicy: CANVAS_POLICY/);
+    assert.match(source, /cleanString\(jsxData\.canvasPolicy\) !== canvasPolicy/);
     assert.doesNotMatch(source, /exportGroup 当前仅支持 png 格式/);
+}
+
+function assertMainImageBatchExportIsolationContract() {
+    const sourcePath = path.resolve(__dirname, '../src/tools/image/export-main-image-docs.ts');
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    const isolationHelperStart = source.indexOf('function hideAllChildLayerSets(parentGroup)');
+    const isolationHelperEnd = source.indexOf('function isEmptyLayerSet', isolationHelperStart);
+    const exportOwnerStart = source.indexOf('function exportLayerSets(doc, parentGroupName, exportFolder)');
+    const exportOwnerEnd = source.indexOf('function exportSlices', exportOwnerStart);
+
+    assert.ok(
+        isolationHelperStart >= 0 && isolationHelperEnd > isolationHelperStart,
+        'main-image batch export must own an explicit child-group visibility isolation helper'
+    );
+    const isolationHelper = source.slice(isolationHelperStart, isolationHelperEnd);
+    assert.ok(
+        isolationHelper.includes('for (var i = 0; i < parentGroup.layerSets.length; i++)')
+            && isolationHelper.includes('parentGroup.layerSets[i].visible = false;'),
+        'main-image batch export must hide every sibling child group before selecting one export target'
+    );
+
+    assert.ok(exportOwnerStart >= 0 && exportOwnerEnd > exportOwnerStart,
+        'main-image child-group export owner must exist');
+    const exportOwner = source.slice(exportOwnerStart, exportOwnerEnd);
+    const hideTopLevelIndex = exportOwner.indexOf('hideAllTopLevelLayers(doc);');
+    const showParentIndex = exportOwner.indexOf('parentGroup.visible = true;');
+    const isolateChildrenIndex = exportOwner.indexOf('hideAllChildLayerSets(parentGroup);');
+    const showChildIndex = exportOwner.indexOf('childSet.visible = true;');
+    const exportChildIndex = exportOwner.indexOf('exportLayerAsJPEG(doc, childSet, exportFolder);');
+    const hideChildIndex = exportOwner.indexOf('childSet.visible = false;');
+
+    assert.ok(
+        hideTopLevelIndex >= 0
+            && showParentIndex > hideTopLevelIndex
+            && isolateChildrenIndex > showParentIndex
+            && showChildIndex > isolateChildrenIndex
+            && exportChildIndex > showChildIndex
+            && hideChildIndex > exportChildIndex,
+        'each main-image JPEG must be emitted with only its parent and current non-empty child group visible'
+    );
+    assert.ok(
+        exportOwner.includes('if (!isEmptyLayerSet(childSet))')
+            && source.includes('var layerName = layer.name;')
+            && source.includes('var fileName = layerName.replace(')
+            && source.includes("+ fileName + '.jpg'"),
+        'batch export must keep structural non-empty filtering and derive the JPEG name from the child group'
+    );
 }
 
 function assertRasterExportRevisionContract() {
@@ -933,11 +1066,13 @@ assertImagePlacementParameterConflictContracts();
 assertMattingSourceExportGeometryContract();
 assertJpegQualityNormalizationContract();
 assertExportGroupDeliveryContract();
+assertMainImageBatchExportIsolationContract();
 assertRasterExportRevisionContract();
 assertDetailPageSliceDeliveryContract();
 assertImageSourceIdentityContract();
 assertSkuPairedEditableDeliveryContract();
 assertRuntimeBuildIdentityContract();
 assertPhotoshopDocumentEditStateContract();
+assertDocumentBitDepthAndBackgroundReadbackContract();
 
-console.log('image-target-fit: 17 geometry cases, matting source geometry, Photoshop document edit state, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, matting source geometry, Photoshop document bit depth/background readback/edit state, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, isolated main-image group export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');

@@ -7,6 +7,9 @@ const {
     normalizeContactSheetObservation
 } = require(path.join(root, 'src/main/services/resource-manager-service.ts'));
 const {
+    applyDesignProjectFactOperations
+} = require(path.join(root, 'src/shared/design-project-fact-provenance.ts'));
+const {
     extractImagesFromToolResult
 } = require(path.join(root, 'src/renderer/services/agent-runtime/tool-result-sanitizer.ts'));
 const {
@@ -52,8 +55,38 @@ const {
     buildMainImageSkillDeliveryPlan
 } = require(path.join(root, 'src/shared/main-image-skill-delivery-plan.ts'));
 const {
+    MAIN_IMAGE_DELIVERY_DOCUMENTS
+} = require(path.join(root, 'src/shared/main-image-production-spec.ts'));
+const {
     buildMainImageStrategyInputs
 } = require(path.join(root, 'src/shared/main-image-strategy-input-builder.ts'));
+const {
+    buildMainImageAgentDraftPlan
+} = require(path.join(root, 'src/shared/main-image-agent-draft-plan.ts'));
+const {
+    buildMainImageExecutionAlignment
+} = require(path.join(root, 'src/shared/main-image-execution-alignment.ts'));
+const {
+    buildMainImageCopyStrategy
+} = require(path.join(root, 'src/shared/main-image-copy-strategy.ts'));
+const {
+    buildMainImageDesignStandards
+} = require(path.join(root, 'src/shared/main-image-design-standards.ts'));
+const {
+    buildMainImageStateContext
+} = require(path.join(root, 'src/shared/main-image-state-consumption.ts'));
+const {
+    buildMainImageLiveExecutorCheckpoint
+} = require(path.join(root, 'src/shared/main-image-live-executor-checkpoint.ts'));
+const {
+    buildMainImageLivePhotoshopAdapterContract
+} = require(path.join(root, 'src/shared/main-image-live-photoshop-adapter-contract.ts'));
+const {
+    createMainImageLivePhotoshopToolAdapter
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/main-image-live-photoshop-tool-adapter.ts'
+));
 const {
     selectDesignKnowledgeResultsForSkillUse
 } = require(path.join(root, 'src/renderer/services/skill-executors/design-planner-context.ts'));
@@ -658,6 +691,975 @@ const mainImageDeliveryConvention = {
     pairing: 'one_master_many_rasters',
     versionPolicy: 'new_version'
 };
+const standardMainImageAsset = {
+    id: 'standard-main-image-asset',
+    path: 'C:\\shop\\摄影图\\01.jpg',
+    name: '01.jpg',
+    width: 1200,
+    height: 1600
+};
+const standardMainImagePlacementPreset = {
+    scaleMode: 'contain',
+    targetFill: 0.72,
+    minFill: 0.5,
+    maxFill: 0.9,
+    anchor: 'center',
+    cropPolicy: 'protect-subject',
+    visualBiasY: 0,
+    minScale: 0.1,
+    maxScale: 4
+};
+function makeMainImageSlotAssignment(input) {
+    return {
+        sizeKey: input.sizeKey,
+        imageType: input.imageType,
+        slotName: input.slotName,
+        variantId: input.variantId,
+        objective: input.objective,
+        visualHook: input.visualHook,
+        layoutFocus: input.layoutFocus,
+        copyRole: input.copyRole,
+        asset: {
+            id: input.asset.id,
+            name: input.asset.name,
+            path: input.asset.path,
+            width: input.asset.width,
+            height: input.asset.height
+        },
+        subjectBounds: input.subjectBounds,
+        placement: {
+            targetBox: input.targetBox,
+            ...(input.safeBox ? { safeBox: input.safeBox } : {}),
+            preset: {
+                ...standardMainImagePlacementPreset,
+                ...(input.preset || {})
+            },
+            decisionReason: input.decisionReason || 'Agent 明确声明该槽位素材、主体边界和目标构图。'
+        }
+    };
+}
+const standardMainImageToolNames = [
+    'createDocument',
+    'createGroup',
+    'moveLayerToGroup',
+    'placeImage',
+    'transformLayer',
+    'moveLayer',
+    'exportGroup',
+    'saveDocument',
+    'getDocumentInfo',
+    'getLayerHierarchy',
+    'getLayerProperties',
+    'getAcceptanceSnapshot'
+];
+const emptyStandardMainImageBundle = buildMainImageStrategyInputs({
+    userText: '建立当前店铺标准主图工作文档骨架。',
+    projectPath: 'C:\\shop',
+    createEmptySkeleton: true,
+    toolNames: standardMainImageToolNames,
+    userCheckpointApproved: true,
+    selectedAsset: standardMainImageAsset,
+    projectAssets: [standardMainImageAsset],
+    visionSignal: {
+        source: 'vision-model',
+        assetRef: { id: standardMainImageAsset.id, path: standardMainImageAsset.path },
+        productType: 'socks',
+        subjectSummary: '一组袜子摄影素材',
+        backgroundSummary: '棚拍背景',
+        styleHints: []
+    }
+});
+const emptyStandardMainImageStructure = emptyStandardMainImageBundle.productionDocumentStructure;
+const emptyStandardMainImageOperations = emptyStandardMainImageBundle.productionExecutionPlan.documents
+    .flatMap((document) => document.operations);
+check(
+    '主图生产骨架只固定真实工作文档与 5+4 空槽，不把测试样例升级成设计答案',
+    JSON.stringify(MAIN_IMAGE_DELIVERY_DOCUMENTS.map((document) => ({
+        key: document.folderKey,
+        ratio: document.ratio,
+        canvas: document.canvasSize,
+        batchExport: document.batchExportSize,
+        upload: document.platformUploadSize,
+        mode: [document.resolutionPpi, document.colorMode, document.bitDepth],
+        click: document.slots.click.map((slot) => slot.name),
+        conversion: document.slots.conversion.map((slot) => slot.name),
+        panelClick: document.slotPanelOrderTopDown.click,
+        panelConversion: document.slotPanelOrderTopDown.conversion
+    }))) === JSON.stringify([
+        {
+            key: '800', ratio: '1:1', canvas: { width: 1500, height: 1500 },
+            batchExport: { width: 1500, height: 1500 }, upload: null, mode: [72, 'RGB', 8],
+            click: ['800-1', '800-2', '800-3', '800-4', '800-5'], conversion: ['2', '3', '4', '5'],
+            panelClick: ['800-5', '800-4', '800-3', '800-2', '800-1'], panelConversion: ['5', '4', '3', '2']
+        },
+        {
+            key: '750', ratio: '3:4', canvas: { width: 1500, height: 2000 },
+            batchExport: { width: 1500, height: 2000 }, upload: null, mode: [72, 'RGB', 8],
+            click: ['750-1', '750-2', '750-3', '750-4', '750-5'], conversion: ['2', '3', '4', '5'],
+            panelClick: ['750-5', '750-4', '750-3', '750-2', '750-1'], panelConversion: ['5', '4', '3', '2']
+        },
+        {
+            key: '1200', ratio: '2:3', canvas: { width: 1440, height: 2160 },
+            batchExport: { width: 1440, height: 2160 }, upload: null, mode: [72, 'RGB', 8],
+            click: ['1200-1', '1200-2', '1200-3', '1200-4', '1200-5'], conversion: ['2', '3', '4', '5'],
+            panelClick: ['1200-5', '1200-4', '1200-3', '1200-2', '1200-1'], panelConversion: ['5', '4', '3', '2']
+        }
+    ])
+        && MAIN_IMAGE_DELIVERY_DOCUMENTS.every((document) => (
+            document.batchExportPolicy.pixelPolicy === 'preserve_work_canvas'
+            && document.batchExportPolicy.fileNamePolicy === 'child_group_name'
+            && document.batchExportPolicy.occupancyPolicy === 'export_structurally_non_empty_only'
+            && document.batchExportPolicy.siblingIsolationRequired === true
+        ))
+        && emptyStandardMainImageStructure.status === 'ready_production_document_structure'
+        && emptyStandardMainImageStructure.documents.length === 3
+        && emptyStandardMainImageStructure.documents.every((document) => (
+            document.name === document.sizeProfileId.match(/tmall-(800|750|1200)-main-image/)?.[1]
+            && document.parentGroups.flatMap((group) => group.childGroups).length === 9
+            && document.parentGroups.flatMap((group) => group.childGroups)
+                .every((group) => group.populationStatus === 'unassigned')
+            && document.backgroundLayer.name === '背景'
+            && document.backgroundLayer.locked
+            && document.backgroundLayer.exportRole === 'none'
+        ))
+        && emptyStandardMainImageStructure.exportSpecs.length === 0
+        && emptyStandardMainImageBundle.deliveryPlan.status === 'ready'
+        && emptyStandardMainImageBundle.deliveryPlan.artifacts.length === 3
+        && emptyStandardMainImageBundle.deliveryPlan.artifacts.every((artifact) => (
+            artifact.kind === 'editable_document'
+        ))
+        && emptyStandardMainImageBundle.productionExecutionPlan.status === 'ready_execution_plan'
+        && emptyStandardMainImageBundle.productionExecutionPlan.plannedOperationCount === 39
+        && emptyStandardMainImageOperations.filter((operation) => operation.tool === 'createDocument').length === 3
+        && emptyStandardMainImageOperations.filter((operation) => operation.tool === 'createGroup').length === 33
+        && emptyStandardMainImageOperations.filter((operation) => operation.tool === 'saveDocument').length === 3
+        && emptyStandardMainImageOperations.every((operation) => (
+            operation.tool !== 'placeImage'
+            && operation.tool !== 'transformLayer'
+            && operation.tool !== 'exportGroup'
+        ))
+        && emptyStandardMainImageBundle.liveExecutorRequestPackage.status === 'ready_for_executor_dispatch',
+    JSON.stringify(emptyStandardMainImageStructure)
+);
+
+const secondStandardMainImageAsset = {
+    id: 'standard-main-image-asset-2',
+    path: 'C:\\shop\\摄影图\\02.jpg',
+    name: '02.jpg',
+    width: 1400,
+    height: 1800
+};
+const multiVariantMainImageInput = {
+    userText: '为 800 点击图明确设计两个方向。',
+    imageType: 'click',
+    projectPath: 'C:\\shop',
+    selectedAsset: standardMainImageAsset,
+    projectAssets: [standardMainImageAsset, secondStandardMainImageAsset],
+    subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+    sizePlans: [{
+        sizeKey: '800',
+        targetSize: { width: 1500, height: 1500 },
+        subjectSize: { width: 1000, height: 1400 },
+        scale: 0.8,
+        targetX: 300,
+        targetY: 190,
+        decisionReason: 'Agent authored two distinct click directions.',
+        smartLayoutPlanned: true,
+        quickExportPlanned: true
+    }],
+    visionSignal: {
+        source: 'vision-model',
+        assetRef: { id: standardMainImageAsset.id, path: standardMainImageAsset.path },
+        productType: 'socks',
+        subjectSummary: '袜子摄影素材',
+        backgroundSummary: '棚拍背景',
+        styleHints: []
+    },
+    agentDesignDecision: {
+        clickVisualHooks: ['方向一', '方向二'],
+        clickLayoutFocus: '两个方向分别保留自己的素材和构图关系'
+    },
+    toolNames: standardMainImageToolNames,
+    userCheckpointApproved: true
+};
+const implicitFanoutMainImageBundle = buildMainImageStrategyInputs(multiVariantMainImageInput);
+const explicitVariantAssetsMainImageBundle = buildMainImageStrategyInputs({
+    ...multiVariantMainImageInput,
+    slotAssignments: [
+        makeMainImageSlotAssignment({
+            sizeKey: '800',
+            imageType: 'click',
+            slotName: '800-1',
+            variantId: 'click-1',
+            objective: '方向一',
+            visualHook: '方向一',
+            layoutFocus: '主体完整并保留 Agent 声明的留白关系',
+            asset: standardMainImageAsset,
+            subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+            targetBox: { x: 220, y: 160, width: 920, height: 1180 }
+        }),
+        makeMainImageSlotAssignment({
+            sizeKey: '800',
+            imageType: 'click',
+            slotName: '800-2',
+            variantId: 'click-2',
+            objective: '方向二',
+            visualHook: '方向二',
+            layoutFocus: '第二张素材使用自己的主体范围与构图决定',
+            asset: secondStandardMainImageAsset,
+            subjectBounds: { left: 120, top: 110, right: 1280, bottom: 1700, width: 1160, height: 1590 },
+            targetBox: { x: 160, y: 120, width: 1080, height: 1260 },
+            preset: { targetFill: 0.8, minFill: 0.6, maxFill: 0.92 }
+        })
+    ]
+});
+const explicitVariantOperations = explicitVariantAssetsMainImageBundle.productionExecutionPlan.documents
+    .flatMap((document) => document.operations);
+check(
+    '主图空槽不执行内容操作，多个方向必须逐槽绑定素材与几何且导出保留完整画布',
+    implicitFanoutMainImageBundle.productionDocumentStructure.documents[0]
+        .parentGroups.flatMap((group) => group.childGroups)
+        .every((group) => group.populationStatus === 'unassigned')
+        && implicitFanoutMainImageBundle.productionDocumentStructure.exportSpecs.length === 0
+        && implicitFanoutMainImageBundle.productionExecutionPlan.documents.length === 0
+        && explicitVariantAssetsMainImageBundle.productionExecutionPlan.status === 'ready_execution_plan'
+        && explicitVariantAssetsMainImageBundle.productionDocumentStructure.documents[0]
+            .parentGroups.flatMap((group) => group.childGroups).length === 9
+        && explicitVariantAssetsMainImageBundle.productionDocumentStructure.documents[0]
+            .parentGroups.flatMap((group) => group.childGroups)
+            .filter((group) => group.populationStatus === 'assigned').length === 2
+        && explicitVariantAssetsMainImageBundle.productionDocumentStructure.exportSpecs
+            .map((spec) => `${spec.groupPath.join('/')}:${spec.fileName}`).join('|')
+            === '点击图/800-1:800-1.jpg|点击图/800-2:800-2.jpg'
+        && explicitVariantOperations.filter((operation) => operation.tool === 'createGroup').length === 11
+        && explicitVariantOperations.filter((operation) => operation.tool === 'createGroup')
+            .map((operation) => operation.groupPath?.join('/')).join('|')
+            === '点击图|点击图/800-5|点击图/800-4|点击图/800-3|点击图/800-2|点击图/800-1|转化图|转化图/5|转化图/4|转化图/3|转化图/2'
+        && explicitVariantOperations.filter((operation) => operation.tool === 'placeImage').length === 2
+        && explicitVariantOperations.filter((operation) => operation.tool === 'transformLayer').length === 2
+        && explicitVariantOperations.filter((operation) => operation.tool === 'exportGroup').length === 2
+        && explicitVariantOperations.find((operation) => (
+            operation.tool === 'placeImage' && operation.variantId === 'click-1'
+        ))?.asset?.path === standardMainImageAsset.path
+        && explicitVariantOperations.find((operation) => (
+            operation.tool === 'placeImage' && operation.variantId === 'click-2'
+        ))?.asset?.path === secondStandardMainImageAsset.path
+        && explicitVariantOperations.find((operation) => (
+            operation.tool === 'transformLayer' && operation.variantId === 'click-1'
+        ))?.destinationBox?.width !== explicitVariantOperations.find((operation) => (
+            operation.tool === 'transformLayer' && operation.variantId === 'click-2'
+        ))?.destinationBox?.width
+        && explicitVariantOperations.filter((operation) => operation.tool === 'exportGroup')
+            .every((operation) => operation.canvasPolicy === 'preserve_document_canvas')
+        && explicitVariantAssetsMainImageBundle.deliveryPlan.artifacts.some((artifact) => (
+            artifact.kind === 'editable_document' && artifact.path.endsWith('\\PSD\\800.psb')
+        ))
+        && explicitVariantAssetsMainImageBundle.deliveryPlan.artifacts.filter((artifact) => (
+            artifact.kind === 'raster_export'
+        )).map((artifact) => artifact.path).join('|')
+            === 'C:\\shop\\主图\\800\\800-1.jpg|C:\\shop\\主图\\800\\800-2.jpg',
+    JSON.stringify({
+        implicitStatus: implicitFanoutMainImageBundle.productionExecutionPlan.status,
+        explicitStatus: explicitVariantAssetsMainImageBundle.productionExecutionPlan.status,
+        structure: explicitVariantAssetsMainImageBundle.productionDocumentStructure,
+        artifacts: explicitVariantAssetsMainImageBundle.deliveryPlan.artifacts,
+        operations: explicitVariantOperations
+    })
+);
+const invalidMainImageGeometryBundle = buildMainImageStrategyInputs({
+    ...multiVariantMainImageInput,
+    slotAssignments: [makeMainImageSlotAssignment({
+        sizeKey: '800',
+        imageType: 'click',
+        slotName: '800-1',
+        variantId: 'click-invalid-geometry',
+        objective: '几何反例',
+        asset: standardMainImageAsset,
+        subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+        safeBox: { x: 100, y: 100, width: 500, height: 500 },
+        targetBox: { x: 400, y: 400, width: 500, height: 500 }
+    })]
+});
+check(
+    '主图逐槽几何越过 Agent 声明的 safeBox 时写前阻断，Harness 不静默 clamp 或移动',
+    invalidMainImageGeometryBundle.productionDocumentStructure.status === 'blocked_invalid_slot_assignments'
+        && invalidMainImageGeometryBundle.productionDocumentStructure.slotAssignments.length === 0
+        && invalidMainImageGeometryBundle.productionDocumentStructure.blockers.some((blocker) => (
+            blocker.includes('slot_assignment_1_target_box_outside_safe_box')
+        ))
+        && invalidMainImageGeometryBundle.productionExecutionPlan.documents.length === 0,
+    JSON.stringify({
+        structure: invalidMainImageGeometryBundle.productionDocumentStructure,
+        execution: invalidMainImageGeometryBundle.productionExecutionPlan
+    })
+);
+
+const fullMainImageSlotAssignments = MAIN_IMAGE_DELIVERY_DOCUMENTS.flatMap((document) => (
+    [...document.slots.click, ...document.slots.conversion].map((slot) => makeMainImageSlotAssignment({
+        sizeKey: document.folderKey,
+        imageType: slot.imageType,
+        slotName: slot.name,
+        variantId: `${document.folderKey}-${slot.imageType}-${slot.name}`,
+        objective: `${document.folderKey} ${slot.imageType} ${slot.name} 的 Agent 声明方向`,
+        visualHook: `Agent hook ${document.folderKey}/${slot.imageType}/${slot.name}`,
+        layoutFocus: '该槽位使用自己的显式几何；复用素材不等于复用旧槽位决定。',
+        asset: standardMainImageAsset,
+        subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+        targetBox: {
+            x: 100,
+            y: 100,
+            width: document.canvasSize.width - 200,
+            height: document.canvasSize.height - 200
+        }
+    }))
+));
+const fullMainImageBundle = buildMainImageStrategyInputs({
+    userText: '按本轮提交的逐槽声明完成三份标准工作文档。',
+    projectPath: 'C:\\shop',
+    selectedAsset: standardMainImageAsset,
+    projectAssets: [standardMainImageAsset],
+    slotAssignments: fullMainImageSlotAssignments,
+    subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+    sizePlans: MAIN_IMAGE_DELIVERY_DOCUMENTS.map((document) => ({
+        sizeKey: document.folderKey,
+        targetSize: document.canvasSize,
+        subjectSize: { width: 1000, height: 1400 },
+        scale: 0.8,
+        targetX: 100,
+        targetY: 100,
+        decisionReason: `Agent 为 ${document.folderKey} 声明当前工作画布。`,
+        smartLayoutPlanned: true,
+        quickExportPlanned: true
+    })),
+    visionSignal: {
+        source: 'vision-model',
+        assetRef: { id: standardMainImageAsset.id, path: standardMainImageAsset.path },
+        productType: 'socks',
+        subjectSummary: '袜子摄影素材',
+        backgroundSummary: '棚拍背景',
+        styleHints: []
+    },
+    agentDesignDecision: {
+        clickVisualHooks: ['点击方向由每个 slotAssignment 细化'],
+        conversionVisualHooks: ['转化方向由每个 slotAssignment 细化'],
+        clickLayoutFocus: '逐槽声明',
+        conversionLayoutFocus: '逐槽声明'
+    },
+    toolNames: standardMainImageToolNames,
+    userCheckpointApproved: true
+});
+const fullMainImageCheckpoint = buildMainImageLiveExecutorCheckpoint({
+    requestPackage: fullMainImageBundle.liveExecutorRequestPackage,
+    approvedLiveExecution: true,
+    photoshopConnection: {
+        connected: true,
+        documentWriteAvailable: true
+    },
+    executionScope: 'disposable-document'
+});
+const undersizedFullMainImageCheckpoint = buildMainImageLiveExecutorCheckpoint({
+    requestPackage: fullMainImageBundle.liveExecutorRequestPackage,
+    approvedLiveExecution: true,
+    photoshopConnection: {
+        connected: true,
+        documentWriteAvailable: true
+    },
+    executionScope: 'disposable-document',
+    maxOperationCount: 100
+});
+const fullMainImageOperations = fullMainImageBundle.productionExecutionPlan.documents
+    .flatMap((document) => document.operations);
+check(
+    '三规格 27 个槽全部显式分配时形成 120 步冻结计划，动态预算不会把合法满槽任务误杀',
+    fullMainImageSlotAssignments.length === 27
+        && fullMainImageBundle.productionDocumentStructure.slotAssignments.length === 27
+        && fullMainImageBundle.productionDocumentStructure.exportSpecs.length === 27
+        && fullMainImageBundle.productionExecutionPlan.status === 'ready_execution_plan'
+        && fullMainImageBundle.productionExecutionPlan.plannedOperationCount === 120
+        && fullMainImageOperations.filter((operation) => operation.tool === 'createDocument').length === 3
+        && fullMainImageOperations.filter((operation) => operation.tool === 'createGroup').length === 33
+        && fullMainImageOperations.filter((operation) => operation.tool === 'placeImage').length === 27
+        && fullMainImageOperations.filter((operation) => operation.tool === 'transformLayer').length === 27
+        && fullMainImageOperations.filter((operation) => operation.tool === 'exportGroup').length === 27
+        && fullMainImageOperations.filter((operation) => operation.tool === 'saveDocument').length === 3
+        && new Set(fullMainImageOperations.filter((operation) => operation.tool === 'placeImage')
+            .map((operation) => operation.assignmentKey)).size === 27
+        && fullMainImageBundle.liveExecutorRequestPackage.status === 'ready_for_executor_dispatch'
+        && fullMainImageBundle.liveExecutorRequestPackage.operationRequests.length === 120
+        && fullMainImageCheckpoint.status === 'ready_for_live_executor_run'
+        && fullMainImageCheckpoint.operationCount === 120
+        && fullMainImageCheckpoint.runGuard.maxOperationCount === 120
+        && undersizedFullMainImageCheckpoint.status === 'blocked_operation_budget_exceeded'
+        && undersizedFullMainImageCheckpoint.runGuard.maxOperationCount === 100
+        && undersizedFullMainImageCheckpoint.operationRequests.length === 0,
+    JSON.stringify({
+        structureStatus: fullMainImageBundle.productionDocumentStructure.status,
+        assignmentCount: fullMainImageBundle.productionDocumentStructure.slotAssignments.length,
+        exportCount: fullMainImageBundle.productionDocumentStructure.exportSpecs.length,
+        executionStatus: fullMainImageBundle.productionExecutionPlan.status,
+        plannedOperationCount: fullMainImageBundle.productionExecutionPlan.plannedOperationCount,
+        requestStatus: fullMainImageBundle.liveExecutorRequestPackage.status,
+        requestCount: fullMainImageBundle.liveExecutorRequestPackage.operationRequests.length,
+        checkpointStatus: fullMainImageCheckpoint.status,
+        runGuard: fullMainImageCheckpoint.runGuard,
+        undersizedCheckpoint: {
+            status: undersizedFullMainImageCheckpoint.status,
+            runGuard: undersizedFullMainImageCheckpoint.runGuard,
+            blockers: undersizedFullMainImageCheckpoint.blockers
+        }
+    })
+);
+
+const pendingMainImageDraft = buildMainImageAgentDraftPlan({
+    ...multiVariantMainImageInput,
+    slotAssignments: explicitVariantAssetsMainImageBundle.productionDocumentStructure.slotAssignments
+});
+const authoredMainImageDraft = buildMainImageAgentDraftPlan({
+    ...multiVariantMainImageInput,
+    slotAssignments: explicitVariantAssetsMainImageBundle.productionDocumentStructure.slotAssignments,
+    designDsl: {
+        dslVersion: 'design-agent-os/v0',
+        scenario: 'main-image',
+        canvas: { width: 1500, height: 1500 },
+        layoutType: 'agent-authored-asymmetric-layout',
+        regions: [{
+            id: 'agent-hero-region',
+            kind: 'image-slot',
+            role: 'hero-subject',
+            box: { x: 137, y: 211, width: 911, height: 1043 },
+            styleKeys: ['agent-authored']
+        }],
+        constraints: ['Agent 声明的非对称构图'],
+        sourceRefs: []
+    }
+});
+const mainImageAlignmentToolResults = [
+    { toolName: 'getDocumentInfo', result: { success: true } },
+    { toolName: 'getSubjectBounds', result: { success: true } },
+    { toolName: 'transformLayer', result: { success: true } },
+    { toolName: 'moveLayer', result: { success: true } }
+];
+const pendingMainImageAlignment = buildMainImageExecutionAlignment({
+    agentDraft: pendingMainImageDraft,
+    toolResults: mainImageAlignmentToolResults,
+    sizePlans: multiVariantMainImageInput.sizePlans
+});
+const authoredMainImageAlignment = buildMainImageExecutionAlignment({
+    agentDraft: authoredMainImageDraft,
+    toolResults: mainImageAlignmentToolResults,
+    sizePlans: multiVariantMainImageInput.sizePlans
+});
+const proposedMainImageFacts = applyDesignProjectFactOperations({
+    upsertFacts: [{
+        claimType: 'product_fact',
+        statement: '用户确认：商品为四双装袜子',
+        source: { kind: 'user_statement', sourceRef: 'user-instruction:current-turn' }
+    }],
+    authority: 'agent_proposal',
+    updatedBy: 'agent',
+    now: '2026-08-31T00:00:00.000Z'
+});
+const confirmedMainImageFacts = applyDesignProjectFactOperations({
+    current: proposedMainImageFacts,
+    reviewFacts: [{ factId: proposedMainImageFacts[0].factId, decision: 'confirm' }],
+    authority: 'user_review',
+    updatedBy: 'user',
+    now: '2026-08-31T00:01:00.000Z'
+});
+const mainImageFactsWithUnverifiedClaim = applyDesignProjectFactOperations({
+    current: confirmedMainImageFacts,
+    upsertFacts: [{
+        claimType: 'selling_point',
+        statement: '未经确认的神奇保暖',
+        source: { kind: 'agent_inference' }
+    }],
+    authority: 'agent_proposal',
+    updatedBy: 'agent',
+    now: '2026-08-31T00:02:00.000Z'
+});
+const legacyMainImageStateContext = buildMainImageStateContext({
+    state: {
+        updatedAt: '2026-08-31T00:00:00.000Z',
+        targetUser: '旧状态自动人群',
+        visualDirection: '旧状态固定视觉方向',
+        brandStyle: '旧状态固定品牌风格',
+        painPoints: ['担心袜口勒脚'],
+        sellingPoints: ['旧无来源卖点'],
+        copywriting: [{ slot: '标题', text: '旧状态标题' }],
+        factRecords: mainImageFactsWithUnverifiedClaim
+    },
+    imageType: 'click',
+    requestedVersionCount: 3
+});
+const keywordOnlyMainImageCopy = buildMainImageCopyStrategy({
+    userText: '春夏透气通勤主图',
+    projectStyleStrategy: explicitVariantAssetsMainImageBundle.projectStyleStrategy,
+    copyCandidates: ['轻盈透气']
+});
+const pendingMainImageStandards = buildMainImageDesignStandards({
+    projectStyleStrategy: emptyStandardMainImageBundle.projectStyleStrategy
+});
+const authoredMainImageStandards = buildMainImageDesignStandards({
+    projectStyleStrategy: explicitVariantAssetsMainImageBundle.projectStyleStrategy
+});
+check(
+    '主图模型投影缺少 Agent 声明时保持 pending，不能从旧状态、关键词或本地 recipe 补出版式和文案答案',
+    pendingMainImageDraft.designDsl.layoutType === 'pending-agent-layout-decision'
+        && pendingMainImageDraft.designDsl.regions.length === 0
+        && !pendingMainImageDraft.executionPlan.steps.some((step) => (
+            step.operation === 'composeDesignDsl' || step.operation === 'fitCopyToDeclaredTextRegions'
+        ))
+        && authoredMainImageDraft.designDsl.layoutType === 'agent-authored-asymmetric-layout'
+        && authoredMainImageDraft.designDsl.regions.length === 1
+        && authoredMainImageDraft.designDsl.regions[0]?.box.x === 137
+        && authoredMainImageDraft.designDsl.regions[0]?.box.width === 911
+        && authoredMainImageDraft.executionPlan.steps.some((step) => step.operation === 'composeDesignDsl')
+        && pendingMainImageAlignment.checks.find((item) => item.id === 'dsl.regions')?.status === 'watch'
+        && authoredMainImageAlignment.checks.find((item) => item.id === 'dsl.regions')?.status === 'aligned'
+        && !pendingMainImageAlignment.checks.find((item) => item.id === 'dsl.regions')
+            ?.expectedInputs.some((value) => /safe-area|headline|benefit-tag/.test(value))
+        && legacyMainImageStateContext.compositionStatus === 'pending_agent_declaration'
+        && legacyMainImageStateContext.compositionVersions.length === 0
+        && legacyMainImageStateContext.copyCandidates.length === 0
+        && legacyMainImageStateContext.referenceHints.length === 0
+        && legacyMainImageStateContext.targetUser === ''
+        && legacyMainImageStateContext.visualDirection === ''
+        && legacyMainImageStateContext.confirmedProductFacts.join('|') === '用户确认：商品为四双装袜子'
+        && legacyMainImageStateContext.confirmedSellingPoints.length === 0
+        && keywordOnlyMainImageCopy.status === 'needs_copy_assignment'
+        && keywordOnlyMainImageCopy.pendingCandidateTexts.join('|') === '轻盈透气'
+        && keywordOnlyMainImageCopy.candidates.length === 0
+        && keywordOnlyMainImageCopy.textSlotPlan.length === 0
+        && keywordOnlyMainImageCopy.recommendedTemplates.length === 0
+        && keywordOnlyMainImageCopy.productCopyContext.userScenes.length === 0
+        && keywordOnlyMainImageCopy.productCopyContext.userProblems.length === 0
+        && pendingMainImageStandards.status === 'pending_agent_design_decision'
+        && pendingMainImageStandards.recipeCandidates.length === 0
+        && pendingMainImageStandards.canGuideDesignPlan === false
+        && authoredMainImageStandards.status === 'ready_for_design_strategy'
+        && authoredMainImageStandards.clickImageGoals.join('|')
+            === '方向一|方向二|两个方向分别保留自己的素材和构图关系'
+        && authoredMainImageStandards.recipeCandidates.length === 0,
+    JSON.stringify({
+        pendingDsl: pendingMainImageDraft.designDsl,
+        authoredDsl: authoredMainImageDraft.designDsl,
+        pendingAlignment: pendingMainImageAlignment,
+        authoredAlignment: authoredMainImageAlignment,
+        stateContext: legacyMainImageStateContext,
+        keywordCopy: keywordOnlyMainImageCopy,
+        pendingStandards: pendingMainImageStandards,
+        authoredStandards: authoredMainImageStandards
+    })
+);
+
+const conversion1200MainImageBundle = buildMainImageStrategyInputs({
+    userText: '为 1200 转化图明确设计一个方向。',
+    imageType: 'conversion',
+    projectPath: 'C:\\shop',
+    selectedAsset: secondStandardMainImageAsset,
+    slotAssignments: [makeMainImageSlotAssignment({
+        sizeKey: '1200',
+        imageType: 'conversion',
+        slotName: '2',
+        variantId: 'conversion-1',
+        objective: '厚实保暖的可见证据',
+        visualHook: '厚实保暖的可见证据',
+        layoutFocus: '由 Agent 组织商品证据、信息层级与留白',
+        asset: secondStandardMainImageAsset,
+        subjectBounds: { left: 80, top: 90, right: 1320, bottom: 1700, width: 1240, height: 1610 },
+        targetBox: { x: 140, y: 160, width: 1160, height: 1840 },
+        preset: { targetFill: 0.76, minFill: 0.58, maxFill: 0.9 }
+    })],
+    projectAssets: [standardMainImageAsset, secondStandardMainImageAsset],
+    subjectBounds: { left: 80, top: 90, right: 1320, bottom: 1700, width: 1240, height: 1610 },
+    sizePlans: [{
+        sizeKey: '1200',
+        targetSize: { width: 1440, height: 2160 },
+        subjectSize: { width: 1240, height: 1610 },
+        scale: 0.86,
+        targetX: 180,
+        targetY: 130,
+        decisionReason: 'Agent 明确选择 1200 转化方向与对应素材。',
+        smartLayoutPlanned: true,
+        quickExportPlanned: true
+    }],
+    visionSignal: {
+        source: 'vision-model',
+        assetRef: { id: secondStandardMainImageAsset.id, path: secondStandardMainImageAsset.path },
+        productType: 'socks',
+        subjectSummary: '袜子穿着与厚度展示素材',
+        backgroundSummary: '棚拍背景',
+        styleHints: []
+    },
+    agentDesignDecision: {
+        conversionVisualHooks: ['厚实保暖的可见证据'],
+        conversionLayoutFocus: '由 Agent 组织商品证据、信息层级与留白'
+    },
+    toolNames: multiVariantMainImageInput.toolNames,
+    userCheckpointApproved: true
+});
+const conversion1200Document = conversion1200MainImageBundle.productionDocumentStructure.documents[0];
+const conversion1200Operations = conversion1200MainImageBundle.productionExecutionPlan.documents
+    .flatMap((document) => document.operations);
+check(
+    '1200 工作文档允许 Agent 显式分配转化槽，并按 2:3 原画布与子组名交付',
+    conversion1200MainImageBundle.productionDocumentStructure.status === 'ready_production_document_structure'
+        && conversion1200MainImageBundle.productionExecutionPlan.status === 'ready_execution_plan'
+        && conversion1200MainImageBundle.productionDocumentStructure.documents.length === 1
+        && conversion1200Document?.name === '1200'
+        && conversion1200Document?.canvasSize.width === 1440
+        && conversion1200Document?.canvasSize.height === 2160
+        && conversion1200Document?.parentGroups.find((group) => group.name === '点击图')
+            ?.childGroups.every((group) => group.populationStatus === 'unassigned')
+        && conversion1200Document?.parentGroups.find((group) => group.name === '转化图')
+            ?.childGroups.find((group) => group.name === '2')?.populationStatus === 'assigned'
+        && conversion1200MainImageBundle.productionDocumentStructure.exportSpecs.length === 1
+        && conversion1200MainImageBundle.productionDocumentStructure.exportSpecs[0]?.groupPath.join('/') === '转化图/2'
+        && conversion1200MainImageBundle.productionDocumentStructure.exportSpecs[0]?.fileName === '2.jpg'
+        && conversion1200Operations.find((operation) => operation.tool === 'createDocument')?.resolutionPpi === 72
+        && conversion1200Operations.find((operation) => operation.tool === 'createDocument')?.colorMode === 'RGB'
+        && conversion1200Operations.find((operation) => operation.tool === 'createDocument')?.bitDepth === 8
+        && conversion1200Operations.find((operation) => operation.tool === 'createDocument')?.backgroundColor === 'white'
+        && conversion1200Operations.find((operation) => operation.tool === 'placeImage')?.asset?.path
+            === secondStandardMainImageAsset.path
+        && conversion1200Operations.find((operation) => operation.tool === 'exportGroup')?.canvasPolicy
+            === 'preserve_document_canvas'
+        && conversion1200MainImageBundle.deliveryPlan.artifacts.some((artifact) => (
+            artifact.kind === 'raster_export' && artifact.path.endsWith('\\主图\\1200\\2.jpg')
+        )),
+    JSON.stringify(conversion1200MainImageBundle)
+);
+
+const mainImageLiveCheckpoint = buildMainImageLiveExecutorCheckpoint({
+    requestPackage: explicitVariantAssetsMainImageBundle.liveExecutorRequestPackage,
+    approvedLiveExecution: true,
+    photoshopConnection: {
+        connected: true,
+        documentWriteAvailable: true
+    },
+    executionScope: 'disposable-document',
+    maxOperationCount: 80
+});
+const mainImageAdapterToolNames = [
+    ...multiVariantMainImageInput.toolNames,
+    'getDocumentInfo',
+    'getLayerHierarchy',
+    'getLayerProperties',
+    'getAcceptanceSnapshot'
+];
+const mainImageAdapterContract = buildMainImageLivePhotoshopAdapterContract({
+    checkpoint: mainImageLiveCheckpoint,
+    availableToolNames: mainImageAdapterToolNames
+});
+const rootGroupMappings = mainImageAdapterContract.mappings.filter((mapping) => (
+    mapping.sourceTool === 'createGroup'
+    && Array.isArray(mapping.paramsPreview.groupPath)
+    && mapping.paramsPreview.groupPath.length === 1
+));
+const nestedGroupMappings = mainImageAdapterContract.mappings.filter((mapping) => (
+    mapping.sourceTool === 'createGroup'
+    && Array.isArray(mapping.paramsPreview.groupPath)
+    && mapping.paramsPreview.groupPath.length === 2
+));
+const adapterToolCalls = [];
+let nextFakeGroupId = 500;
+let fakeHierarchyFault = 'none';
+const fakeHierarchyState = {
+    documentId: 900,
+    backgroundLayerId: 1,
+    roots: [],
+    pendingGroups: new Map()
+};
+
+function findFakeHierarchyGroup(groups, layerId) {
+    for (const group of groups) {
+        if (group.id === layerId) return group;
+        const nested = findFakeHierarchyGroup(group.children, layerId);
+        if (nested) return nested;
+    }
+    return undefined;
+}
+
+function buildFakeHierarchyFlatList() {
+    const nodes = [];
+    function appendGroups(groups, parent, depth, parentPath) {
+        groups.forEach((group, index) => {
+            const pathParts = [...parentPath, group.name];
+            nodes.push({
+                id: group.id,
+                name: group.name,
+                path: pathParts.join('/'),
+                kind: 'group',
+                parentId: parent?.id ?? null,
+                parentName: parent?.name ?? null,
+                depth,
+                index,
+                locked: false,
+                isBackgroundLayer: false
+            });
+            appendGroups(group.children, group, depth + 1, pathParts);
+        });
+    }
+    appendGroups(fakeHierarchyState.roots, null, 0, []);
+    nodes.push({
+        id: fakeHierarchyState.backgroundLayerId,
+        name: 'Background',
+        path: 'Background',
+        kind: 'background',
+        parentId: null,
+        parentName: null,
+        depth: 0,
+        index: fakeHierarchyState.roots.length,
+        locked: true,
+        isBackgroundLayer: true
+    });
+
+    const cloned = nodes.map((node) => ({ ...node }));
+    const byPath = (pathValue) => cloned.find((node) => node.path === pathValue);
+    switch (fakeHierarchyFault) {
+        case 'wrong-parent': {
+            const node = byPath('转化图/2');
+            if (node) {
+                node.parentId = 999;
+                node.parentName = '错误父组';
+            }
+            break;
+        }
+        case 'wrong-root-order': {
+            const conversion = byPath('转化图');
+            const click = byPath('点击图');
+            if (conversion && click) {
+                conversion.index = 1;
+                click.index = 0;
+            }
+            break;
+        }
+        case 'wrong-child-order': {
+            const five = byPath('转化图/5');
+            const four = byPath('转化图/4');
+            if (five && four) {
+                five.index = 1;
+                four.index = 0;
+            }
+            break;
+        }
+        case 'wrong-background-id': {
+            const background = cloned.find((node) => node.isBackgroundLayer === true);
+            if (background) background.id = 999;
+            break;
+        }
+        case 'wrong-background-role': {
+            const background = cloned.find((node) => node.id === fakeHierarchyState.backgroundLayerId);
+            if (background) background.isBackgroundLayer = false;
+            break;
+        }
+        case 'wrong-background-lock': {
+            const background = cloned.find((node) => node.id === fakeHierarchyState.backgroundLayerId);
+            if (background) background.locked = false;
+            break;
+        }
+        case 'background-above-groups': {
+            const background = cloned.find((node) => node.id === fakeHierarchyState.backgroundLayerId);
+            if (background) background.index = 0;
+            cloned.filter((node) => node.depth === 0 && node.kind === 'group')
+                .forEach((node) => { node.index += 1; });
+            break;
+        }
+        default:
+            break;
+    }
+    return cloned;
+}
+
+const mainImageAdapterBuild = createMainImageLivePhotoshopToolAdapter({
+    adapterContract: mainImageAdapterContract,
+    approvedLiveAdapterRun: true,
+    executionScope: 'disposable-document',
+    async executeTool(toolName, params) {
+        adapterToolCalls.push({ toolName, params: { ...params } });
+        if (toolName === 'createDocument') {
+            fakeHierarchyState.roots = [];
+            fakeHierarchyState.pendingGroups.clear();
+            return {
+                success: true,
+                documentId: fakeHierarchyState.documentId,
+                name: params.name,
+                width: params.width,
+                height: params.height,
+                resolution: params.resolution,
+                backgroundLayer: {
+                    id: fakeHierarchyState.backgroundLayerId,
+                    name: 'Background',
+                    isBackgroundLayer: true,
+                    locked: true
+                },
+                document: {
+                    id: fakeHierarchyState.documentId,
+                    name: params.name,
+                    width: params.width,
+                    height: params.height,
+                    resolution: params.resolution,
+                    backgroundLayer: {
+                        id: fakeHierarchyState.backgroundLayerId,
+                        name: 'Background',
+                        isBackgroundLayer: true,
+                        locked: true
+                    }
+                }
+            };
+        }
+        if (toolName === 'createGroup') {
+            nextFakeGroupId += 1;
+            fakeHierarchyState.pendingGroups.set(nextFakeGroupId, {
+                id: nextFakeGroupId,
+                name: params.groupName,
+                children: []
+            });
+            return { success: true, layerId: nextFakeGroupId, groupName: params.groupName };
+        }
+        if (toolName === 'moveLayerToGroup') {
+            const group = fakeHierarchyState.pendingGroups.get(params.layerId);
+            if (!group) return { success: false, error: 'fake_pending_group_missing' };
+            fakeHierarchyState.pendingGroups.delete(params.layerId);
+            if (params.targetGroupId === 0) {
+                fakeHierarchyState.roots.unshift(group);
+            } else {
+                const parent = findFakeHierarchyGroup(fakeHierarchyState.roots, params.targetGroupId);
+                if (!parent) return { success: false, error: 'fake_parent_group_missing' };
+                parent.children.push(group);
+            }
+            return {
+                success: true,
+                layerId: params.layerId,
+                targetGroupId: params.targetGroupId
+            };
+        }
+        if (toolName === 'getLayerHierarchy') {
+            return {
+                success: true,
+                historyStateRef: {
+                    documentId: fakeHierarchyFault === 'wrong-document'
+                        ? fakeHierarchyState.documentId + 1
+                        : fakeHierarchyState.documentId,
+                    historyStateId: 20
+                },
+                flatList: buildFakeHierarchyFlatList()
+            };
+        }
+        return { success: true };
+    }
+});
+const hierarchyExecutionRequests = mainImageLiveCheckpoint.operationRequests.filter((request) => (
+    request.documentName === '800'
+    && (request.tool === 'createDocument' || request.tool === 'createGroup')
+));
+const hierarchyOperationResults = new Map();
+const validHierarchyReadbacks = [];
+for (const request of hierarchyExecutionRequests) {
+    const operationResult = mainImageAdapterBuild.adapter
+        ? await mainImageAdapterBuild.adapter.executeOperation(request)
+        : null;
+    hierarchyOperationResults.set(request.id, operationResult);
+    if (request.tool === 'createGroup' && mainImageAdapterBuild.adapter) {
+        const readback = await mainImageAdapterBuild.adapter.readbackAfterOperation?.(
+            request,
+            'getLayerHierarchy',
+            operationResult
+        );
+        validHierarchyReadbacks.push({ request, readback });
+    }
+}
+const finalNestedGroupRequest = [...hierarchyExecutionRequests].reverse().find((request) => (
+    request.tool === 'createGroup' && request.groupPath?.join('/') === '转化图/2'
+));
+const finalNestedOperationResult = finalNestedGroupRequest
+    ? hierarchyOperationResults.get(finalNestedGroupRequest.id)
+    : null;
+const hierarchyFaultReadbacks = {};
+for (const fault of [
+    'wrong-document',
+    'wrong-parent',
+    'wrong-root-order',
+    'wrong-child-order',
+    'wrong-background-id',
+    'wrong-background-role',
+    'wrong-background-lock',
+    'background-above-groups'
+]) {
+    fakeHierarchyFault = fault;
+    hierarchyFaultReadbacks[fault] = finalNestedGroupRequest && mainImageAdapterBuild.adapter
+        ? await mainImageAdapterBuild.adapter.readbackAfterOperation?.(
+            finalNestedGroupRequest,
+            'getLayerHierarchy',
+            finalNestedOperationResult
+        )
+        : null;
+}
+fakeHierarchyFault = 'none';
+check(
+    '主图父组显式归位文档根级，子组显式归位父组，不能依赖 Photoshop 当前活动图层碰巧正确',
+    mainImageLiveCheckpoint.status === 'ready_for_live_executor_run'
+        && mainImageAdapterContract.status === 'ready_for_disposable_photoshop_adapter'
+        && rootGroupMappings.length === 2
+        && rootGroupMappings.every((mapping) => {
+            const sequence = mapping.paramsPreview.operationSequence;
+            return Array.isArray(sequence)
+                && sequence[0]?.toolName === 'createGroup'
+                && sequence[1]?.toolName === 'moveLayerToGroup'
+                && sequence[1]?.params?.targetGroupId === 0
+                && mapping.paramsPreview.expectedRootPanelOrderTopDown?.join('|') === '转化图|点击图';
+        })
+        && nestedGroupMappings.length === 9
+        && nestedGroupMappings.every((mapping) => {
+            const sequence = mapping.paramsPreview.operationSequence;
+            return Array.isArray(sequence)
+                && sequence[1]?.toolName === 'moveLayerToGroup'
+                && String(sequence[1]?.params?.targetGroupId || '').startsWith('parent_group_id_from_path:')
+                && Array.isArray(mapping.paramsPreview.expectedPanelOrderTopDown)
+                && mapping.paramsPreview.expectedPanelOrderTopDown.length >= 4;
+        })
+        && hierarchyExecutionRequests.length === 12
+        && hierarchyOperationResults.size === 12
+        && Array.from(hierarchyOperationResults.values()).every((result) => result?.success === true)
+        && validHierarchyReadbacks.length === 11
+        && validHierarchyReadbacks.every((item) => item.readback?.success === true)
+        && fakeHierarchyState.roots.map((group) => group.name).join('|') === '转化图|点击图'
+        && fakeHierarchyState.roots.find((group) => group.name === '点击图')
+            ?.children.map((group) => group.name).join('|') === '800-5|800-4|800-3|800-2|800-1'
+        && fakeHierarchyState.roots.find((group) => group.name === '转化图')
+            ?.children.map((group) => group.name).join('|') === '5|4|3|2'
+        && Object.values(hierarchyFaultReadbacks).length === 8
+        && Object.values(hierarchyFaultReadbacks).every((readback) => readback?.success === false)
+        && String(hierarchyFaultReadbacks['wrong-document']?.error || '').includes('document mismatch')
+        && /parent mismatch|depth mismatch/.test(String(hierarchyFaultReadbacks['wrong-parent']?.error || ''))
+        && String(hierarchyFaultReadbacks['wrong-root-order']?.error || '').includes('root panel order mismatch')
+        && String(hierarchyFaultReadbacks['wrong-child-order']?.error || '').includes('child panel order mismatch')
+        && ['wrong-background-id', 'wrong-background-role', 'wrong-background-lock']
+            .every((fault) => String(hierarchyFaultReadbacks[fault]?.error || '').includes('Background layer'))
+        && String(hierarchyFaultReadbacks['background-above-groups']?.error || '')
+            .includes('below the Background layer')
+        && adapterToolCalls.filter((call) => (
+            call.toolName === 'createGroup' || call.toolName === 'moveLayerToGroup'
+        )).length === 22
+        && adapterToolCalls.filter((call) => (
+            call.toolName === 'moveLayerToGroup' && call.params.targetGroupId === 0
+        )).length === 2
+        && adapterToolCalls.filter((call) => (
+            call.toolName === 'moveLayerToGroup' && call.params.targetGroupId > 0
+        )).length === 9,
+    JSON.stringify({
+        checkpointStatus: mainImageLiveCheckpoint.status,
+        contractStatus: mainImageAdapterContract.status,
+        rootGroupMappings,
+        nestedGroupMappings,
+        adapterToolCalls,
+        hierarchyExecutionRequests,
+        hierarchyOperationResults: Array.from(hierarchyOperationResults.entries()),
+        validHierarchyReadbacks,
+        hierarchyFaultReadbacks,
+        finalRoots: fakeHierarchyState.roots
+    })
+);
 const mainImageProductionStructure = {
     status: 'ready_production_document_structure',
     documents: [{
@@ -768,6 +1770,18 @@ const naturalMainImageStrategy = buildMainImageStrategyInputs({
         width: 1200,
         height: 1600
     },
+    slotAssignments: [makeMainImageSlotAssignment({
+        sizeKey: '800',
+        imageType: 'click',
+        slotName: '800-1',
+        variantId: 'click-1',
+        objective: '完整穿着效果',
+        visualHook: '完整穿着效果',
+        layoutFocus: '主体清晰与留白平衡',
+        asset: standardMainImageAsset,
+        subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+        targetBox: { x: 220, y: 150, width: 980, height: 1220 }
+    })],
     projectAssets: [{
         id: 'asset-01',
         path: 'C:\\shop\\摄影图\\01.jpg',
@@ -3483,7 +4497,9 @@ check(
 check(
     '主图变体不再按点击/转化类型偷偷改主体尺寸或预留文案区',
     !/0\.78|0\.56|0\.22|1\.04|0\.94/.test(mainImagePlacement)
-        && /使用 Agent 或上游计划显式声明的主体区域/.test(mainImagePlacement)
+        && /assignment\.placement\.targetBox/.test(mainImagePlacement)
+        && /input\.assignment\.subjectBounds/.test(mainImagePlacement)
+        && /presetOverride:\s*input\.assignment\.placement\.preset/.test(mainImagePlacement)
 );
 check(
     '智能布局 Skill 不再注入主体占比和居中默认',

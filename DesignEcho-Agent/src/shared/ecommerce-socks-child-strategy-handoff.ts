@@ -165,7 +165,7 @@ function buildScenarioPatch(input: {
           requiredReview: ['subject_bounds_required', 'canvas_variant_safe_area_required', 'export_probe_required']
         },
         exportAcceptance: {
-          requiredFormats: ['1:1', '3:4', '9:16'],
+          requiredFormats: ['1:1', '3:4', '2:3'],
           requiresPsdSave: true,
           requiresReadback: true
         }

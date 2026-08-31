@@ -88,6 +88,8 @@ export interface MainImageStrategyInputBuilderInput {
     currentDocument?: MainImageDraftDocument | null;
     projectAssets?: MainImageDraftAsset[];
     selectedAsset?: MainImageDraftAsset | null;
+    slotAssignments?: unknown;
+    createEmptySkeleton?: boolean;
     subjectBounds?: MainImageDraftSubjectBounds | null;
     sizePlans?: MainImageSizePlan[];
     copyCandidates?: string[];
@@ -98,6 +100,8 @@ export interface MainImageStrategyInputBuilderInput {
     toolNames?: string[];
     visionSignal?: MainImageVisionSignal | null;
     agentDesignDecision?: MainImageAgentDesignDecision | null;
+    desiredClickImageCount?: number;
+    desiredConversionImageCount?: number;
     referenceHints?: MainImageReferenceHint[];
     knowledgeResults?: DesignKnowledgeResult[];
     mainImageMemoryContext?: MainImageMemoryContext | null;
@@ -319,22 +323,22 @@ function resolveProductionStructureSizeScope(sizePlans: NormalizedSizePlan[]): s
 }
 
 function resolveProductionStructureImageTypeScope(input: {
-    userText: string;
     imageType: string;
-    sizePlans: NormalizedSizePlan[];
+    slotAssignments?: unknown;
 }): 'click' | 'conversion' | undefined {
-    const text = input.userText;
-    const hasConversionTarget = /(转化图|卖点图|利益点图)/i.test(text);
-    const hasClickTarget = /(点击图|首图|商品首图|淘宝商品首图)/i.test(text);
-    const asksSingleMainImage = /(一张|单张|1张).{0,12}(主图|首图)|(?:800x800|800×800|800\*800).{0,18}(主图|首图)|(?:主图|首图).{0,18}(?:800x800|800×800|800\*800)/i.test(text);
-    if (hasConversionTarget && !hasClickTarget) return 'conversion';
-    if ((hasClickTarget || asksSingleMainImage) && !hasConversionTarget) return 'click';
-    const normalizedImageType = cleanString(input.imageType).toLowerCase();
-    if (hasConversionTarget && !hasClickTarget && normalizedImageType === 'conversion') return 'conversion';
-    if (hasClickTarget && !hasConversionTarget && normalizedImageType === 'click') return 'click';
-    if (input.sizePlans.length === 1 && normalizedImageType === 'click' && asksSingleMainImage && !hasConversionTarget) {
-        return 'click';
+    const assignmentTypes = new Set((Array.isArray(input.slotAssignments) ? input.slotAssignments : [])
+        .map((assignment) => {
+            if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) return '';
+            return cleanString((assignment as Record<string, unknown>).imageType).toLowerCase();
+        })
+        .filter((imageType) => imageType === 'click' || imageType === 'conversion'));
+    if (assignmentTypes.size === 1) {
+        return Array.from(assignmentTypes)[0] as 'click' | 'conversion';
     }
+    if (assignmentTypes.size > 1) return undefined;
+    const normalizedImageType = cleanString(input.imageType).toLowerCase();
+    if (normalizedImageType === 'conversion') return 'conversion';
+    if (normalizedImageType === 'click') return 'click';
     return undefined;
 }
 
@@ -592,6 +596,8 @@ export function buildMainImageStrategyInputs(
         selectedAsset: input.selectedAsset,
         visionSignal: input.visionSignal,
         agentDesignDecision: input.agentDesignDecision,
+        desiredClickImageCount: input.desiredClickImageCount,
+        desiredConversionImageCount: input.desiredConversionImageCount,
         referenceHints
     });
     const designCorePlan = buildMainImageDesignCorePlan({
@@ -612,23 +618,24 @@ export function buildMainImageStrategyInputs(
         projectStyleStrategy,
         requestedSizeKeys: resolveProductionStructureSizeScope(sizePlans),
         requestedImageType: resolveProductionStructureImageTypeScope({
-            userText,
             imageType,
-            sizePlans
-        })
+            slotAssignments: input.slotAssignments
+        }),
+        slotAssignments: input.slotAssignments,
+        createEmptySkeleton: input.createEmptySkeleton
     });
     const deliveryPlan = buildMainImageSkillDeliveryPlan({
         projectPath: input.projectPath,
         deliveryConvention: input.deliveryConvention,
         deliveryVersion: input.deliveryVersion,
-        productionDocumentStructure
+        productionDocumentStructure,
+        editableOnly: input.createEmptySkeleton === true
     });
     const variantPlacementStrategy = buildMainImageVariantPlacementStrategy({
         userText: input.userText,
         projectStyleStrategy,
-        selectedAsset: input.selectedAsset,
-        subjectBounds: input.subjectBounds,
-        sizePlans: input.sizePlans
+        slotAssignments: productionDocumentStructure.slotAssignments,
+        createEmptySkeleton: input.createEmptySkeleton
     });
     const designConceptPlan = buildMainImageDesignConceptPlan({
         designCorePlan,
@@ -640,7 +647,6 @@ export function buildMainImageStrategyInputs(
     const productionExecutionPlan = buildMainImageProductionExecutionPlan({
         productionDocumentStructure,
         variantPlacementStrategy,
-        selectedAsset: input.selectedAsset,
         deliveryPlan,
         outputDir,
         allowPendingRatioExecution: input.allowPendingRatioExecution
@@ -716,13 +722,16 @@ export function buildMainImageStrategyInputs(
     );
 
     const providedInputs = collectProvidedInputs(strategyInputs);
-    const missingInputs = REQUIRED_INPUTS.filter((key) => !providedInputs.includes(key));
+    const missingInputs = input.createEmptySkeleton === true
+        ? []
+        : REQUIRED_INPUTS.filter((key) => !providedInputs.includes(key));
     const status: MainImageStrategyInputBuilderStatus = missingInputs.length === 0
         ? 'ready_for_strategy_contract'
         : 'blocked_missing_strategy_inputs';
     const designReadinessReport = buildMainImageDesignReadinessReport({
         strategyInputContext: {
             status,
+            skeletonOnly: input.createEmptySkeleton === true,
             missingInputs,
             blockers: missingInputs.length > 0 ? ['main_image_strategy_inputs_missing'] : [],
             warnings: [],

@@ -56,7 +56,10 @@ interface ToolCallResult {
 interface AdapterRuntimeState {
     lastLayerId?: number;
     lastGroupId?: number;
+    currentDocumentId?: number;
+    backgroundLayerId?: number;
     groupIdsByPath: Map<string, number>;
+    createdGroupPaths: string[][];
 }
 
 const READY_CONTRACT_STATUS = 'ready_for_disposable_photoshop_adapter';
@@ -84,6 +87,12 @@ function readNumber(value: unknown): number | undefined {
 function readPositiveId(value: unknown): number | undefined {
     const normalized = readNumber(value);
     if (normalized === undefined || normalized <= 0) return undefined;
+    return Math.round(normalized);
+}
+
+function readNonNegativeId(value: unknown): number | undefined {
+    const normalized = readNumber(value);
+    if (normalized === undefined || normalized < 0) return undefined;
     return Math.round(normalized);
 }
 
@@ -166,10 +175,14 @@ function buildCreateDocumentResultMismatch(input: {
     const expectedName = cleanString(input.params.name) || cleanString(input.request.documentName);
     const expectedWidth = readNumber(input.params.width);
     const expectedHeight = readNumber(input.params.height);
+    const expectedResolution = readNumber(input.params.resolution);
+    const expectedBackgroundColor = cleanString(input.params.backgroundColor);
     const actual = extractResultDocumentRecord(input.result);
     const actualName = cleanString(actual.name);
     const actualWidth = readNumber(actual.width);
     const actualHeight = readNumber(actual.height);
+    const actualResolution = readNumber(actual.resolution);
+    const actualBackgroundLayer = readRecord(actual.backgroundLayer);
     const blockers: string[] = [];
 
     if (expectedName && actualName && !documentNameMatches(expectedName, actualName)) {
@@ -180,6 +193,17 @@ function buildCreateDocumentResultMismatch(input: {
     }
     if (expectedHeight !== undefined && actualHeight !== undefined && Math.round(expectedHeight) !== Math.round(actualHeight)) {
         blockers.push(`height expected=${expectedHeight} actual=${actualHeight}`);
+    }
+    if (expectedResolution !== undefined && actualResolution !== undefined
+        && Math.round(expectedResolution) !== Math.round(actualResolution)) {
+        blockers.push(`resolution expected=${expectedResolution} actual=${actualResolution}`);
+    }
+    if (expectedBackgroundColor && (
+        !cleanString(actualBackgroundLayer.name)
+        || actualBackgroundLayer.isBackgroundLayer !== true
+        || actualBackgroundLayer.locked !== true
+    )) {
+        blockers.push('filled document did not read back a named, locked Photoshop Background layer');
     }
 
     return blockers.join('; ');
@@ -258,15 +282,23 @@ function updateStateAfterToolCall(input: {
     if (input.toolName === 'createGroup' && layerId !== undefined) {
         input.state.lastGroupId = layerId;
         const pathKey = getRequestGroupPathKey(input.request);
-        if (pathKey) input.state.groupIdsByPath.set(pathKey, layerId);
+        if (pathKey) {
+            input.state.groupIdsByPath.set(pathKey, layerId);
+            input.state.createdGroupPaths.push(cleanStrings(input.request.groupPath));
+        }
     }
 
     if (input.toolName === 'createDocument') {
         const documentId = extractDocumentId(input.result);
         if (documentId !== undefined) {
+            const document = extractResultDocumentRecord(input.result);
+            const backgroundLayer = readRecord(document.backgroundLayer);
             input.state.lastLayerId = undefined;
             input.state.lastGroupId = undefined;
+            input.state.currentDocumentId = documentId;
+            input.state.backgroundLayerId = readPositiveId(backgroundLayer.id);
             input.state.groupIdsByPath.clear();
+            input.state.createdGroupPaths = [];
         }
     }
 }
@@ -333,7 +365,7 @@ async function runToolStep(input: {
     );
     if (input.toolName === 'moveLayerToGroup') {
         const layerId = readPositiveId(params.layerId);
-        const targetGroupId = readPositiveId(params.targetGroupId);
+        const targetGroupId = readNonNegativeId(params.targetGroupId);
         if (layerId === undefined || targetGroupId === undefined) {
             return {
                 toolName: input.toolName,
@@ -341,7 +373,7 @@ async function runToolStep(input: {
                 result: {
                     success: false,
                     error: 'moveLayerToGroup_runtime_target_missing',
-                    reason: 'layerId and targetGroupId must both come from the current document run before moving a layer into a group.'
+                    reason: 'layerId must come from the current document run and targetGroupId must identify a current parent group or document root (0).'
                 },
                 success: false,
                 error: 'moveLayerToGroup_runtime_target_missing'
@@ -436,6 +468,165 @@ function makeReadbackParams(toolName: string, state: AdapterRuntimeState): Recor
     return {};
 }
 
+function validateCreateDocumentInfoReadback(
+    request: MainImageLiveExecutorOperationRequest,
+    toolName: string,
+    result: unknown
+): string | undefined {
+    if (request.tool !== 'createDocument' || toolName !== 'getDocumentInfo') return undefined;
+    const payload = readRecord(request.payloadPreview);
+    const expectedCanvas = readRecord(payload.canvasSize);
+    const document = readRecord(readRecord(result).document);
+    const checks: Array<[string, unknown, unknown]> = [
+        ['width', expectedCanvas.width, document.width],
+        ['height', expectedCanvas.height, document.height],
+        ['resolution', payload.resolutionPpi, document.resolution],
+        ['bitDepth', payload.bitDepth, document.bitDepth]
+    ];
+    const mismatches = checks.flatMap(([label, expected, actual]) => {
+        const expectedNumber = readNumber(expected);
+        const actualNumber = readNumber(actual);
+        if (expectedNumber === undefined) return [];
+        if (actualNumber === undefined || Math.round(expectedNumber) !== Math.round(actualNumber)) {
+            return [`${label} expected=${expectedNumber} actual=${actualNumber ?? 'missing'}`];
+        }
+        return [];
+    });
+    const expectedColorMode = cleanString(payload.colorMode);
+    const actualColorMode = cleanString(document.colorMode);
+    if (expectedColorMode && expectedColorMode !== actualColorMode) {
+        mismatches.push(`colorMode expected=${expectedColorMode} actual=${actualColorMode || 'missing'}`);
+    }
+    if (cleanString(payload.backgroundColor) && readNumber(document.layerCount) !== 1) {
+        mismatches.push(`initialLayerCount expected=1 actual=${readNumber(document.layerCount) ?? 'missing'}`);
+    }
+    return mismatches.length > 0
+        ? `createDocument documentInfo readback mismatch: ${mismatches.join('; ')}`
+        : undefined;
+}
+
+function readHierarchyNodes(result: unknown): Record<string, unknown>[] {
+    const record = readRecord(result);
+    const direct = Array.isArray(record.flatList) ? record.flatList : [];
+    const nestedRecord = readRecord(record.data);
+    const nested = Array.isArray(nestedRecord.flatList) ? nestedRecord.flatList : [];
+    return (direct.length > 0 ? direct : nested)
+        .map(readRecord)
+        .filter((node) => Boolean(cleanString(node.path)));
+}
+
+function sameStringOrder(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function sortNodesByPanelIndex(nodes: Record<string, unknown>[]): Record<string, unknown>[] {
+    return [...nodes].sort((left, right) => (
+        (readNumber(left.index) ?? Number.MAX_SAFE_INTEGER)
+        - (readNumber(right.index) ?? Number.MAX_SAFE_INTEGER)
+    ));
+}
+
+function validateCreatedGroupHierarchyReadback(input: {
+    request: MainImageLiveExecutorOperationRequest;
+    toolName: string;
+    result: unknown;
+    state: AdapterRuntimeState;
+    mapping?: MainImageLivePhotoshopToolMapping;
+}): string | undefined {
+    if (input.request.tool !== 'createGroup' || input.toolName !== 'getLayerHierarchy') return undefined;
+    if (input.state.currentDocumentId === undefined) {
+        return 'createGroup hierarchy readback is not bound to the created document';
+    }
+    const resultRecord = readRecord(input.result);
+    const historyStateRef = readRecord(resultRecord.historyStateRef);
+    const readbackDocumentId = readPositiveId(historyStateRef.documentId);
+    if (readbackDocumentId !== input.state.currentDocumentId) {
+        return `createGroup hierarchy readback document mismatch: expected=${input.state.currentDocumentId} actual=${readbackDocumentId ?? 'missing'}`;
+    }
+    const requestedPath = cleanStrings(input.request.groupPath);
+    if (requestedPath.length === 0) return 'createGroup hierarchy readback missing requested group path';
+
+    const nodes = readHierarchyNodes(input.result);
+    if (nodes.length === 0) return 'createGroup hierarchy readback returned no flat layer nodes';
+    const expectedPath = requestedPath.join('/');
+    const createdNode = nodes.find((node) => cleanString(node.path) === expectedPath);
+    if (!createdNode) return `createGroup hierarchy readback missing path=${expectedPath}`;
+    if (cleanString(createdNode.kind) !== 'group') {
+        return `createGroup hierarchy readback path=${expectedPath} is not a group`;
+    }
+
+    const expectedDepth = requestedPath.length - 1;
+    if (Math.round(readNumber(createdNode.depth) ?? -1) !== expectedDepth) {
+        return `createGroup hierarchy readback path=${expectedPath} depth mismatch`;
+    }
+    if (requestedPath.length === 1 && createdNode.parentId !== null) {
+        return `createGroup hierarchy readback path=${expectedPath} is not at document root`;
+    }
+    if (requestedPath.length === 2 && cleanString(createdNode.parentName) !== requestedPath[0]) {
+        return `createGroup hierarchy readback path=${expectedPath} parent mismatch`;
+    }
+
+    const rootGroupNames = input.state.createdGroupPaths
+        .filter((path) => path.length === 1)
+        .map((path) => path[0]);
+    const declaredPanelOrder = cleanStrings(input.mapping?.paramsPreview.expectedPanelOrderTopDown);
+    const declaredRootPanelOrder = cleanStrings(
+        input.mapping?.paramsPreview.expectedRootPanelOrderTopDown
+    );
+    if (declaredRootPanelOrder.length === 0) {
+        return `createGroup hierarchy readback missing frozen root panel order for path=${expectedPath}`;
+    }
+    const expectedRootPanelOrder = declaredRootPanelOrder.filter((name) => rootGroupNames.includes(name));
+    const actualRootPanelOrder = sortNodesByPanelIndex(nodes.filter((node) => (
+        Math.round(readNumber(node.depth) ?? -1) === 0
+        && rootGroupNames.includes(cleanString(node.name))
+    ))).map((node) => cleanString(node.name));
+    if (!sameStringOrder(actualRootPanelOrder, expectedRootPanelOrder)) {
+        return `createGroup root panel order mismatch: expected=${expectedRootPanelOrder.join('>')} actual=${actualRootPanelOrder.join('>')}`;
+    }
+
+    if (requestedPath.length === 2) {
+        const parentName = requestedPath[0];
+        const expectedChildren = input.state.createdGroupPaths
+            .filter((path) => path.length === 2 && path[0] === parentName)
+            .map((path) => path[1]);
+        if (declaredPanelOrder.length === 0) {
+            return `createGroup hierarchy readback missing frozen child panel order for path=${expectedPath}`;
+        }
+        const expectedChildPanelOrder = declaredPanelOrder.filter((name) => expectedChildren.includes(name));
+        const actualChildren = sortNodesByPanelIndex(nodes.filter((node) => (
+            Math.round(readNumber(node.depth) ?? -1) === 1
+            && cleanString(node.parentName) === parentName
+            && expectedChildren.includes(cleanString(node.name))
+        ))).map((node) => cleanString(node.name));
+        if (!sameStringOrder(actualChildren, expectedChildPanelOrder)) {
+            return `createGroup child panel order mismatch for ${parentName}: expected=${expectedChildPanelOrder.join('>')} actual=${actualChildren.join('>')}`;
+        }
+    }
+
+    const rootGroupIndices = nodes.filter((node) => (
+        Math.round(readNumber(node.depth) ?? -1) === 0
+        && rootGroupNames.includes(cleanString(node.name))
+    )).map((node) => readNumber(node.index)).filter((value): value is number => value !== undefined);
+    if (input.state.backgroundLayerId === undefined) {
+        return 'createGroup hierarchy readback is not bound to the created Background layer';
+    }
+    const backgroundNode = nodes.find((node) => (
+        readPositiveId(node.id) === input.state.backgroundLayerId
+    ));
+    const backgroundIndex = readNumber(backgroundNode?.index);
+    if (!backgroundNode
+        || backgroundNode.isBackgroundLayer !== true
+        || backgroundNode.locked !== true
+        || backgroundIndex === undefined) {
+        return 'createGroup hierarchy readback missing locked root Background layer';
+    }
+    if (rootGroupIndices.some((index) => index >= backgroundIndex)) {
+        return 'createGroup hierarchy readback placed a production parent below the Background layer';
+    }
+    return undefined;
+}
+
 function inferStatus(
     input: MainImageLivePhotoshopToolAdapterInput
 ): MainImageLivePhotoshopToolAdapterStatus {
@@ -476,7 +667,8 @@ export function createMainImageLivePhotoshopToolAdapter(
     const executeTool = input.executeTool;
     const contract = input.adapterContract || null;
     const state: AdapterRuntimeState = {
-        groupIdsByPath: new Map()
+        groupIdsByPath: new Map(),
+        createdGroupPaths: []
     };
 
     let adapter: MainImageLiveExecutorAdapter | null = null;
@@ -524,10 +716,13 @@ export function createMainImageLivePhotoshopToolAdapter(
             },
             async readbackAfterOperation(request, toolName): Promise<MainImageLiveExecutorAdapterReadbackResult> {
                 const result = await executeTool(toolName, makeReadbackParams(toolName, state));
+                const mapping = findMapping(contract, request);
+                const validationError = validateCreateDocumentInfoReadback(request, toolName, result)
+                    || validateCreatedGroupHierarchyReadback({ request, toolName, result, state, mapping });
                 return {
-                    success: isToolSuccess(result),
+                    success: isToolSuccess(result) && !validationError,
                     summary: `readback ${toolName} after ${request.tool}`,
-                    error: extractToolError(result),
+                    error: validationError || extractToolError(result),
                     data: readRecord(result)
                 };
             },

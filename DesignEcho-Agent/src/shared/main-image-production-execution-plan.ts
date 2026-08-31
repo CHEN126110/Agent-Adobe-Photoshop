@@ -2,7 +2,6 @@ import type {
     ImagePlacementBox,
     ImagePlacementRequiredReadback
 } from './design-image-placement-core';
-import type { MainImageDraftAsset } from './main-image-agent-draft-plan';
 import type {
     MainImageProductionDocumentPlan,
     MainImageProductionDocumentStructure,
@@ -18,11 +17,16 @@ import type {
     MainImageSkillEditableArtifact,
     MainImageSkillRasterArtifact
 } from './main-image-skill-delivery-plan';
+import {
+    getMainImageChildCreationOrder,
+    resolveMainImageProductionSizeKey
+} from './main-image-production-spec';
 
 export type MainImageProductionExecutionPlanStatus =
     | 'blocked_missing_production_structure'
     | 'blocked_missing_variant_placement_strategy'
     | 'blocked_missing_selected_asset'
+    | 'blocked_missing_slot_asset_assignments'
     | 'blocked_missing_delivery_plan'
     | 'blocked_missing_placement_for_child_group'
     | 'ready_execution_plan'
@@ -51,6 +55,7 @@ export interface MainImageProductionExecutionOperation {
     documentId?: string;
     documentName?: string;
     groupPath?: string[];
+    assignmentKey?: string;
     variantId?: string;
     placementPlanId?: string;
     exportSpecId?: string;
@@ -63,6 +68,11 @@ export interface MainImageProductionExecutionOperation {
     };
     canvasSize?: MainImageSize;
     exportSize?: MainImageSize;
+    resolutionPpi?: number;
+    colorMode?: 'RGB';
+    bitDepth?: 8;
+    backgroundColor?: 'white';
+    canvasPolicy?: 'preserve_document_canvas';
     outputPath?: string;
     outputFormat?: 'psd' | 'psb' | 'png' | 'jpg' | 'jpeg';
     conflictPolicy?: 'fail_if_exists';
@@ -81,6 +91,9 @@ export interface MainImageProductionExecutionDocumentPlan {
     ratio: string;
     canvasSize: MainImageSize;
     exportSize: MainImageSize;
+    resolutionPpi: number;
+    colorMode: 'RGB';
+    bitDepth: 8;
     sizeProfileId: string;
     operations: MainImageProductionExecutionOperation[];
 }
@@ -88,7 +101,6 @@ export interface MainImageProductionExecutionDocumentPlan {
 export interface MainImageProductionExecutionPlanInput {
     productionDocumentStructure?: MainImageProductionDocumentStructure | null;
     variantPlacementStrategy?: MainImageVariantPlacementStrategy | null;
-    selectedAsset?: MainImageDraftAsset | null;
     deliveryPlan?: MainImageSkillDeliveryPlan | null;
     outputDir?: string;
     allowPendingRatioExecution?: boolean;
@@ -131,23 +143,6 @@ function cleanString(value: unknown): string {
         text = text.replace(pattern, '[redacted-image-payload]');
     }
     return text.replace(/\s+/g, ' ').trim();
-}
-
-function cleanAsset(asset: MainImageDraftAsset | null | undefined): MainImageProductionExecutionOperation['asset'] | undefined {
-    if (!asset) return undefined;
-    const width = Number(asset.width);
-    const height = Number(asset.height);
-    return {
-        name: cleanString(asset.name) || undefined,
-        path: cleanString(asset.path) || undefined,
-        width: Number.isFinite(width) && width > 0 ? Math.round(width) : undefined,
-        height: Number.isFinite(height) && height > 0 ? Math.round(height) : undefined
-    };
-}
-
-function hasUsableAsset(asset: MainImageProductionExecutionOperation['asset'] | undefined): boolean {
-    if (!asset) return false;
-    return Boolean(asset.name || asset.path);
 }
 
 function makeBlockedPlan(input: {
@@ -195,59 +190,9 @@ function buildPlacementLookup(
 ): Map<string, MainImageVariantPlacementPlan> {
     const lookup = new Map<string, MainImageVariantPlacementPlan>();
     for (const plan of placementStrategy.variantPlacementPlans) {
-        for (const alias of getSizeAliases(plan.sizeKey)) {
-            lookup.set(`${plan.variantId}::${alias}`, plan);
-        }
+        lookup.set(plan.assignmentKey, plan);
     }
     return lookup;
-}
-
-function normalizeMatchKey(value: unknown): string {
-    return cleanString(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
-}
-
-function getSizeAliases(value: unknown): string[] {
-    const raw = cleanString(value);
-    const normalized = normalizeMatchKey(raw);
-    const aliases = new Set<string>();
-    if (raw) aliases.add(raw);
-    if (normalized) aliases.add(normalized);
-
-    if (normalized.includes('800') || normalized.includes('1x1') || normalized.includes('1440x1440')) {
-        ['800', '1:1', '1x1', '1440x1440', 'tmall-800-main-image'].forEach((alias) => aliases.add(alias));
-    }
-    if (normalized.includes('750') || normalized.includes('3x4') || normalized.includes('1440x1920')) {
-        ['750', '3:4', '3x4', '1440x1920', 'tmall-750-main-image'].forEach((alias) => aliases.add(alias));
-    }
-    if (normalized.includes('1200') || normalized.includes('9x16') || normalized.includes('1440x2560')) {
-        ['1200', '9:16', '9x16', '1440x2560', 'tmall-1200-main-image'].forEach((alias) => aliases.add(alias));
-    }
-
-    return Array.from(aliases).flatMap((alias) => {
-        const normalizedAlias = normalizeMatchKey(alias);
-        return normalizedAlias && normalizedAlias !== alias ? [alias, normalizedAlias] : [alias];
-    });
-}
-
-function getDocumentSizeAliases(document: MainImageProductionDocumentPlan): string[] {
-    return Array.from(new Set([
-        ...getSizeAliases(document.sizeProfileId),
-        ...getSizeAliases(document.id),
-        ...getSizeAliases(document.ratio),
-        ...getSizeAliases(`${document.canvasSize.width}x${document.canvasSize.height}`)
-    ]));
-}
-
-function findPlacementForChildGroup(input: {
-    document: MainImageProductionDocumentPlan;
-    variantId: string;
-    placementLookup: Map<string, MainImageVariantPlacementPlan>;
-}): MainImageVariantPlacementPlan | undefined {
-    for (const alias of getDocumentSizeAliases(input.document)) {
-        const placement = input.placementLookup.get(`${input.variantId}::${alias}`);
-        if (placement) return placement;
-    }
-    return undefined;
 }
 
 function getPendingConfirmations(
@@ -270,12 +215,8 @@ function buildMissingPlacementBlockers(input: {
     for (const document of input.productionStructure.documents) {
         for (const parentGroup of document.parentGroups) {
             for (const childGroup of parentGroup.childGroups) {
-                const key = `${childGroup.variantId}::${document.sizeProfileId}`;
-                if (!input.placementLookup.has(key) && !findPlacementForChildGroup({
-                    document,
-                    variantId: childGroup.variantId,
-                    placementLookup: input.placementLookup
-                })) {
+                if (childGroup.populationStatus !== 'assigned') continue;
+                if (!childGroup.assignmentKey || !input.placementLookup.has(childGroup.assignmentKey)) {
                     missing.push(`${document.id}/${childGroup.id}`);
                 }
             }
@@ -302,6 +243,10 @@ function buildCreateDocumentOperation(
         documentName: document.name,
         canvasSize: document.canvasSize,
         exportSize: document.exportSize,
+        resolutionPpi: document.resolutionPpi,
+        colorMode: document.colorMode,
+        bitDepth: document.bitDepth,
+        backgroundColor: document.backgroundLayer.fill,
         requiredReadback: ['documentInfo'],
         sourceContextIds: [document.id, document.sizeProfileId]
     });
@@ -347,6 +292,7 @@ function buildPlaceImageOperation(input: {
     groupPath: string[];
     childGroupId: string;
     variantId: string;
+    assignmentKey: string;
     placement: MainImageVariantPlacementPlan;
     asset: MainImageProductionExecutionOperation['asset'];
 }): MainImageProductionExecutionOperation {
@@ -358,6 +304,7 @@ function buildPlaceImageOperation(input: {
         documentName: input.document.name,
         groupPath: input.groupPath,
         variantId: input.variantId,
+        assignmentKey: input.assignmentKey,
         placementPlanId: input.placement.id,
         asset: input.asset,
         requiredReadback: ['documentInfo'],
@@ -370,6 +317,7 @@ function buildTransformOperation(input: {
     groupPath: string[];
     childGroupId: string;
     variantId: string;
+    assignmentKey: string;
     placement: MainImageVariantPlacementPlan;
 }): MainImageProductionExecutionOperation {
     return makeOperation({
@@ -380,6 +328,7 @@ function buildTransformOperation(input: {
         documentName: input.document.name,
         groupPath: input.groupPath,
         variantId: input.variantId,
+        assignmentKey: input.assignmentKey,
         placementPlanId: input.placement.id,
         destinationBox: input.placement.placementPlan.execution.destinationBox,
         subjectDestinationBox: input.placement.placementPlan.execution.subjectDestinationBox,
@@ -394,6 +343,7 @@ function buildExportOperation(input: {
     groupPath: [string, string];
     childGroupId: string;
     variantId: string;
+    assignmentKey: string;
     exportSpec?: MainImageProductionExportSpec;
     deliveryArtifact?: MainImageSkillRasterArtifact;
 }): MainImageProductionExecutionOperation {
@@ -405,12 +355,14 @@ function buildExportOperation(input: {
         documentName: input.document.name,
         groupPath: input.groupPath,
         variantId: input.variantId,
+        assignmentKey: input.assignmentKey,
         exportSpecId: input.exportSpec?.id,
         deliveryArtifactId: input.deliveryArtifact?.artifactId,
         exportSize: input.exportSpec?.exportSize || input.document.exportSize,
         outputPath: input.deliveryArtifact?.path,
         outputFormat: input.deliveryArtifact?.format,
         conflictPolicy: 'fail_if_exists',
+        canvasPolicy: input.exportSpec?.canvasPolicy || 'preserve_document_canvas',
         requiredReadback: ['exportFile'],
         sourceContextIds: [
             input.document.id,
@@ -478,7 +430,6 @@ function buildDocumentExecutionPlan(input: {
     document: MainImageProductionDocumentPlan;
     productionStructure: MainImageProductionDocumentStructure;
     placementLookup: Map<string, MainImageVariantPlacementPlan>;
-    asset: MainImageProductionExecutionOperation['asset'];
     deliveryPlan: MainImageSkillDeliveryPlan;
 }): MainImageProductionExecutionDocumentPlan {
     const operations: MainImageProductionExecutionOperation[] = [
@@ -490,33 +441,44 @@ function buildDocumentExecutionPlan(input: {
             document: input.document,
             groupName: parentGroup.name
         }));
-        for (const childGroup of parentGroup.childGroups) {
+        const sizeKey = resolveMainImageProductionSizeKey(input.document.sizeProfileId);
+        const childCreationOrder = sizeKey
+            ? getMainImageChildCreationOrder(
+                sizeKey,
+                parentGroup.name === '点击图' ? 'click' : 'conversion'
+            )
+            : parentGroup.childGroups.map((group) => group.name);
+        const childGroupsByName = new Map(parentGroup.childGroups.map((group) => [group.name, group]));
+        const orderedChildGroups = childCreationOrder
+            .map((name) => childGroupsByName.get(name))
+            .filter((group): group is typeof parentGroup.childGroups[number] => Boolean(group));
+        for (const childGroup of orderedChildGroups) {
             const groupPath: [string, string] = [parentGroup.name, childGroup.name];
-            const placement = findPlacementForChildGroup({
-                document: input.document,
-                variantId: childGroup.variantId,
-                placementLookup: input.placementLookup
-            });
-            if (!placement) continue;
             operations.push(buildChildGroupOperation({
                 document: input.document,
                 groupPath,
                 childGroupId: childGroup.id,
                 variantId: childGroup.variantId
             }));
+            if (childGroup.populationStatus !== 'assigned') continue;
+            if (!childGroup.assignmentKey) continue;
+            const placement = input.placementLookup.get(childGroup.assignmentKey);
+            if (!placement) continue;
             operations.push(buildPlaceImageOperation({
                 document: input.document,
                 groupPath,
                 childGroupId: childGroup.id,
                 variantId: childGroup.variantId,
+                assignmentKey: childGroup.assignmentKey,
                 placement,
-                asset: input.asset
+                asset: placement.asset
             }));
             operations.push(buildTransformOperation({
                 document: input.document,
                 groupPath,
                 childGroupId: childGroup.id,
                 variantId: childGroup.variantId,
+                assignmentKey: childGroup.assignmentKey,
                 placement
             }));
             const exportSpec = findExportSpec({
@@ -529,6 +491,7 @@ function buildDocumentExecutionPlan(input: {
                 groupPath,
                 childGroupId: childGroup.id,
                 variantId: childGroup.variantId,
+                assignmentKey: childGroup.assignmentKey,
                 exportSpec,
                 deliveryArtifact: findRasterDeliveryArtifact({
                     deliveryPlan: input.deliveryPlan,
@@ -554,6 +517,9 @@ function buildDocumentExecutionPlan(input: {
         ratio: input.document.ratio,
         canvasSize: input.document.canvasSize,
         exportSize: input.document.exportSize,
+        resolutionPpi: input.document.resolutionPpi,
+        colorMode: input.document.colorMode,
+        bitDepth: input.document.bitDepth,
         sizeProfileId: input.document.sizeProfileId,
         operations
     };
@@ -599,14 +565,6 @@ export function buildMainImageProductionExecutionPlan(
         });
     }
 
-    const asset = cleanAsset(input.selectedAsset);
-    if (!hasUsableAsset(asset)) {
-        return makeBlockedPlan({
-            status: 'blocked_missing_selected_asset',
-            blocker: 'main_image_selected_asset_trace_required'
-        });
-    }
-
     const placementLookup = buildPlacementLookup(placementStrategy);
     const missingPlacementBlockers = buildMissingPlacementBlockers({
         productionStructure,
@@ -624,7 +582,6 @@ export function buildMainImageProductionExecutionPlan(
         document,
         productionStructure,
         placementLookup,
-        asset,
         deliveryPlan
     }));
     const plannedOperationCount = documents.reduce((total, document) => total + document.operations.length, 0);
@@ -648,7 +605,7 @@ export function buildMainImageProductionExecutionPlan(
             requiredBeforePhotoshopExecution: [
                 'ready_production_document_structure',
                 'ready_variant_placement_strategy',
-                'selected_asset_trace',
+                'variant_scoped_asset_assignments',
                 'pending_ratio_confirmation_if_present'
             ],
             requiredAfterPhotoshopExecution: [
@@ -674,6 +631,7 @@ export function buildMainImageProductionExecutionPlan(
         }),
         limitations: [
             '执行计划不创建文档、不创建组、不置入图片、不导出文件。',
+            '每个内容操作只消费对应 slot assignment 的素材与几何；没有逐槽 assignment 时只允许建立空骨架。',
             'destinationBox 是计划目标，不是 Photoshop actualBounds。',
             '第三比例未确认时，计划可以保留但不能自动作为官方规格执行。',
             '该计划只覆盖主图生产结构，详情页和 SKU 必须接入各自子 skill 后再扩展。'

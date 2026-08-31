@@ -7,11 +7,11 @@ import type { MainImageVisualContextStatus } from './main-image-visual-loop';
 export type MainImageDesignStandardsStatus =
     | 'blocked_missing_project_style_strategy'
     | 'blocked_needs_visual_context'
+    | 'pending_agent_design_decision'
     | 'ready_for_design_strategy';
 
 export type MainImageDesignStandardsRuleSource =
-    | 'project-style-strategy'
-    | 'local-recipe'
+    | 'agent-design-decision'
     | 'qa-boundary';
 
 export interface MainImageDesignStandardsInput {
@@ -31,7 +31,7 @@ export interface MainImageDesignRecipeCandidate {
     id: string;
     title: string;
     appliesTo: MainImageDesignObjective;
-    source: 'local-recipe';
+    source: 'agent-design-decision';
     status: 'candidate';
     requiredInputs: string[];
     boundary: string;
@@ -95,6 +95,19 @@ function resolveStatus(
 ): MainImageDesignStandardsStatus {
     if (!styleStrategy) return 'blocked_missing_project_style_strategy';
     if (styleStrategy.status !== 'ready_visual_context') return 'blocked_needs_visual_context';
+    const decision = styleStrategy.agentDesignDecision;
+    const hasAgentDecision = Boolean(decision && [
+        ...(decision.styleKeywords || []),
+        decision.recommendedTone,
+        decision.backgroundDirection,
+        ...(decision.clickVisualHooks || []),
+        ...(decision.conversionVisualHooks || []),
+        decision.clickLayoutFocus,
+        decision.conversionLayoutFocus,
+        decision.clickCopyRole,
+        decision.conversionCopyRole
+    ].some((value) => cleanString(value)));
+    if (!hasAgentDecision) return 'pending_agent_design_decision';
     return 'ready_for_design_strategy';
 }
 
@@ -116,25 +129,29 @@ function buildProduct(
 }
 
 function buildClickImageGoals(
-    status: MainImageDesignStandardsStatus
+    status: MainImageDesignStandardsStatus,
+    styleStrategy: MainImageProjectStyleStrategy | null | undefined
 ): string[] {
     if (status !== 'ready_for_design_strategy') return [];
-    return [
-        '第一眼让用户看懂袜子款式、轮廓和上脚氛围。',
-        '标题只服务点击兴趣，不堆参数，不遮挡袜子主体。',
-        '主体占比、留白和对比度必须在 Photoshop 执行后回读验证。'
-    ];
+    const decision = styleStrategy?.agentDesignDecision;
+    return cleanStrings([
+        ...(decision?.clickVisualHooks || []),
+        decision?.clickLayoutFocus,
+        decision?.clickCopyRole
+    ]).slice(0, 8);
 }
 
 function buildConversionImageGoals(
-    status: MainImageDesignStandardsStatus
+    status: MainImageDesignStandardsStatus,
+    styleStrategy: MainImageProjectStyleStrategy | null | undefined
 ): string[] {
     if (status !== 'ready_for_design_strategy') return [];
-    return [
-        '把点击兴趣转成购买理由：材质感、舒适场景、搭配价值或可见细节。',
-        '文案必须来自可用视觉上下文、商品简报或用户补充，不能凭空编造卖点。',
-        '图片和文案分区要保留可编辑结构，便于后续验收和调整。'
-    ];
+    const decision = styleStrategy?.agentDesignDecision;
+    return cleanStrings([
+        ...(decision?.conversionVisualHooks || []),
+        decision?.conversionLayoutFocus,
+        decision?.conversionCopyRole
+    ]).slice(0, 8);
 }
 
 function buildGenericRules(): MainImageDesignStandardsRule[] {
@@ -144,7 +161,7 @@ function buildGenericRules(): MainImageDesignStandardsRule[] {
             appliesTo: 'all',
             priority: 'must',
             source: 'qa-boundary',
-            rule: '没有与所选素材绑定的可用视觉上下文时，只能输出待复核规范，不能判断袜子款式、材质、罗口和卖点。',
+            rule: '没有与所选素材绑定的可用视觉上下文时，只能输出待复核规范，不能判断商品款式、材质、细节和卖点。',
             verificationTarget: 'projectStyleStrategy.status must be ready_visual_context before design planning'
         },
         {
@@ -158,97 +175,32 @@ function buildGenericRules(): MainImageDesignStandardsRule[] {
     ];
 }
 
-function buildVisualContextRules(): MainImageDesignStandardsRule[] {
+function buildRules(): MainImageDesignStandardsRule[] {
     return [
-        {
-            id: 'click-hero-focus',
-            appliesTo: 'click-image',
-            priority: 'must',
-            source: 'project-style-strategy',
-            rule: '点击图优先放大款式第一眼识别点，主体不能被文案、装饰或裁切破坏。',
-            verificationTarget: 'post-transform actualBounds and screenshot must show product subject remains primary focus'
-        },
-        {
-            id: 'click-copy-short',
-            appliesTo: 'click-image',
-            priority: 'should',
-            source: 'local-recipe',
-            rule: '点击图文案使用短标题承接视觉钩子，避免把商品参数写成大段说明。',
-            verificationTarget: 'copy slot count and line length reviewed before final export'
-        },
-        {
-            id: 'conversion-support-first',
-            appliesTo: 'conversion-image',
-            priority: 'must',
-            source: 'project-style-strategy',
-            rule: '转化图需要把视觉细节转译成可信购买理由，例如穿着场景、舒适感、搭配价值或材质细节。',
-            verificationTarget: 'each conversion image has visible product details or user-provided brief support'
-        },
-        {
-            id: 'conversion-layout-readable',
-            appliesTo: 'conversion-image',
-            priority: 'should',
-            source: 'local-recipe',
-            rule: '转化图需要稳定的信息层级：主视觉、主文案、辅助信息分区清晰，不把所有信息挤到同一块。',
-            verificationTarget: 'layer snapshot and screenshot QA verify spacing, overlap and hierarchy'
-        },
+        ...buildGenericRules(),
         {
             id: 'editable-layer-boundary',
             appliesTo: 'all',
             priority: 'must',
             source: 'qa-boundary',
-            rule: '所有方案都必须保留可编辑图层和后续验收入口，不能只生成扁平图片。',
+            rule: '已声明方案必须保留可编辑图层和后续验收入口，不能只生成扁平图片。',
             verificationTarget: 'Photoshop layer hierarchy readback after future execution'
         }
     ];
 }
 
-function buildRules(status: MainImageDesignStandardsStatus): MainImageDesignStandardsRule[] {
-    if (status !== 'ready_for_design_strategy') return buildGenericRules();
-    return [...buildGenericRules(), ...buildVisualContextRules()];
-}
-
-function buildRecipeCandidates(
-    status: MainImageDesignStandardsStatus
-): MainImageDesignRecipeCandidate[] {
-    if (status !== 'ready_for_design_strategy') return [];
-    return [
-        {
-            id: 'recipe-click-clean-hero',
-            title: '清爽主体点击图',
-            appliesTo: 'click-image',
-            source: 'local-recipe',
-            status: 'candidate',
-            requiredInputs: [
-                'asset_bound_visual_context',
-                'subject_bounds',
-                'safe_area',
-                'post_transform_screenshot'
-            ],
-            boundary: '候选 recipe 只提供构图方向，不代表已参考外部案例或已执行 Photoshop。'
-        },
-        {
-            id: 'recipe-conversion-supporting-details',
-            title: '细节支撑转化图',
-            appliesTo: 'conversion-image',
-            source: 'local-recipe',
-            status: 'candidate',
-            requiredInputs: [
-                'asset_bound_visual_context',
-                'product_brief_or_user_fact',
-                'text_slot_plan',
-                'post_export_qa'
-            ],
-            boundary: '候选 recipe 需要商品事实支撑，不能凭空写材质、功能或效果承诺。'
-        }
-    ];
+function buildRecipeCandidates(): MainImageDesignRecipeCandidate[] {
+    return [];
 }
 
 function buildRequiredKnowledge(
     status: MainImageDesignStandardsStatus,
     styleStrategy: MainImageProjectStyleStrategy | null | undefined
 ): MainImageDesignRequiredKnowledge[] {
-    const visualContextStatus = status === 'ready_for_design_strategy' ? 'available' : 'missing';
+    const visualContextStatus = status === 'ready_for_design_strategy'
+        || status === 'pending_agent_design_decision'
+        ? 'available'
+        : 'missing';
     const referenceStatus = Number(styleStrategy?.referenceResearchPlan.referenceHintCount || 0) > 0
         ? 'available'
         : 'missing';
@@ -291,6 +243,7 @@ function buildBlockers(status: MainImageDesignStandardsStatus): string[] {
             return ['main_image_project_style_strategy_required'];
         case 'blocked_needs_visual_context':
             return ['main_image_visual_context_required_for_design_standards'];
+        case 'pending_agent_design_decision':
         case 'ready_for_design_strategy':
         default:
             return [];
@@ -303,10 +256,12 @@ function buildWarnings(
 ): string[] {
     const warnings: string[] = [];
     if (status !== 'ready_for_design_strategy') {
-        warnings.push('主图设计规范尚未获得可用视觉上下文，只能保留通用边界，不能进入真实设计决策。');
+        warnings.push(status === 'pending_agent_design_decision'
+            ? '已有视觉上下文，但 Agent 尚未声明视觉 hook、版式重点或文案角色；设计目标保持 pending。'
+            : '主图设计规范尚未获得可用视觉上下文，只能保留通用边界，不能进入真实设计决策。');
     }
     if (Number(styleStrategy?.referenceResearchPlan.referenceHintCount || 0) === 0) {
-        warnings.push('尚未提供外部参考或网页知识来源；recipe 只能作为本地候选，不是已检索案例。');
+        warnings.push('尚未提供外部参考或网页知识来源；不能声称当前设计方向来自已检索案例。');
     }
     return warnings;
 }
@@ -317,8 +272,8 @@ export function buildMainImageDesignStandards(
     const styleStrategy = input.projectStyleStrategy;
     const status = resolveStatus(styleStrategy);
     const product = buildProduct(styleStrategy);
-    const rules = buildRules(status);
-    const recipeCandidates = buildRecipeCandidates(status);
+    const rules = buildRules();
+    const recipeCandidates = buildRecipeCandidates();
     const requiredKnowledge = buildRequiredKnowledge(status, styleStrategy);
 
     return {
@@ -328,8 +283,8 @@ export function buildMainImageDesignStandards(
         status,
         product,
         canGuideDesignPlan: status === 'ready_for_design_strategy',
-        clickImageGoals: buildClickImageGoals(status),
-        conversionImageGoals: buildConversionImageGoals(status),
+        clickImageGoals: buildClickImageGoals(status, styleStrategy),
+        conversionImageGoals: buildConversionImageGoals(status, styleStrategy),
         rules,
         recipeCandidates,
         requiredKnowledge,
@@ -341,7 +296,7 @@ export function buildMainImageDesignStandards(
         warnings: buildWarnings(status, styleStrategy),
         limitations: [
             '主图设计规范只消费 projectStyleStrategy，不调用 provider、不搜索网页、不读取像素、不执行 Photoshop。',
-            '它用于约束后续点击图/转化图设计计划，不代表已经完成 Photoshop 设计。',
+            '它只投影 Agent 已声明的点击图 /转化图目标和通用 QA 边界，不提供本地构图 recipe。',
             '商品事实、外部参考和执行后 QA 缺失时必须显示为 missing 或 needs_review，不能伪造成已具备。'
         ]
     };

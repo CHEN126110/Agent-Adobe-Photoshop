@@ -38,6 +38,7 @@ export interface MainImageProductionExecutorQueueItem {
     documentId?: string;
     documentName?: string;
     groupPath?: string[];
+    assignmentKey?: string;
     payloadPreview: Record<string, unknown>;
     requiredReadback: MainImageProductionExecutorToolRequest['requiredReadback'];
     requiredPostRunReadbackTools: string[];
@@ -234,6 +235,7 @@ function buildExecutorQueue(
         documentId: request.documentId,
         documentName: request.documentName,
         groupPath: request.groupPath,
+        assignmentKey: request.assignmentKey,
         payloadPreview: request.payloadPreview,
         requiredReadback: request.requiredReadback,
         requiredPostRunReadbackTools: collectReadbackTools(request),

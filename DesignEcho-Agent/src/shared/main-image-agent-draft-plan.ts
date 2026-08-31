@@ -78,6 +78,8 @@ export interface MainImageDraftInput {
     currentDocument?: MainImageDraftDocument | null;
     projectAssets?: MainImageDraftAsset[];
     selectedAsset?: MainImageDraftAsset | null;
+    slotAssignments?: unknown;
+    createEmptySkeleton?: boolean;
     subjectBounds?: MainImageDraftSubjectBounds | null;
     sizePlans?: MainImageSizePlan[];
     copyCandidates?: string[];
@@ -86,6 +88,10 @@ export interface MainImageDraftInput {
     critique?: { beforeScore?: number; afterScore?: number; delta?: number } | null;
     visionSignal?: MainImageVisionSignal | null;
     agentDesignDecision?: MainImageAgentDesignDecision | null;
+    /** 只有 Agent / 用户已经显式声明的布局才能进入草案；缺失时保持 pending。 */
+    designDsl?: DesignDSL | null;
+    desiredClickImageCount?: number;
+    desiredConversionImageCount?: number;
     screenshotObservation?: MainImageResultScreenshotObservation | null;
     manualReview?: MainImageManualReviewRecord | null;
     strategyReviewGate?: EcommerceSocksChildStrategyReviewGate | null;
@@ -229,79 +235,69 @@ function inferSelectedAssetStrategy(
     };
 }
 
+function normalizeDeclaredDslRegion(
+    value: DesignDSL['regions'][number]
+): DesignDSL['regions'][number] | undefined {
+    const id = normalizeText(value?.id);
+    const kind = normalizeText(value?.kind);
+    const role = normalizeText(value?.role);
+    const x = Number(value?.box?.x);
+    const y = Number(value?.box?.y);
+    const width = Number(value?.box?.width);
+    const height = Number(value?.box?.height);
+    if (!id || !kind || !role || ![x, y, width, height].every(Number.isFinite)
+        || width <= 0 || height <= 0) {
+        return undefined;
+    }
+    return {
+        id,
+        kind,
+        role,
+        box: { x, y, width, height },
+        ...(normalizeText(value.content) ? { content: normalizeText(value.content) } : {}),
+        styleKeys: Array.isArray(value.styleKeys)
+            ? Array.from(new Set(value.styleKeys.map(normalizeText).filter(Boolean)))
+            : []
+    };
+}
+
 function buildMainImageDsl(input: {
     targetSize: { width: number; height: number };
-    imageType: string;
+    declaredDsl?: DesignDSL | null;
     subjectReady: boolean;
     copyCandidateCount: number;
 }): DesignDSL {
     const { width, height } = input.targetSize;
-    const safe = {
-        x: Math.round(width * 0.06),
-        y: Math.round(height * 0.06),
-        width: Math.round(width * 0.88),
-        height: Math.round(height * 0.88)
-    };
-    const headlineHeight = Math.max(56, Math.round(height * 0.13));
-    const tagHeight = Math.max(42, Math.round(height * 0.075));
+    const declaredCanvasMatches = Number(input.declaredDsl?.canvas?.width) === width
+        && Number(input.declaredDsl?.canvas?.height) === height;
+    const declaredRegions = declaredCanvasMatches && Array.isArray(input.declaredDsl?.regions)
+        ? input.declaredDsl.regions
+            .map(normalizeDeclaredDslRegion)
+            .filter((region): region is DesignDSL['regions'][number] => Boolean(region))
+        : [];
+    const declaredConstraints = declaredCanvasMatches && Array.isArray(input.declaredDsl?.constraints)
+        ? Array.from(new Set(input.declaredDsl.constraints.map(normalizeText).filter(Boolean)))
+        : [];
     return {
         dslVersion: 'design-agent-os/v0',
         scenario: 'main-image',
         canvas: { width, height },
-        layoutType: input.imageType === 'conversion'
-            ? 'main-image-conversion-draft'
-            : 'main-image-click-draft',
-        regions: [
-            {
-                id: 'safe-area',
-                kind: 'region',
-                role: 'safe-area',
-                box: safe,
-                styleKeys: []
-            },
-            {
-                id: 'hero-subject-slot',
-                kind: 'image-slot',
-                role: 'hero-subject',
-                box: {
-                    x: Math.round(width * 0.12),
-                    y: Math.round(height * 0.18),
-                    width: Math.round(width * 0.76),
-                    height: Math.round(height * 0.66)
-                },
-                styleKeys: ['subject-fit', 'visual-center']
-            },
-            {
-                id: 'headline-slot',
-                kind: 'text-slot',
-                role: 'headline',
-                box: {
-                    x: Math.round(width * 0.08),
-                    y: Math.round(height * 0.07),
-                    width: Math.round(width * 0.84),
-                    height: headlineHeight
-                },
-                styleKeys: ['large-title', 'high-contrast']
-            },
-            {
-                id: 'benefit-tag-slot',
-                kind: 'text-slot',
-                role: 'benefit-tag',
-                box: {
-                    x: Math.round(width * 0.1),
-                    y: Math.round(height * 0.86),
-                    width: Math.round(width * 0.8),
-                    height: tagHeight
-                },
-                styleKeys: ['short-benefit', 'safe-bottom']
-            }
-        ],
+        layoutType: declaredCanvasMatches
+            ? normalizeText(input.declaredDsl?.layoutType) || 'agent-authored-layout'
+            : 'pending-agent-layout-decision',
+        regions: declaredRegions,
         constraints: [
-            '主图草案 DSL 是 Agent 控制层计划，不是固定模板。',
+            ...(declaredRegions.length > 0
+                ? declaredConstraints
+                : ['布局区域尚未由 Agent 声明；Harness 不补安全区、主体占比、标题或卖点槽。']),
             input.subjectReady ? '已存在主体 bounds，可进入缩放落位复核。' : '缺少主体 bounds，执行前必须检测或读取活动图层 bounds。',
-            input.copyCandidateCount > 0 ? '已有文案候选，可进入文本槽位适配。' : '缺少可靠文案候选时只能保留文本槽位或请求补充商品事实。'
+            input.copyCandidateCount > 0
+                ? '已有 Agent 提供的文案候选，但文字角色、位置和层级仍需 Agent 显式声明。'
+                : '缺少可靠文案候选时保持 pending，不创建默认文本槽。'
         ],
-        sourceRefs: []
+        sourceRefs: declaredCanvasMatches && Array.isArray(input.declaredDsl?.sourceRefs)
+            ? input.declaredDsl.sourceRefs.map((sourceRef) => ({ ...sourceRef }))
+            : []
     };
 }
 
@@ -361,18 +357,21 @@ function buildExecutionPlan(input: {
             '主图核心是主体视觉大小和位置，必须检测或读取主体 bounds。',
             ['subject bounds', 'fallback layer bounds']
         ),
-        makeStep(
+    ];
+
+    if (input.designDsl.regions.length > 0) {
+        steps.push(makeStep(
             'compose-main-image-dsl',
             'composeDesignDsl',
-            input.designDsl.layoutType || 'main-image-dsl',
+            input.designDsl.layoutType || 'agent-authored-main-image-dsl',
             {
                 regionCount: input.designDsl.regions.length,
                 canvas: input.designDsl.canvas
             },
-            '把主图任务转成安全区、主视觉槽、标题槽和卖点槽，执行器后续消费计划而不是临场猜测。',
-            ['DesignDSL', 'slot bounds', 'layout constraints']
-        )
-    ];
+            '消费 Agent 已声明的布局区域；Harness 只校验结构，不补视觉答案。',
+            ['Agent-authored DesignDSL', 'declared region bounds', 'layout constraints']
+        ));
+    }
 
     for (const plan of input.sizePlans) {
         steps.push(makeStep(
@@ -391,16 +390,20 @@ function buildExecutionPlan(input: {
         ));
     }
 
-    steps.push(makeStep(
-        'write-or-reserve-main-image-copy',
-        input.copyCandidateCount > 0 ? 'fitCopyToTextSlots' : 'reserveCopySlots',
-        'headline-and-benefit-slots',
-        { candidateCount: input.copyCandidateCount },
-        input.copyCandidateCount > 0
-            ? '已有文案候选，应按文本槽位、字数和可读性适配。'
-            : '缺少可靠商品事实时不编造卖点，只保留可编辑文本槽位或请求补充。',
-        ['copy candidates', 'text layer bounds', 'text overflow check']
-    ));
+    const declaredTextRegions = input.designDsl.regions.filter((region) => region.kind === 'text-slot');
+    if (input.copyCandidateCount > 0 && declaredTextRegions.length > 0) {
+        steps.push(makeStep(
+            'fit-main-image-copy-to-declared-regions',
+            'fitCopyToDeclaredTextRegions',
+            declaredTextRegions.map((region) => region.id).join(','),
+            {
+                candidateCount: input.copyCandidateCount,
+                declaredTextRegionCount: declaredTextRegions.length
+            },
+            '只把 Agent 提供的文案候选适配到 Agent 已声明的文字区域。',
+            ['copy candidates', 'declared text region bounds', 'text overflow check']
+        ));
+    }
 
     if (input.outputDir || input.sizePlans.some((plan) => plan.quickExportPlanned)) {
         steps.push(makeStep(
@@ -418,7 +421,7 @@ function buildExecutionPlan(input: {
         'verifyDesignResult',
         'main-image-photoshop-result',
         {
-            requiredChecks: ['subject bounds', 'text overflow', 'safe area', 'screenshot or manual review']
+            requiredChecks: ['declared region bounds', 'subject bounds', 'screenshot or manual review']
         },
         '主图工具执行成功不等于设计完成，必须检查 bounds、结果截图或人工复核记录。',
         ['VerificationReport', 'bounds QA', 'screenshot/manual review']
@@ -564,6 +567,8 @@ export function buildMainImageAgentDraftPlan(input: MainImageDraftInput): MainIm
         currentDocument: input.currentDocument,
         projectAssets: input.projectAssets || [],
         selectedAsset: input.selectedAsset,
+        slotAssignments: input.slotAssignments,
+        createEmptySkeleton: input.createEmptySkeleton,
         subjectBounds: input.subjectBounds,
         sizePlans,
         copyCandidates: input.copyCandidates || [],
@@ -571,6 +576,8 @@ export function buildMainImageAgentDraftPlan(input: MainImageDraftInput): MainIm
         toolNames: input.toolNames || [],
         visionSignal: input.visionSignal,
         agentDesignDecision: input.agentDesignDecision,
+        desiredClickImageCount: input.desiredClickImageCount,
+        desiredConversionImageCount: input.desiredConversionImageCount,
         referenceHints: input.referenceHints,
         knowledgeResults: input.knowledgeResults,
         mainImageMemoryContext: input.mainImageMemoryContext,
@@ -588,6 +595,12 @@ export function buildMainImageAgentDraftPlan(input: MainImageDraftInput): MainIm
         strategyInputs: effectiveStrategyInputs
     });
     const selectedAssetStrategy = inferSelectedAssetStrategy(input, assetSelection);
+    const designDsl = buildMainImageDsl({
+        targetSize: primaryTargetSize,
+        declaredDsl: input.designDsl,
+        subjectReady: Boolean(subjectBounds),
+        copyCandidateCount: copyCandidates.length
+    });
     const blockers: string[] = [];
     const warnings: string[] = [...assetSelection.warnings];
 
@@ -607,6 +620,9 @@ export function buildMainImageAgentDraftPlan(input: MainImageDraftInput): MainIm
     if (copyCandidates.length === 0) {
         warnings.push('缺少可验证文案候选；不要编造商品卖点。');
     }
+    if (designDsl.regions.length === 0) {
+        warnings.push('Agent 尚未声明主图布局区域；当前 DSL 保持 pending，不能据此执行默认构图。');
+    }
     warnings.push(...assetVisualUnderstanding.warnings);
     warnings.push(...visualVerification.warnings);
     if (!input.outputDir && !sizePlans.some((plan) => plan.quickExportPlanned)) {
@@ -615,7 +631,11 @@ export function buildMainImageAgentDraftPlan(input: MainImageDraftInput): MainIm
 
     const readiness: MainImageDraftReadiness = blockers.length > 0
         ? 'blocked'
-        : assetSelection.readiness !== 'ready' || selectedAssetStrategy.mode === 'missing' || !subjectBounds || sizePlans.length === 0
+        : assetSelection.readiness !== 'ready'
+            || selectedAssetStrategy.mode === 'missing'
+            || !subjectBounds
+            || sizePlans.length === 0
+            || designDsl.regions.length === 0
             ? 'needs_context'
             : 'ready';
     const intent = buildDesignIntentContextFromText(input.userText || '帮我做主图', {
@@ -644,13 +664,10 @@ export function buildMainImageAgentDraftPlan(input: MainImageDraftInput): MainIm
             '主图草案是业务场景验证路径，不是 Agent 能力边界。'
         ]
     });
-    const designDsl = buildMainImageDsl({
-        targetSize: primaryTargetSize,
-        imageType: normalizeText(input.imageType) || 'click',
-        subjectReady: Boolean(subjectBounds),
-        copyCandidateCount: copyCandidates.length
-    });
-    designDsl.sourceRefs = brief.sourceRefs;
+    designDsl.sourceRefs = [
+        ...designDsl.sourceRefs.map((sourceRef) => ({ ...sourceRef })),
+        ...brief.sourceRefs.map((sourceRef) => ({ ...sourceRef }))
+    ];
     const layoutStrategy = {
         targetSizeCount: targetSizes.length,
         sizePlanCount: sizePlans.length,
@@ -659,13 +676,17 @@ export function buildMainImageAgentDraftPlan(input: MainImageDraftInput): MainIm
         subjectBoundsReady: Boolean(subjectBounds),
         primaryTargetSize: { width: primaryTargetSize.width, height: primaryTargetSize.height }
     };
+    let copyStrategyReason = '缺少候选文案或商品事实，执行器不应凭空生成强卖点。';
+    if (copyCandidates.length > 0) {
+        copyStrategyReason = designDsl.regions.some((region) => region.kind === 'text-slot')
+            ? '已有候选文案和 Agent 声明的文字区域，仍需按真实商品事实与结果画面复核。'
+            : '已有候选文案，但文字角色、位置和层级尚未由 Agent 声明。';
+    }
     const copyStrategy = {
         candidateCount: copyCandidates.length,
         hasCopyContext: copyCandidates.length > 0,
         needsCopyContext: copyCandidates.length === 0,
-        reason: copyCandidates.length > 0
-            ? '已有候选文案，但仍需按主图文本槽位和真实商品事实复核。'
-            : '缺少候选文案或商品事实，执行器不应凭空生成强卖点。'
+        reason: copyStrategyReason
     };
     const executionPlan = buildExecutionPlan({
         readiness,

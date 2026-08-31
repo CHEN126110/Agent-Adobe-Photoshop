@@ -161,10 +161,26 @@ function normalizeAgentDecision(value: MainImageAgentDesignDecision | null | und
     return null;
 }
 
-function clampCount(value: unknown, fallback: number, max: number): number {
+function clampAuthoredCount(value: unknown, authoredCount: number, max: number): number {
+    if (authoredCount <= 0) return 0;
     const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
-    return Math.max(0, Math.min(max, Math.round(numeric)));
+    if (!Number.isFinite(numeric) || numeric <= 0) return Math.min(authoredCount, max);
+    return Math.max(0, Math.min(authoredCount, max, Math.round(numeric)));
+}
+
+function countAuthoredVariantDirections(
+    imageType: MainImageVariantType,
+    decision: MainImageAgentDesignDecision | null
+): number {
+    if (!decision) return 0;
+    const hooks = imageType === 'click'
+        ? uniqueCleanStrings(decision.clickVisualHooks)
+        : uniqueCleanStrings(decision.conversionVisualHooks);
+    if (hooks.length > 0) return hooks.length;
+    const hasSingleDirection = imageType === 'click'
+        ? Boolean(cleanString(decision.clickLayoutFocus) || cleanString(decision.clickCopyRole))
+        : Boolean(cleanString(decision.conversionLayoutFocus) || cleanString(decision.conversionCopyRole));
+    return hasSingleDirection ? 1 : 0;
 }
 
 function normalizeAssets(assets: MainImageDraftAsset[] | undefined): MainImageDraftAsset[] {
@@ -269,7 +285,7 @@ function buildVariantDirection(
         id: `${imageType}-${index + 1}`,
         imageType,
         objective: `${typeLabel} ${index + 1}: ${productType === 'unknown' ? '商品款式' : productType} ${style}`,
-        visualHook: visualHooks[index % Math.max(1, visualHooks.length)] || '待模型 Agent 决定视觉 hook',
+        visualHook: visualHooks[index] || 'Agent 已声明版式或文案方向，但未单独声明视觉 hook。',
         layoutFocus,
         copyRole,
         referenceNeed: imageType === 'click'
@@ -349,8 +365,16 @@ export function buildMainImageProjectStyleStrategy(
         : 'unknown';
     const styleKeywords = visualContextReady ? buildStyleKeywords(input.visionSignal, agentDecision) : [];
     const referenceHints = normalizeReferenceHints(input.referenceHints);
-    const clickCount = clampCount(input.desiredClickImageCount, 2, 6);
-    const conversionCount = clampCount(input.desiredConversionImageCount, 2, 6);
+    const clickCount = clampAuthoredCount(
+        input.desiredClickImageCount,
+        countAuthoredVariantDirections('click', agentDecision),
+        5
+    );
+    const conversionCount = clampAuthoredCount(
+        input.desiredConversionImageCount,
+        countAuthoredVariantDirections('conversion', agentDecision),
+        4
+    );
     const variantPlan = buildVariants({
         status,
         productType,
