@@ -19,8 +19,12 @@ import {
     isGpt56CodexModelId
 } from '../../shared/codex-subscription-contract';
 import {
+    CODEX_TURN_FINAL_DRAIN_GRACE_MS,
+    CODEX_TURN_FINAL_DRAIN_RECENCY_MS,
     codexNotificationMatchesActiveTurn,
     evaluateCodexTurnIdleProgress,
+    evaluateCodexTurnWallClockDeadline,
+    isCodexFinalOutputDrainProgressMethod,
     ownsCodexTurnSlot
 } from '../../shared/codex-turn-progress';
 import type { ModelConfig, ModelReasoningEffort } from '../../shared/config/models.config';
@@ -160,6 +164,14 @@ interface ActiveTurn {
     idleTimeoutMs: number;
     lastProgressAtMs: number;
     lastProgressMethod: string;
+    /** 只由最终 agentMessage delta 更新；普通进展既不能授予宽限，也不能覆盖此证据。 */
+    lastFinalOutputDeltaAtMs?: number;
+    /** Turn 创建时刻；全部 wall-clock deadline 从这里推导，绝不随再次评估滚动。 */
+    turnStartedAtMs: number;
+    /** 基础 wall-clock 上限（不含排空宽限）。 */
+    wallClockBaseTimeoutMs: number;
+    /** 排空宽限只允许消费一次；一旦为 true 不得重置。 */
+    wallClockDrainGraceConsumed: boolean;
     timer?: NodeJS.Timeout;
     hardTimer?: NodeJS.Timeout;
     detachAbort?: () => void;
@@ -1756,6 +1768,7 @@ export class CodexSubscriptionService {
         }
         let active!: ActiveTurn;
         const completion = new Promise<CompletedStructuredTurn>((resolve, reject) => {
+            const turnStartedAtMs = Date.now();
             active = {
                 threadId: input.threadId,
                 workerGeneration: input.workerGeneration,
@@ -1763,16 +1776,12 @@ export class CodexSubscriptionService {
                 resolve,
                 reject,
                 idleTimeoutMs: timeoutMs,
-                lastProgressAtMs: Date.now(),
-                lastProgressMethod: 'turn/requested'
+                lastProgressAtMs: turnStartedAtMs,
+                lastProgressMethod: 'turn/requested',
+                turnStartedAtMs,
+                wallClockBaseTimeoutMs: wallClockTimeoutMs,
+                wallClockDrainGraceConsumed: false
             };
-            active.hardTimer = setTimeout(() => {
-                if (!ownsCodexTurnSlot(this.activeTurns, active)) return;
-                this.requestActiveTurnCancellation(active, createSubscriptionError(
-                    `DesignEcho 订阅桥等待本轮完成已达到总时限（${Math.ceil(wallClockTimeoutMs / 1000)} 秒），已中断。`,
-                    'codex_subscription_turn_wall_clock_timeout'
-                ));
-            }, wallClockTimeoutMs);
             if (input.signal) {
                 const abort = () => {
                     if (!ownsCodexTurnSlot(this.activeTurns, active)) return;
@@ -1785,6 +1794,7 @@ export class CodexSubscriptionService {
                 active.detachAbort = () => input.signal?.removeEventListener('abort', abort);
             }
             this.activeTurns.set(input.threadId, active);
+            this.settleActiveTurnWallClockDeadline(active);
             this.refreshActiveTurnIdleDeadline(active, 'turn/requested');
             if (input.signal?.aborted) {
                 this.requestActiveTurnCancellation(active, createSubscriptionError(
@@ -2108,11 +2118,17 @@ export class CodexSubscriptionService {
             || notification.method.endsWith('/delta')) {
             const accepted = this.refreshActiveTurnIdleDeadline(active, notification.method);
             if (!accepted) return;
+            if (isCodexFinalOutputDrainProgressMethod(notification.method)) {
+                active.lastFinalOutputDeltaAtMs = active.lastProgressAtMs;
+            }
         }
         if (terminalNotification) {
             // 终态也必须先按严格截止（elapsed >= timeout）结算此前空窗；晚到的 completed
             // 不能把已经发生的 idle timeout 改写成成功。
             if (!this.settleActiveTurnIdleDeadline(active)) return;
+            // 同样结算 wall-clock：终态与 timer 同时进入事件循环时，不能靠回调顺序
+            // 绕过基础截止或绝对上限。近期最终文本 delta 仍可获得同一份一次性宽限。
+            if (!this.settleActiveTurnWallClockDeadline(active)) return;
         }
 
         if (notification.method === 'turn/started') {
@@ -2464,6 +2480,49 @@ export class CodexSubscriptionService {
                 'codex_subscription_turn_idle_timeout'
             ));
         }, remainingMs);
+    }
+
+    /**
+     * wall-clock 守卫（含一次有界的最终输出排空宽限）。
+     * 该等待、授予还是超时完全由纯契约 evaluateCodexTurnWallClockDeadline 决定：
+     * 全部 deadline 从 turnStartedAtMs 推导（base=wallClockBaseTimeoutMs，
+     * 绝对上限 base+grace 封顶 MAX_TURN_WALL_CLOCK_TIMEOUT_MS），timer 只是把
+     * 下一次评估安排在裁决点，不产生"每次 now+grace"式续期。宽限消费状态
+     * 持久在 active.wallClockDrainGraceConsumed，授予后不再重置；idle 守卫
+     * （timer / refreshActiveTurnIdleDeadline）独立运行，宽限期内照常生效。
+     */
+    private settleActiveTurnWallClockDeadline(active: ActiveTurn): boolean {
+        if (!ownsCodexTurnSlot(this.activeTurns, active) || active.cancelRequested) return false;
+        const verdict = evaluateCodexTurnWallClockDeadline({
+            turnStartedAtMs: active.turnStartedAtMs,
+            nowMs: Date.now(),
+            baseWallClockTimeoutMs: active.wallClockBaseTimeoutMs,
+            maxWallClockTimeoutMs: MAX_TURN_WALL_CLOCK_TIMEOUT_MS,
+            drainGraceMs: CODEX_TURN_FINAL_DRAIN_GRACE_MS,
+            drainGraceRecencyMs: CODEX_TURN_FINAL_DRAIN_RECENCY_MS,
+            drainGraceConsumed: active.wallClockDrainGraceConsumed,
+            lastFinalOutputDeltaAtMs: active.lastFinalOutputDeltaAtMs
+        });
+        if (verdict.action === 'timeout') {
+            const graceSuffix = active.wallClockDrainGraceConsumed
+                ? '，含一次最终输出排空宽限'
+                : '';
+            this.requestActiveTurnCancellation(active, createSubscriptionError(
+                `DesignEcho 订阅桥等待本轮完成已达到总时限（${Math.ceil(verdict.elapsedMs / 1000)} 秒${graceSuffix}），已中断。`,
+                'codex_subscription_turn_wall_clock_timeout'
+            ));
+            return false;
+        }
+        if (verdict.action === 'grant_drain_grace') {
+            active.wallClockDrainGraceConsumed = true;
+        }
+        if (active.hardTimer) clearTimeout(active.hardTimer);
+        active.hardTimer = setTimeout(() => {
+            if (!ownsCodexTurnSlot(this.activeTurns, active) || active.cancelRequested) return;
+            active.hardTimer = undefined;
+            this.settleActiveTurnWallClockDeadline(active);
+        }, Math.max(250, verdict.recheckInMs));
+        return true;
     }
 
     private requestImageTurnCancellation(active: ActiveImageGenerationTurn, error: Error): void {

@@ -2376,8 +2376,12 @@ async function run() {
     shouldRetryAutonomousModelTransport
   } = require(modelProviderTransportPolicyPath);
   const {
+    CODEX_TURN_FINAL_DRAIN_GRACE_MS,
+    CODEX_TURN_FINAL_DRAIN_RECENCY_MS,
     codexNotificationMatchesActiveTurn,
     evaluateCodexTurnIdleProgress,
+    evaluateCodexTurnWallClockDeadline,
+    isCodexFinalOutputDrainProgressMethod,
     ownsCodexTurnSlot
   } = require(codexTurnProgressPath);
   const { restoreAgentToolStreamError } = require(agentToolStreamServicePath);
@@ -2436,6 +2440,65 @@ async function run() {
     lastProgressAtMs: 1_000,
     nowMs: 181_000,
     idleTimeoutMs: 180_000
+  });
+  // Run 659 病历：wall-clock 到点时最终 agentMessage 正在流式输出，只授予一次有界排空宽限。
+  const drainTurnStartMs = 1_000_000;
+  const drainBaseMs = 720_000;
+  const drainMaxMs = 900_000;
+  const evaluateDrainVerdict = (overrides) => evaluateCodexTurnWallClockDeadline({
+    turnStartedAtMs: drainTurnStartMs,
+    nowMs: drainTurnStartMs + drainBaseMs,
+    baseWallClockTimeoutMs: drainBaseMs,
+    maxWallClockTimeoutMs: drainMaxMs,
+    drainGraceMs: CODEX_TURN_FINAL_DRAIN_GRACE_MS,
+    drainGraceRecencyMs: CODEX_TURN_FINAL_DRAIN_RECENCY_MS,
+    drainGraceConsumed: false,
+    lastFinalOutputDeltaAtMs: drainTurnStartMs + drainBaseMs - 10_000,
+    ...overrides
+  });
+  const drainWaitBeforeDeadline = evaluateDrainVerdict({
+    nowMs: drainTurnStartMs + 500_000,
+    lastFinalOutputDeltaAtMs: undefined
+  });
+  const drainSilentReasoningTimeout = evaluateDrainVerdict({
+    lastFinalOutputDeltaAtMs: undefined
+  });
+  const nonFinalDrainMethodsRejected = [
+    'item/reasoning/delta',
+    'thread/tokenUsage/updated',
+    'item/started',
+    'item/completed',
+    'turn/started',
+    'heartbeat'
+  ].every((method) => !isCodexFinalOutputDrainProgressMethod(method));
+  const finalDrainMethodAccepted = isCodexFinalOutputDrainProgressMethod('item/agentMessage/delta');
+  const drainGrantAtDeadline = evaluateDrainVerdict({});
+  const drainGrantAfterLateTimer = evaluateDrainVerdict({
+    nowMs: drainTurnStartMs + drainBaseMs + 10_000,
+    lastFinalOutputDeltaAtMs: drainTurnStartMs + drainBaseMs + 9_000
+  });
+  const drainStaleDeltaTimeout = evaluateDrainVerdict({
+    lastFinalOutputDeltaAtMs: drainTurnStartMs + drainBaseMs - CODEX_TURN_FINAL_DRAIN_RECENCY_MS - 1
+  });
+  const drainConsumedEarlyRecheck = evaluateDrainVerdict({
+    nowMs: drainTurnStartMs + 850_000,
+    drainGraceConsumed: true,
+    lastFinalOutputDeltaAtMs: drainTurnStartMs + 849_500
+  });
+  const drainAbsoluteDeadlineTimeout = evaluateDrainVerdict({
+    nowMs: drainTurnStartMs + drainMaxMs,
+    drainGraceConsumed: true,
+    lastFinalOutputDeltaAtMs: drainTurnStartMs + drainMaxMs - 500
+  });
+  const drainNoHeadroomTimeout = evaluateDrainVerdict({
+    nowMs: drainTurnStartMs + drainMaxMs,
+    baseWallClockTimeoutMs: drainMaxMs,
+    lastFinalOutputDeltaAtMs: drainTurnStartMs + drainMaxMs - 500
+  });
+  const drainGrantCappedByMax = evaluateDrainVerdict({
+    nowMs: drainTurnStartMs + 840_000,
+    baseWallClockTimeoutMs: 840_000,
+    lastFinalOutputDeltaAtMs: drainTurnStartMs + 839_000
   });
   const oldTurnSlot = { threadId: 'thread-reused', turnId: 'turn-old' };
   const newTurnSlot = { threadId: 'thread-reused', turnId: 'turn-new' };
@@ -17287,6 +17350,75 @@ async function run() {
           && conversationalUnavailableMessageText.includes('服务当前繁忙或暂时不可用')
           ? []
           : ['provider-failure:truthful-conversation-summary-missing'])
+      ]
+    },
+    {
+      id: 'codex-turn-wall-clock-drain-grace-bounded',
+      description: 'wall-clock 到点时仅当最终 agentMessage delta 正在流式输出才授予一次有界排空宽限；deadline 从 turn 开始推导且封顶 15 分钟，宽限不可二次授予，普通/陈旧进展一律真实超时。',
+      violations: [
+        ...(drainWaitBeforeDeadline.action === 'wait'
+          && drainWaitBeforeDeadline.recheckInMs === 220_000
+          && drainWaitBeforeDeadline.drainGraceConsumed === false
+          ? []
+          : [`codex-wall-clock:pre-deadline-not-waiting:${JSON.stringify(drainWaitBeforeDeadline)}`]),
+        ...(drainSilentReasoningTimeout.action === 'timeout'
+          && drainSilentReasoningTimeout.recheckInMs === 0
+          && drainSilentReasoningTimeout.drainGraceConsumed === false
+          ? []
+          : [`codex-wall-clock:silent-reasoning-not-timed-out:${JSON.stringify(drainSilentReasoningTimeout)}`]),
+        ...(nonFinalDrainMethodsRejected
+          && finalDrainMethodAccepted
+          ? []
+          : ['codex-wall-clock:non-final-progress-extends-deadline']),
+        ...(drainGrantAtDeadline.action === 'grant_drain_grace'
+          && drainGrantAtDeadline.drainGraceConsumed === true
+          && drainGrantAtDeadline.baseDeadlineMs === drainTurnStartMs + drainBaseMs
+          && drainGrantAtDeadline.absoluteDeadlineMs === drainTurnStartMs + drainMaxMs
+          && drainGrantAtDeadline.recheckInMs === 180_000
+          ? []
+          : [`codex-wall-clock:recent-final-delta-not-granted-once:${JSON.stringify(drainGrantAtDeadline)}`]),
+        ...(drainGrantAfterLateTimer.action === 'grant_drain_grace'
+          && drainGrantAfterLateTimer.absoluteDeadlineMs === drainTurnStartMs + drainMaxMs
+          && drainGrantAfterLateTimer.recheckInMs === 170_000
+          ? []
+          : [`codex-wall-clock:grace-deadline-rolls-with-now:${JSON.stringify(drainGrantAfterLateTimer)}`]),
+        ...(drainStaleDeltaTimeout.action === 'timeout'
+          ? []
+          : [`codex-wall-clock:stale-delta-still-extends:${JSON.stringify(drainStaleDeltaTimeout)}`]),
+        ...(drainConsumedEarlyRecheck.action === 'wait'
+          && drainConsumedEarlyRecheck.recheckInMs === 50_000
+          && drainConsumedEarlyRecheck.drainGraceConsumed === true
+          ? []
+          : [`codex-wall-clock:consumed-grace-window-not-preserved:${JSON.stringify(drainConsumedEarlyRecheck)}`]),
+        ...(drainAbsoluteDeadlineTimeout.action === 'timeout'
+          && drainAbsoluteDeadlineTimeout.drainGraceConsumed === true
+          ? []
+          : [`codex-wall-clock:second-grace-granted:${JSON.stringify(drainAbsoluteDeadlineTimeout)}`]),
+        ...(drainNoHeadroomTimeout.action === 'timeout'
+          ? []
+          : [`codex-wall-clock:grace-exceeds-absolute-max:${JSON.stringify(drainNoHeadroomTimeout)}`]),
+        ...(drainGrantCappedByMax.action === 'grant_drain_grace'
+          && drainGrantCappedByMax.absoluteDeadlineMs === drainTurnStartMs + drainMaxMs
+          && drainGrantCappedByMax.recheckInMs === 60_000
+          ? []
+          : [`codex-wall-clock:grace-not-capped-by-max:${JSON.stringify(drainGrantCappedByMax)}`]),
+        ...(codexSubscriptionServiceText.includes('this.settleActiveTurnWallClockDeadline(active);')
+          && codexSubscriptionServiceText.includes('wallClockDrainGraceConsumed: false')
+          && codexSubscriptionServiceText.includes('drainGraceConsumed: active.wallClockDrainGraceConsumed')
+          && codexSubscriptionServiceText.includes('lastFinalOutputDeltaAtMs: active.lastFinalOutputDeltaAtMs')
+          && codexSubscriptionServiceText.includes('isCodexFinalOutputDrainProgressMethod(notification.method)')
+          && codexSubscriptionServiceText.includes('if (!this.settleActiveTurnWallClockDeadline(active)) return;')
+          && codexSubscriptionServiceText.includes('maxWallClockTimeoutMs: MAX_TURN_WALL_CLOCK_TIMEOUT_MS')
+          && codexSubscriptionServiceText.includes('active.wallClockDrainGraceConsumed = true;')
+          && codexSubscriptionServiceText.includes("'codex_subscription_turn_wall_clock_timeout'")
+          && !codexSubscriptionServiceText.includes('}, wallClockTimeoutMs);')
+          ? []
+          : ['codex-wall-clock:service-not-consuming-pure-contract']),
+        ...(codexTurnProgressText.includes('绝不使用"now + grace"滚动续期')
+          && codexTurnProgressText.includes('宽限只授予一次')
+          && codexTurnProgressText.includes('idle timeout 是独立守卫，宽限期内仍必须照常生效')
+          ? []
+          : ['codex-wall-clock:contract-invariants-undocumented'])
       ]
     },
     {
