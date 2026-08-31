@@ -27,8 +27,10 @@
 8. `[已完成]` INTAKE-092 基础生产骨架已以 `3cb1594e` 提交推送：三个真实工作画布、每文档 5 个点击槽 +4 个转化槽、空骨架、逐槽 assignment、动态预算、兄弟组隔离、保画布导出和精确层级读回均有持久回归。
 9. `[已完成]` agentic Runtime owner 与主图整组文件事务已以 `a42de03b` 提交并推送：pre-bound / loop-bound 复用同一责任投影，broad atomic Tool 保持可达，guarded executor、delivery authority、staging、实际结果路径、文件身份与 external commit 同源闭合。
 10. `[已完成]` 开放创意的 `prepare → Agent 分层设计 → finalize` 已由 `293dd3df` 提交推送：prepare 只建一个 Agent 明确规格的标准工作文档 /空组并返回 TaskRun-bound workspace；Agent 使用现有通用 Tool 完成文字、形状、蒙版、多图和排版；finalize 只对账同一任务、项目、document /group /revision 和真实非空组，再走 exact staged file transaction。持久回归覆盖未修改、空组、TaskRun /document /group 漂移、跨 Reflexion generation /Skill 成功交付和重复 finalize，未复制第二套 DesignIR；fresh `maintenance:validate` 通过 65 个核心检查。
-11. `[待开始]` 重建与提交一致的正常 Agent / UXP，在新普通项目中运行自然短提示，验证模型选图说明、按需参考、分层设计、真实 5+4 Photoshop 层级、保画布导出、Final Judge 与外部文档零变化。
-12. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
+11. `[已完成但未达出口]` 与提交一致的正常 Agent / UXP 已在新普通项目运行自然短提示和一次“继续”。`69c54867` 证明条件 Tool Schema 可执行，`b4998b65` 证明续跑能以 `structured_run_resume` 恢复 Runtime identity，外部文档 revision 零变化；但 Agent 旁路 prepare /finalize 产生 800 /1440 两套交付，最终 1440 PSD 只有 3 层，且裁切摄影图被 Evaluation 以 89 分误放行为完成，因此不计入专业质量分子。
+12. `[进行中]` 收敛主图正式交付唯一 owner：prepare workspace 必须成为同 TaskRun 可持久化、可 reconciliation 的身份事实；通用保存 /导出不得在 workspace 存在时结算 Main Image Skill completion。用旁路交付、重复规格、扁平化再置入、进程重启和身份漂移负例证明正式交付只能由同 workspace finalize 闭合。
+13. `[待开始]` 在新的普通项目重新运行自然短提示；先证明唯一规格、复杂可编辑分层、同任务 finalize、PSD/JPG 同版本与外部文档零变化，再用用户成稿 /Eagle 参考对 Evaluation 的商业质量误放行做 advisory 校准。
+14. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 
 ### 退出条件
 

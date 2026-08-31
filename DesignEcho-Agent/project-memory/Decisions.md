@@ -2,6 +2,21 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-128 Main Image Skill 的正式交付必须由可持久化 workspace 与唯一 finalize 闭合
+
+- 状态：active；真实 Run 663 /664 已证明现状不满足，代码实现待完成。
+- prepare workspace 必须成为同一 Runtime TaskRun 拥有的有界、可持久化、可 reconciliation 身份事实，至少绑定项目、task type /manifest、document、标准 group、prepared revision、创建收据和失效状态。它不授予 Tool、写入、设计或完成权限，也不复制到 Design Project State；应用重启后只能按当前 Host /文件事实校验恢复，不能凭旧内存信用续写。
+- Agent 仍可自主调用通用保存 /导出作为原子工作动作，但一旦主图任务进入 prepare，这些调用不能签发 Main Image Skill 的正式 completion、不能替代同 workspace finalize，也不能把导出 JPG 再置入新文档后伪装成专业可编辑稿。正式交付只能由 finalize 对账唯一规格、同 TaskRun /document /revision、真实非空层级和 exact staged transaction 后闭合。
+- 依据：Run 663 先交付 800 稿，再建 1440 文档并重置入 JPG，形成两套正式文件；Run 664 虽技术成功，最终 1440 PSD 仍只有 3 层。文件存在与评测通过都没有证明生产 owner、可编辑性或专业设计成立。
+- 负面教训：为每次旁路增加“结果需要复核”、重复保存或新恢复卡只会在错误基础上叠加状态。根修位置是 completion authority 与 workspace 生命周期，不是 Agent 文案、固定工作流提示或额外设计规则。
+
+## D-127 未完成 Run 的自动续跑只恢复 Runtime identity，不恢复执行权限
+
+- 状态：active；代码、攻击回归与 fresh 65 阶段核心闸门已通过，由 `b4998b65` 提交推送，并经正常程序 Run 664 验证。
+- 同分支未完成 Run 可以向下一次裸 continuation 提供结构化 task type /manifest /来源身份，使同一用户目标不因“继续”退化为通用任务；binding 不携带 Tool 白名单、写权限、交付信用、完成状态、设计判断或旧 Tool 参数。
+- Runtime 必须重新走当前 Capability Resolver、Manifest 与执行点 preflight；畸形字段、permission escalation、来源分支不符或 manifest mismatch 均失败关闭。Harness 只恢复“正在做什么”，不恢复“可以怎么做”或“已经做成什么”。
+- 正面经验：Run 664 的 `structured_run_resume` 让 Agent 在不重复询问的情况下恢复 `ecommerce.main_image.v1`。负面教训：从助手措辞、旧卡片或关键词猜任务身份会把续跑变成新任务，也会诱发重复交付。
+
 ## D-126 开放创意主图以 prepare / Agent 通用 Tool / finalize 交付，不把 Skill 扩成设计器
 
 - 状态：active；代码、专项行为回归与 fresh 65 阶段完整核心闸门已通过，并由 `293dd3df` 提交推送；真实 Photoshop Attempt 待完成。
