@@ -300,7 +300,7 @@ DesignEcho 的目标是 Photoshop 设计 Agent。主图、SKU、详情页、参�
 
 环境检查：Ollama 可达；DesignEcho / UXP / MCP Bridge 的 8765–8768 均未监听。以上只是代码现状与只读基础设施检查结果，不是已完成的 Photoshop E2E，也不是设计质量通过。
 
-离线生产拓扑已通过 `npm run smoke:agent:business-skill-system-path` 验证：三个 Skill 均复用生产 Agent、结构化 Skill→Manifest Resolver、Capability Session、R1 / R3 / R4 和 workflow bridge，并且只调用当前被选 Skill。该验证使用 fixture 模型与 fixture executor，DesignVerdict 保持未通过，只证明控制流，不改变上表 `partial_runner` 的实机判定。
+当前业务边界由 `npm run audit:agent-business-boundaries` 持续检查：三个 Skill 必须复用生产 Agent、结构化 Skill→Manifest Resolver、Capability Session 和共享 Tool /事务边界。该静态审计只证明源码边界，不能替代真实 Provider、Photoshop E2E 或设计质量判定。
 
 ### 阶段能力可见性
 

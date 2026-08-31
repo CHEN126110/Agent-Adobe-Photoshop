@@ -6,8 +6,8 @@
  *
  * 检查项：
  * 1. 根级 CLAUDE.md 与 AGENTS.md 第 6 行起逐字节一致（前 5 行允许身份差异），且均为 UTF-8 无 BOM。
- * 2. 文档中引用的 `npm run <script>` 必须存在于 DesignEcho-Agent 或 DesignEcho-UXP 的 package.json。
- * 3. 文档反引号中的仓库文件路径必须真实存在（文档明文声明"已缺失/已删除"的路径进白名单）。
+ * 2. 根入口与当前权威项目文档引用的 `npm run <script>` 必须存在于 DesignEcho-Agent 或 DesignEcho-UXP 的 package.json。
+ * 3. 根入口文档反引号中的仓库文件路径必须真实存在（文档明文声明"已缺失/已删除"的路径进白名单）。
  *
  * 用法：node scripts/audit-entry-doc-sync.cjs [--root <仓库根目录>]（--root 仅用于自测）。
  */
@@ -21,6 +21,19 @@ const repoRoot = rootArgIndex >= 0 && process.argv[rootArgIndex + 1]
   : path.resolve(__dirname, "..", "..");
 const agentRoot = path.join(repoRoot, "DesignEcho-Agent");
 const uxpRoot = path.join(repoRoot, "DesignEcho-UXP");
+
+/** 当前可操作真相源。历史 /专项文档允许保留已退役命令作为考古文本，但这些文档必须降级。 */
+const CURRENT_PROJECT_DOCS = [
+  "DesignEcho-Agent/project-memory/Prompt.md",
+  "DesignEcho-Agent/project-memory/CurrentTask.md",
+  "DesignEcho-Agent/project-memory/Plan.md",
+  "DesignEcho-Agent/project-memory/Status.md",
+  "DesignEcho-Agent/project-memory/README.md",
+  "DesignEcho-Agent/docs/documentation-governance.md",
+  "DesignEcho-Agent/docs/design-agent-operating-system.md",
+  "DesignEcho-Agent/docs/project-master-plan.md",
+  "DesignEcho-Agent/docs/model-settings-configuration.md"
+];
 
 /** 文档正文允许差异的行数（首行标题 + 身份说明句 + 互指同步说明所在的前 5 行）。 */
 const IDENTITY_LINE_COUNT = 5;
@@ -154,11 +167,19 @@ function checkPathRefs(docName, text) {
 function run() {
   const claudeText = readDoc("CLAUDE.md");
   const agentsText = readDoc("AGENTS.md");
+  const scriptNames = loadScriptNames();
 
   if (claudeText !== null && agentsText !== null) {
     checkBodySync(claudeText, agentsText);
-    const scriptNames = loadScriptNames();
     for (const [docName, text] of [["CLAUDE.md", claudeText], ["AGENTS.md", agentsText]]) {
+      checkScriptRefs(docName, text, scriptNames);
+      checkPathRefs(docName, text);
+    }
+  }
+
+  for (const docName of CURRENT_PROJECT_DOCS) {
+    const text = readDoc(docName);
+    if (text !== null) {
       checkScriptRefs(docName, text, scriptNames);
       checkPathRefs(docName, text);
     }
@@ -170,7 +191,7 @@ function run() {
     process.exit(1);
   }
 
-  console.log("[entry-doc-sync] 入口文档同步审计通过：正文逐字节一致，命令与路径引用均真实存在。");
+  console.log("[entry-doc-sync] 入口文档同步审计通过：正文逐字节一致，当前权威命令与路径引用均真实存在。");
   process.exit(0);
 }
 

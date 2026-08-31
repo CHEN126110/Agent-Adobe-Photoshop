@@ -10,6 +10,7 @@
 - `CurrentTask.md`：当前这轮任务的需求对齐卡
 - `Intake.md`：用户明确要求加入规划或后续处理的需求池
 - `Plan.md`：当前里程碑与阶段顺序
+- `../docs/project-master-plan.md`：跨阶段 SMART 路线；不拥有当前任务顺序
 - `Implement.md`：条件性执行参考；不能覆盖 `AGENTS.md` 的执行优先级
 - `Status.md`：当前事实状态
 - `Backlog.md`：待办项
@@ -76,3 +77,11 @@
 - `Backlog.md` 只保留当前队列和明确约束；`Decisions.md`、`Risks.md` 只保留仍有效的内容。
 - 不创建 `project-memory/archive/` 保存历史副本；需要历史时使用 Git。
 - 每次写回后优先运行 `npm run maintenance:planning-check` 和 `npm run maintenance:validate`，并检查 UTF-8、JSON parse 与 `git diff --check`。
+
+## SMART 阶段规则
+
+- `Prompt.md` 只保存稳定结果、边界与阶段治理原则；不展开每个阶段的实施清单。
+- `../docs/project-master-plan.md` 保存跨阶段目标，每阶段必须有基线、样本、目标值、时间盒、退出条件和 GMR 触发条件。
+- `Plan.md` 只展开当前激活阶段；未激活阶段不得以“当前主线”形式并列。
+- `project-state.json` 只投影当前任务和当前计划，不保存已完成的历史 `*Slice` 对象。
+- 时间盒到期但目标未达成时，状态保持未达成并复盘；不能通过改措辞或移动日期制造完成。

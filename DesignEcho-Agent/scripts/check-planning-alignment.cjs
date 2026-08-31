@@ -88,36 +88,52 @@ function extractFirstH2Card(text) {
   };
 }
 
+function countH2Sections(text) {
+  return [...text.matchAll(/^##\s+(.+)$/gm)].length;
+}
+
+function assertSingleH2(text, label) {
+  const count = countH2Sections(text);
+  if (count !== 1) {
+    throw new Error(`${label} must contain exactly one H2 section; found ${count}`);
+  }
+  return extractFirstH2Card(text);
+}
+
 function extractTaskId(title) {
   const match = title.match(/\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\d{3}\b/);
   return match ? match[0] : '';
 }
 
-function collectPlanningWarnings(currentCard, projectState) {
-  const warnings = [];
+function assertPlanningIdentity(currentCard, planCard, projectState) {
   const currentTaskId = extractTaskId(currentCard.title);
+  const currentPlanId = extractTaskId(planCard.title);
 
   if (!currentTaskId) {
-    warnings.push('CurrentTask first H2 title has no machine-readable task ID');
-    return warnings;
+    throw new Error('CurrentTask H2 title has no machine-readable task ID');
+  }
+  if (!currentPlanId) {
+    throw new Error('Plan H2 title has no machine-readable task ID');
   }
 
-  if (currentTaskId !== projectState.activeRequest.id) {
-    warnings.push(
-      `CurrentTask ${currentTaskId} differs from project-state activeRequest ${projectState.activeRequest.id}`
+  const identities = [
+    ['CurrentTask', currentTaskId],
+    ['Plan', currentPlanId],
+    ['project-state activeRequest', projectState.activeRequest.id],
+    ['project-state activePlan', projectState.activePlan.id]
+  ];
+  const mismatches = identities.filter(([, id]) => id !== currentTaskId);
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Current planning identities must match ${currentTaskId}: `
+      + identities.map(([label, id]) => `${label}=${id}`).join(', ')
     );
   }
-  if (currentTaskId !== projectState.activePlan.id) {
-    warnings.push(
-      `CurrentTask ${currentTaskId} differs from project-state activePlan ${projectState.activePlan.id}`
-    );
-  }
-
-  return warnings;
+  return currentTaskId;
 }
 
 function assertCurrentTask(text) {
-  const currentCard = extractFirstH2Card(text);
+  const currentCard = assertSingleH2(text, 'CurrentTask.md');
   [
     '目标',
     '当前事实',
@@ -137,6 +153,22 @@ function assertCurrentTask(text) {
     'CurrentTask.md first H2 card'
   );
   return currentCard;
+}
+
+function assertPlan(text) {
+  const planCard = assertSingleH2(text, 'Plan.md');
+  assertIncludes(text, 'SMART', 'Plan.md');
+  assertIncludes(text, '退出条件', 'Plan.md');
+  assertIncludes(text, 'docs/project-master-plan.md', 'Plan.md');
+  assertIncludes(text, 'docs/agent-capability-map.md', 'Plan.md');
+  return planCard;
+}
+
+function assertLineBudget(text, maxLines, label) {
+  const lineCount = text.split(/\r?\n/).length;
+  if (lineCount > maxLines) {
+    throw new Error(`${label} exceeds current-view line budget ${maxLines}; found ${lineCount}`);
+  }
 }
 
 function parseIntakeEntries(text) {
@@ -166,6 +198,7 @@ function assertIntake(text) {
   }
 
   let activeCount = 0;
+  let inProgressCount = 0;
   for (const entry of entries) {
     ['来源', '归属层级', '状态'].forEach((field) => {
       if (!readListValue(entry.body, field)) {
@@ -179,6 +212,10 @@ function assertIntake(text) {
     if (status === 'planned' || status === 'in_progress' || status === 'new' || status === 'triaged') {
       activeCount += 1;
     }
+    if (status === 'in_progress') inProgressCount += 1;
+    if (status === 'done' || status === 'rejected') {
+      throw new Error(`${entry.id} has terminal status ${status}; remove terminal Intake entries and use Git history`);
+    }
     const hasNextStep = Boolean(readListValue(entry.body, '下一步'));
     const hasBoundary = Boolean(readListValue(entry.body, '边界'));
     const hasEntered = Boolean(readListValue(entry.body, '已进入'));
@@ -189,6 +226,9 @@ function assertIntake(text) {
 
   if (activeCount === 0) {
     throw new Error('Intake.md must keep at least one active planning item');
+  }
+  if (inProgressCount > 1) {
+    throw new Error(`Intake.md may contain at most one in_progress item; found ${inProgressCount}`);
   }
 }
 
@@ -208,6 +248,10 @@ function assertProjectState(projectState) {
   assertNonEmptyString(projectState.activePlan.id, 'project-state.activePlan.id');
   assertNonEmptyString(projectState.activePlan.source, 'project-state.activePlan.source');
   assertNonEmptyStringArray(projectState.activePlan.steps, 'project-state.activePlan.steps');
+  const historicalSliceKeys = Object.keys(projectState).filter((key) => key === 'activeSlice' || key.endsWith('Slice'));
+  if (historicalSliceKeys.length > 0) {
+    throw new Error(`project-state must not retain historical Slice projections: ${historicalSliceKeys.join(', ')}`);
+  }
 }
 
 function assertMethodologyReferences(agentRoot) {
@@ -254,26 +298,35 @@ function main() {
   const agentRoot = path.join(root, 'DesignEcho-Agent');
 
   const currentTask = readText(agentRoot, 'project-memory/CurrentTask.md');
+  const plan = readText(agentRoot, 'project-memory/Plan.md');
+  const status = readText(agentRoot, 'project-memory/Status.md');
   const intake = readText(agentRoot, 'project-memory/Intake.md');
   const projectState = readJson(agentRoot, 'project-memory/project-state.json');
 
   const currentCard = assertCurrentTask(currentTask);
+  const planCard = assertPlan(plan);
+  assertLineBudget(currentTask, 250, 'CurrentTask.md');
+  assertLineBudget(plan, 250, 'Plan.md');
+  assertLineBudget(status, 300, 'Status.md');
   assertIntake(intake);
   assertProjectState(projectState);
   assertMethodologyReferences(agentRoot);
-  const warnings = collectPlanningWarnings(currentCard, projectState);
+  const currentPlanningId = assertPlanningIdentity(currentCard, planCard, projectState);
 
   console.log(JSON.stringify({
     success: true,
     checks: [
-      'CurrentTask first H2 card has the compact required sections',
+      'CurrentTask and Plan each have exactly one H2 and stay within current-view budgets',
+      'CurrentTask, Plan, activeRequest and activePlan identities match',
       'Intake planning pool has valid entries and statuses',
-      'project-state activeRequest and activePlan are present; semantic drift is reported as a warning',
+      'project-state activeRequest and activePlan are present and historical Slice projections are absent',
       'AGENTS and README references are aligned; Implement is explicitly conditional',
       'methodology and capability-map references are present'
     ],
-    warnings,
+    warnings: [],
     currentTask: currentCard.title,
+    currentPlan: planCard.title,
+    currentPlanningId,
     activeRequest: projectState.activeRequest.id,
     activePlan: projectState.activePlan.id,
     intakeCount: parseIntakeEntries(intake).length

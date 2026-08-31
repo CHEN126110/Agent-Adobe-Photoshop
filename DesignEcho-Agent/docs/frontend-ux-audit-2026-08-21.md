@@ -1,5 +1,10 @@
 # 前端交互与视觉审计（2026-08-21）
 
+> 文档类型：D 层历史 UX 静态审计。
+> 当前开发权限：不能直接指导当前 UI；命中问题须先在当前构建复现。
+> 适用范围：2026-08-21 的静态代码状态。
+> 不能覆盖：当前用户目标、CurrentTask、当前 UI 代码和真机观察。
+
 审计范围：三个前端面——① Electron 渲染进程 React UI（ChatPanel / DesignAgentWorkbench 等）；② 8766 WebView（`public/webview/index.html`，UXP 面板的实际视觉面）；③ UXP 面板宿主层（`DesignEcho-UXP/src/core/webview-panel-layout.ts`，全屏 webview 容器）。
 
 审计方式：**静态代码审读**（未真机运行验证）。每条缺陷标注证据位置与置信度：

@@ -68,7 +68,7 @@ Agent + Adobe Photoshop UXP 电商设计自动化工作区（主分支线：`cod
 
 - `DesignEcho-Agent/AGENTS.md`（Claude 也适用）：默认只读子项目规则、`project-memory/Prompt.md` 与 `project-memory/CurrentTask.md`；只有架构、排期、既有验证或历史决策确实相关时，才按需读取 OS、Plan、Status、Decisions、Risks 或专项文档。根规则定义工作区共同边界，子项目规则只能细化、不能否定根规则
 - `docs/long-horizon/`（`Prompt.md`/`Collaboration.md`/`Plan.md`/`Implement.md`/`Documentation.md`）是另一套借鉴 OpenAI 长程工作流博客的记忆脚手架，与 `project-memory/` 并存但**不是同一套**、也没有文档说明二者关系——改前先确认改的是哪一套，别记混
-- Agent / Harness / Design Kernel / Skill 的 owner 边界以 `project-memory/Prompt.md`「2026-08-21 Agent + Harness 边界裁决」为当前生效真相源（8 个语义 owner 表）；`docs/agent-harness-boundary-verdict-2026-08-18.md` 已自标历史稿，别再引用。该边界由 `npm run test:design-authorship-boundary`（60+ 条源码断言，已并入 maintenance:validate）自动守护
+- Agent / Harness / Design Kernel / Skill 的 owner 边界以 `project-memory/Prompt.md`「2026-08-21 Agent + Harness 边界裁决」为当前生效真相源（8 个语义 owner 表）；被其取代的 2026-08-18 历史判定稿已从工作树移除，需要考古时使用 Git。该边界由 `npm run test:design-authorship-boundary`（60+ 条源码断言，已并入 maintenance:validate）自动守护
 
 ## 常用命令
 

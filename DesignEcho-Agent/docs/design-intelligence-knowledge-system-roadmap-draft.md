@@ -1,5 +1,10 @@
 # DesignEcho Design Intelligence & Knowledge System 技术路线
 
+> 文档类型：C 层历史设计来源 / Draft，不是当前路线。
+> 当前开发权限：不能直接指导当前开发；源码引用只表示历史设计来源，不授予本文排期和成熟度权威。
+> 适用范围：Design Intelligence 数据结构、来源和治理思想。
+> 不能覆盖：Prompt、CurrentTask、Plan、Status、Design Agent OS 和当前生产代码；后续应抽取短小稳定 Contract 后再解除源码对 Draft 的依赖。
+
 > 文档状态：Draft v0.1
 > 适用项目：DesignEcho-Agent + DesignEcho-UXP
 > 目标：在不推翻现有 Agent / Photoshop 执行架构的前提下，逐阶段构建可持续维护、可追溯、可学习、可影响设计与创意的 Design Intelligence 系统。

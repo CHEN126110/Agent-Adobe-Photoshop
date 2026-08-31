@@ -1,5 +1,10 @@
 # DesignEcho Skill Standard
 
+> 文档类型：B 层 Skill Package 规范。
+> 当前开发权限：可以指导 Skill 声明、Provider、交互、执行器和评价接入。
+> 适用范围：可被 Agent 选择的业务 Skill，不包括原子 Tool 或通用 Agent 核心。
+> 不能覆盖：Prompt、Design Agent OS、TaskRun、Capability、Tool preflight、Photoshop 事务和 Release owner。
+
 ## 目标
 
 DesignEcho 的 skill 是 Agent 可选择的业务能力单元，不是固定模板脚本，也不是底层工具清单。
@@ -45,7 +50,7 @@ DesignEcho 借鉴以下原则：
 6. `description`：一句话说明能力边界，不夸大，不暗示万能。
 7. `whenToUse`：什么时候用。
 8. `whenNotToUse`：什么时候不用。用户可见工作流和高风险业务 skill 必须有。
-9. `routing`：自动路由相关元数据。可自动触发的 user-facing skill 必须有强信号、负信号和前置条件。
+9. `routing`：仅作兼容或模型候选提示的元数据；不得用关键词、文件名或正则自动绑定 Skill、裁剪能力面、创建等待点或取得执行权。
 10. `parameters`：输入参数契约。
 11. `output`：输出类型和输出说明。
 12. `requiredTools`：允许依赖的底层工具清单，可以为空数组，但不能缺失。
@@ -91,7 +96,7 @@ Skill 被调用前，Agent 至少要判断当前任务需要哪些证据。
 3. 项目上下文：项目目录、素材类型、输出目录。
 4. 素材证据：SKU 源文件、详情页模板、参考图、当前选择图片。
 5. 视觉证据：截图、缩略图、视觉洞察缓存或实时模型观察。
-6. 用户确认：涉及真实写入、批量导出、覆盖、真实模型成本时需要确认。
+6. 用户确认：只有用户独占事实、会改变用户可见业务结果的取舍、不可逆动作、覆盖或新增付费授权才需要；普通已委托的可逆 Photoshop 写入和常规导出不重复确认。
 
 缺少关键证据时，skill 应该返回可诊断的阻塞或澄清需求，而不是补默认值制造假成功。
 
@@ -109,7 +114,7 @@ Skill 被调用前，Agent 至少要判断当前任务需要哪些证据。
 
 ## 执行模式
 
-Skill 支持的模式应写进 `routing.supportedModes` 或参数契约。
+Skill 支持的模式以 Manifest /参数契约为准；`routing.supportedModes` 只作兼容提示，不是生产权限或执行 owner。
 
 推荐模式：
 
@@ -181,7 +186,7 @@ Skill 标准化不能停在声明完整。最终验收以真实效果为准。
 3. 必须有前置证据说明。
 4. 必须有模式边界。
 5. 必须有决策提示，说明相邻业务如何区分。
-6. 修改业务策略前必须遵守 `docs/business-skill-design-governance.md` 的用户 checkpoint。
+6. 修改会改变用户可见业务结果、默认交付规格或接受阈值的策略前，遵守 `docs/business-skill-design-governance.md` 的业务 checkpoint；技术路线、内部重构和保持输出不变的根因修复由工程 Agent负责，不把专业选择题交给用户。
 
 ## 反模式
 
@@ -208,5 +213,5 @@ Skill 标准化不能停在声明完整。最终验收以真实效果为准。
 当前阶段的机器检查入口是：
 
 ```bash
-npm run smoke:skill-standard
+npm run audit:skill-standard
 ```

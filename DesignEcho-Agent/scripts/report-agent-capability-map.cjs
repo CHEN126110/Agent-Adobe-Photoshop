@@ -35,12 +35,10 @@ const REQUIRED_SCRIPTS = [
   'maintenance:agent-architecture',
   'maintenance:project-cockpit',
   'maintenance:planning-check',
-  'smoke:design-agent-os:contracts',
-  'smoke:design-planner:mvp',
-  'smoke:layout-replication:completion',
-  'smoke:chat-ui:reference-replication:neutral',
-  'smoke:reference:neutral-text-layout-case',
-  'smoke:reference:neutral-text-pixel-bounds'
+  'maintenance:validate',
+  'audit:tools',
+  'audit:skill-standard',
+  'test:design-authorship-boundary'
 ];
 
 function run(command, args, cwd) {

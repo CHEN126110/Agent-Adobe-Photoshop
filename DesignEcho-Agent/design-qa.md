@@ -1,6 +1,11 @@
 # Design QA
 
-final_result: passed
+> 文档类型：D 层一次性 UI 验收记录。
+> 当前开发权限：不能直接指导当前 UI，也不能证明当前构建通过；截图和 `passed` 只对应当时样本。
+> 适用范围：追溯该次对话过程 UI 的人工验收。
+> 不能覆盖：CurrentTask、Status、当前代码和新的可见画面。
+
+historical_result: passed
 
 ## 验收对象
 

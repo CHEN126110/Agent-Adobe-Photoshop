@@ -1,4 +1,9 @@
-﻿# Design Planner MVP 实施计划
+# Design Planner MVP 实施计划
+
+> 文档类型：D 层历史实施计划。
+> 当前开发权限：不能直接指导当前 Planner；只用于追溯 AGENT-014 的早期目标。
+> 适用范围：2026-05-11 的 Planner MVP 设想和当时边界。
+> 不能覆盖：CurrentTask、Plan、Design Agent OS、当前 agentic / staged 裁决和当前代码。
 
 日期：2026-05-11
 

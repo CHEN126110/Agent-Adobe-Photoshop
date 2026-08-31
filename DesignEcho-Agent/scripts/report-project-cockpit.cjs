@@ -1905,7 +1905,7 @@ function buildCockpit(limit) {
         ? 'npm run maintenance:validate:agent-fast'
         : 'npm run maintenance:validate',
       fullValidation: 'npm run maintenance:validate',
-      localPreflight: 'npm run maintenance:preflight',
+      localPreflight: 'npm run maintenance:validate',
       boundaryCheck: 'npm run maintenance:change-boundaries:check',
       boundarySummary: 'npm run maintenance:change-boundaries',
       agentArchitecture: packageJson.scripts['maintenance:agent-architecture']

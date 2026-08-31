@@ -1,95 +1,79 @@
 # 模型设置与配置说明
 
-日期：2026-06-02
+> 文档类型：B 层当前操作说明。
+> 当前开发权限：可以指导模型配置与设置页维护。
+> 适用范围：Agent 主模型、Provider、能力元数据、思考强度和旧配置迁移。
+> 不能覆盖：`src/shared/config/models.config.ts`、真实 Provider 返回和当前用户选择。
 
-本文档说明 DesignEcho 当前模型配置、设置页选择和 Xiaomi MiMo 2.5 迁移边界。它只描述已经落到代码中的配置入口，不把未来计划写成已实现能力。
+更新日期：2026-08-31
 
-## 1. 配置真相源
+## 1. 当前模型结构
 
-模型清单的唯一真相源是：
+DesignEcho Agent 当前只有一个运行模型：`primaryModel`。
+
+该模型必须是可用于对话、支持视觉输入并符合当前 Agent 运行要求的多模态模型。目标理解、图片观察、设计判断、Tool 使用和写后视觉复核由同一个模型完成，不再维护独立的文本主模型与视觉专家模型。
+
+代码真相源：
 
 - `src/shared/config/models.config.ts`
 
-设置页、模型选择、provider 能力判断和 smoke 都应围绕这份配置展开。新增或下线模型时，优先改这里，再补对应迁移和 smoke。
+相关规则：
 
-当前任务模型桶是：
+1. `visualModel` 是旧双模型配置的兼容镜像；归一化后始终等于 `primaryModel`。新代码不得把它作为第二选择源。
+2. `preferredCloudModels` / `preferredLocalModels` 中的 `layoutAnalysis / textOptimize / visualAnalyze` 只为历史设置迁移保留，不是当前三个任务模型桶。
+3. 图片生成、Embedding、重排、音频或视频模型可以作为专门 Provider / Tool 使用，但不能被选为 Agent 主模型，除非模型目录明确声明它具备当前所需的对话和视觉能力。
+4. 模型名称不能自动授予视觉、Tool Calling 或思考强度能力；以模型目录和真实 Provider 能力为准。
 
-1. `layoutAnalysis`：逻辑、意图、规划、工具调用和 Photoshop 执行链。
-2. `textOptimize`：标题、卖点、文案改写和营销话术。
-3. `visualAnalyze`：参考图理解、图片内容理解和视觉结构分析。
+## 2. 设置页行为
 
-这三个桶是按任务选择模型，不代表三个模型已经形成固定流水线协作。
+设置页的 Agent 模型选择只写入 `primaryModel`，同时同步兼容字段 `visualModel`，防止旧版本读取到另一模型。
 
-## 2. Xiaomi MiMo 官方模型
+选择模型时应显示：
 
-官方 OpenAI 兼容地址：
+- Provider；
+- 是否为对话模型；
+- 是否支持视觉；
+- 是否支持 Tool Calling；
+- 是否允许用户选择 reasoning effort；
+- 缺少凭据或当前不可用的真实原因。
 
-- API Base URL：`https://api.xiaomimimo.com/v1`
-- Chat Completions：`/chat/completions`
-- 文档：`https://platform.xiaomimimo.com/docs/zh-CN/api/chat/openai-api`
-- 模型超参：`https://platform.xiaomimimo.com/docs/zh-CN/quick-start/model-hyperparameters`
+“已登记”“已安装”“能够出现在下拉列表”不等于实际可调用。设置页测试必须使用当前选择的精确模型和对应 Provider，不得回退到另一模型后宣称成功。
 
-当前只保留以下 Xiaomi 官方模型作为可选项：
+## 3. 思考模式与强度
 
-| 配置 ID | API model | 建议用途 |
-| --- | --- | --- |
-| `xiaomi-mimo-v2.5-pro` | `mimo-v2.5-pro` | 中文推理、规划、代码、Agent 任务、provider-native Web Search |
-| `xiaomi-mimo-v2.5` | `mimo-v2.5` | 全模态输入、参考图理解、视觉分析、长上下文 Agent 任务、provider-native Web Search |
+`reasoningEnabled` 表示是否启用当前模型支持的思考能力；`reasoningEffort` 只在模型目录明确声明可选档位时下发。
 
-已下线迁移的旧模型不要再出现在可选配置中：
+- 没有声明档位的模型忽略 `reasoningEffort`；
+- Provider 私有 thinking 不直接展示给用户；
+- 用户可见过程应是简短设计判断和真实动作，不是内部推理转储；
+- 固定 JSON、严格评审等特殊调用是否关闭思考，由对应调用契约决定，不能按模型名称散落分支。
 
-- `xiaomi-mimo-v2-pro` -> `xiaomi-mimo-v2.5-pro`
-- `xiaomi-mimo-v2-omni` -> `xiaomi-mimo-v2.5`
-- `openrouter-mimo-v2-pro` -> `openrouter-mimo-v2.5-pro`
+## 4. Provider 与密钥
 
-历史用户设置由 renderer store 的持久化迁移处理，避免旧偏好继续指向不可选模型。
+每个 Provider 只使用自己的凭据和 endpoint。缺少 Key、模型无访问权、额度不足、协议失败和网络错误必须分别报告，不能统一包装成“模型不可用”。
 
-## 3. Xiaomi 请求参数
+ChatGPT 订阅模型走独立的 Codex subscription 通道；普通 OpenAI-compatible Provider 走各自 adapter。订阅通道不是其它 Provider 的隐式 fallback。
 
-Xiaomi MiMo V2.5 系列官方推荐 `temperature=1.0`、`top_p=0.95`。当前官方 provider 请求会默认使用这组参数；如果调用方显式传入 `temperature`，保留调用方的 `temperature`，但 `top_p` 仍按官方推荐值发送。
+图片生成 Provider 的 Key 与 Agent 对话模型 Key 可以独立存在。图像生成成功也不证明 Agent 主模型具备视觉理解或 Tool Calling。
 
-Agent 工具调用和普通非流式调用默认发送：
+## 5. 旧配置迁移
 
-```json
-{
-  "temperature": 1.0,
-  "top_p": 0.95,
-  "thinking": { "type": "disabled" }
-}
-```
+加载历史设置时按以下规则归一化：
 
-这里默认关闭 Xiaomi 思考模式，是因为官方要求 Agent 多轮工具会话在开启思考模式时完整回传历史 `reasoning_content`。当前共享 OpenAI-compatible adapter 尚未把该字段作为多轮工具上下文持久化，直接开启会增加后续 400 错误和输出缺失风险。
+1. 有合法 `primaryModel` 时保留它；
+2. 没有 primary 时，可以从旧 `visualModel` 或旧视觉偏好中选择一个已确认可用于 Agent 的多模态对话模型；
+3. 归一化后同时写入相同的 `primaryModel` / `visualModel`；
+4. 旧三桶偏好继续保存只为兼容，不参与当前运行时模型路由；
+5. 明确不合格、下线或非对话模型不能因为历史偏好被恢复为主模型。
 
-## 4. 设置页行为
+## 6. 修改后的验证
 
-设置页包含两个相关区域：
+模型配置、设置页或 Provider dispatch 变更后至少执行：
 
-1. `API Key` 区域：只负责填写 provider key。Xiaomi MiMo 帮助入口应指向官方 OpenAI API 文档。
-2. `AI Models` 区域：分别选择 `layoutAnalysis / textOptimize / visualAnalyze` 三个任务模型桶。
-
-当任一任务桶选择 `xiaomi-*` 模型时，设置页会提示需要 Xiaomi MiMo API Key。没有配置 key 时，模型可以保留在设置中，但真实调用会失败并进入 provider 错误链路。
-
-## 5. Web Search 能力边界
-
-Xiaomi MiMo provider-native Web Search 只应在以下条件同时满足时启用：
-
-1. provider 是 `xiaomi`。
-2. API model 是 `mimo-v2.5-pro` 或 `mimo-v2.5`。
-3. 用户在设计知识设置中开启 Xiaomi Web Search。
-
-旧模型 `mimo-v2-pro`、`mimo-v2-omni` 以及未列入官方支持集的模型不能作为 Web Search 运行候选。
-
-官方 Web Search 文档说明流式响应首包会返回搜索来源；当前工具流路径已经能接收 Xiaomi OpenAI-compatible stream、`delta.reasoning_content`、`delta.annotations` 和最终 `usage.web_search_usage`。普通直接聊天是否走 provider token streaming 仍受前端 streaming policy 限制。
-
-## 6. 推荐验证命令
-
-模型配置或设置页变更后，至少运行：
-
-```bash
-npm run smoke:model-provider:xiaomi
-npm run smoke:provider-native:tools
-npm run smoke:model-selection:routing
-npm run smoke:design-knowledge:runtime-capability
-npm run smoke:design-knowledge:xiaomi-web-search-runtime
+```text
+npm run test:model-usage-classification
 npm run build:typecheck:renderer
+npm run maintenance:validate
 ```
+
+外部 Provider 可用性必须用明确授权的真实只读探针另行验证。自动测试、目录元数据和设置保存成功不等于当前账号真实可用。

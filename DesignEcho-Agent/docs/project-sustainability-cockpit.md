@@ -1,5 +1,10 @@
 # 项目驾驶舱与会话恢复入口
 
+> 文档类型：B 层只读维护说明。
+> 当前开发权限：可以指导恢复检查；不能决定当前任务或修改范围。
+> 适用范围：读取 `project-state.json`、Git 和维护报告形成当前概览。
+> 不能覆盖：CurrentTask、Plan、Status、当前代码和真实运行读回。
+
 ## 目的
 
 `maintenance:project-cockpit` 是一个只读恢复入口，用于在新会话、网络中断、任务切换或长时间开发后快速确认项目事实。
@@ -65,8 +70,8 @@ npm run maintenance:agent-architecture
    - 用于快速检查维护脚本、项目状态、边界、空白错误和乱码。
 4. `npm run maintenance:agent-architecture`
    - 用于判断 Agent 架构基础设施是缺失、MVP 成型还是完整成熟。
-5. `npm run maintenance:preflight`
-   - 用于提交或交付前的本地预检。
+5. `npm run maintenance:validate`
+   - 当前唯一完整核心回归入口；用于一个完整切片的提交前验收，不替代真实 Photoshop E2E。
 
 ## 设计边界
 

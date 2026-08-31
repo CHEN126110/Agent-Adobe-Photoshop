@@ -1,5 +1,10 @@
 # Design Intelligence 知识系统独立审计与 Provider 路线建议
 
+> 文档类型：D 层历史专项审计。
+> 当前开发权限：不能直接指导当前开发；问题须按当前代码重新核实。
+> 适用范围：知识系统早期 Phase 0–6 声明与 Provider 路线评估。
+> 不能覆盖：Prompt、CurrentTask、Plan、Status、Design Agent OS 和当前生产事实。
+
 结论很明确：**不能接受 Trae CN 当前“Phase 0–6 已完成”的说法。**
 
 更准确的工程状态是：

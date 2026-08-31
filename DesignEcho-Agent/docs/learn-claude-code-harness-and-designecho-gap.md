@@ -1,5 +1,10 @@
 # learn-claude-code Harness 框架 × DesignEcho 差距分析
 
+> 文档类型：D 层外部借鉴与历史差距分析。
+> 当前开发权限：不能直接指导实现；外部项目做法必须重新映射到当前 owner。
+> 适用范围：理解 Harness 原则和 2026-07-01 的 DesignEcho 差距。
+> 不能覆盖：Prompt、CurrentTask、Plan、Design Agent OS 和当前代码事实。
+
 > 来源：开源项目 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)（6.9万 star，"从0到1教 Agent Harness 工程"，12个已实现阶段 s01–s12）。
 > 本文 = 上半部分蒸馏其 harness 框架，下半部分逐要素映射回 DesignEcho 现状、指出短板与修复优先级。
 > 编制：2026-07-01。凡涉及 DesignEcho 代码的断言均带 file 依据；未核实处标注"待核实"。

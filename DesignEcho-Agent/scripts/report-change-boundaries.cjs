@@ -86,6 +86,7 @@ const BOUNDARIES = [
        'DesignEcho-Agent/scripts/audit-agent-simplification-ratchet.cjs',
        'DesignEcho-Agent/scripts/audit-main-runtime-dependencies.cjs',
        'DesignEcho-Agent/scripts/audit-tool-registry.cjs',
+       'DesignEcho-Agent/scripts/audit-entry-doc-sync.cjs',
        'DesignEcho-Agent/scripts/check-planning-alignment.cjs',
       'DesignEcho-Agent/scripts/check-workspace-dependency-integrity.cjs',
       'DesignEcho-Agent/scripts/verify-workspace-dependency-integrity.cjs',
@@ -341,6 +342,17 @@ const BOUNDARIES = [
     title: '工程规划文档',
     validation: ['manual review'],
     match: (entry) => /REFACTOR-PLAN\.md|project-master-plan|documentation-governance|design-agent-operating-system|design-agent-os-implementation-tree|design-knowledge-web-search-plan|ecommerce-single-canvas-design-knowledge-candidate|ecommerce-socks-design-skill-plan|layout-grid-design-knowledge|agent-foundation-completion-plan|agent-capability-map|agent-development-methodology|agent-architecture(\.md|-system-review\.md)|design-agent-(execution-plan|research-and-roadmap|development-knowledge-base)|design-planner-mvp-plan/.test(entry.filePath)
+  },
+  {
+    id: 'documentation-governance',
+    title: '文档真相源、历史资料与操作说明',
+    validation: [
+      'npm run maintenance:planning-check',
+      'npm run audit:entry-doc-sync',
+      'npm run check:repository-encoding',
+      'git diff --check'
+    ],
+    match: (entry) => /\.md$/.test(entry.filePath)
   },
   {
     id: 'other-source',

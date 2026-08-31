@@ -1,5 +1,10 @@
 # Business Skill Design Governance
 
+> Document type: B-layer business Skill governance.
+> Current authority: governs user-visible business behavior and Skill package boundaries; it does not choose internal technical implementation.
+> Scope: main-image, detail-page and SKU Skill overlays.
+> Cannot override: Prompt, CurrentTask, Design Agent OS, TaskRun, Capability, Tool preflight, Photoshop transaction or Release ownership.
+
 ## Purpose
 
 This document is the governance gate for the three user-facing commerce design skills:
@@ -31,7 +36,7 @@ Rules:
 
 ## User Checkpoint Rule
 
-Before changing the business design strategy or user-visible defaults for `main-image-design`, `detail-page-design` or `sku-batch`, the developer/Agent must tell the user first and align on the intended design direction. This checkpoint does not block shared Harness infrastructure, read-only contract convergence, static audits or bug fixes that preserve business output and Photoshop write semantics.
+Before changing a Skill's user-visible business result, default deliverable specification, brand interpretation or acceptance threshold, the developer/Agent must tell the user and align on that business impact. Internal architecture, refactoring, compatibility, tests and root-cause fixes that preserve user-visible behavior remain engineering decisions and must not be handed back to the user as technical choices.
 
 This applies to changes in:
 
@@ -97,9 +102,9 @@ Every future change to these three skills must be grounded in the same Design Ag
 
 ## Unified Pre-Change Checkpoint
 
-Before changing business strategy for `main-image-design`, `detail-page-design` or `sku-batch`, run the implementation checkpoint and treat it as a gate:
+Before changing user-visible business behavior for `main-image-design`, `detail-page-design` or `sku-batch`, run the implementation checkpoint and treat it as a gate:
 
-1. user checkpoint: the user has explicitly agreed to enter this skill's business strategy design.
+1. user checkpoint: the user has explicitly agreed to the affected visible result, default, specification or acceptance behavior; agreement to an internal framework or code route is not required.
 2. design standards: the expected visual and platform rules are written down.
 3. knowledge or recipe source: the design rules come from user input, curated project knowledge, verified docs or reviewed recipes.
 4. visual evidence plan: the skill knows which image, canvas, selection or project evidence it will use.

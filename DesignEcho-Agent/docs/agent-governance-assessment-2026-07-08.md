@@ -1,5 +1,10 @@
 # DesignEcho 专属治理报告（2026-07-08）
 
+> 文档类型：D 层历史治理审计。
+> 当前开发权限：不能直接指导当前开发；只用于追溯当时诊断和已吸收教训。
+> 适用范围：2026-07-08 代码与运行状态。
+> 不能覆盖：Prompt、CurrentTask、Plan、Status、Design Agent OS、当前代码和真实运行读回。
+
 > 对象：已上线系统 DesignEcho（Electron 主程序 `DesignEcho-Agent` 渲染进程跑 Agent 循环 + Photoshop UXP 插件 `DesignEcho-UXP`，经 MCP host `127.0.0.1:8768` 暴露 PS 工具）。
 > 定位：这是对既有系统的**治疗方案**，不是绿地重建。V0/V1/V2 是治疗阶段。
 > 已确诊系统病（本报告在此之上深入，不重复发现）：

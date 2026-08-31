@@ -193,7 +193,7 @@ npm run maintenance:reference-capture-plan -- --id rr-002-neutral-quality-card-t
 DESIGNECHO_LIVE_REFERENCE_REPLICATION_UI=1 \
 DESIGNECHO_LIVE_REFERENCE_REPLICATION_REAL_PHOTOSHOP=1 \
 DESIGNECHO_LIVE_REFERENCE_REPLICATION_TAKEOVER=1 \
-npm run benchmark:reference-replication:capture-live
+npm run benchmark:reference-replication:run-live-evidence-pipeline
 ```
 
 该 live 命令会拒绝接管已经占用默认端口的桌面端，不会杀进程。截图采集成功只表示拿到了真实输出截图，不等于人工评分通过，也不等于高保真复刻完成。

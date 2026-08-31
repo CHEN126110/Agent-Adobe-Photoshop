@@ -2,9 +2,18 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-115 当前文档使用单一投影，长期路线使用分阶段 SMART，不再保存并行历史主线
+
+- 状态：active
+- 决定：`Prompt.md` 只保存稳定目标与边界；`CurrentTask.md` 只保留一张当前任务卡；`Plan.md` 只保留一个激活阶段；`Status.md` 与 `project-state.json` 只保存当前事实投影；跨阶段目标统一进入 `docs/project-master-plan.md` 的 SMART 路线。
+- 原因：整理前 CurrentTask、Plan、Status 和 project-state 分别指向不同任务，现有检查只 warning，历史流水账已经成为第二计划系统并误导后续开发。
+- 执行边界：SMART 是研发治理方法，不进入 Agent Prompt、Runtime Stage、Harness Gate 或固定设计流程；历史由 Git / Run Record 查询。仍被源码引用的研究稿先降级并抽取稳定 Contract，不因文档过大直接删除。
+- 验收：CurrentTask / Plan 各 1 个 H2；CurrentTask、Plan、activeRequest、activePlan ID 一致；当前权威文档命令真实存在；规划漂移直接失败。
+- 取代：旧 Plan / CurrentTask / Status 中按日期累积的多个“当前主线”和 project-state 历史 `*Slice` 投影。
+
 ## D-114 首写对象 revision 不变事实由 baseline owner 计算并贯穿 v2 收据
 
-- 状态：已采用；r35 真实失败与官方 reconciliation 完成，代码、producer/consumer 集成攻击、Design Reliability、相邻边界、Main /Renderer 类型、Agent /UXP production build 与提交前唯一完整核心 65/65 通过；独立提交、clean identities 与 r36 待完成。
+- 状态：active；实现与验证已进入当前提交历史，r35 已完成官方 reconciliation；修复后的 fresh 正式 Case 仍待在 S1 可靠性阶段统一复验。
 - 触发事实：r35 的 D-113 生命周期、同 revision PSD/JPG、内部 Completion 与 6 个用户文档保护均真实通过，但外层 Reliability 报“首次 Photoshop 写入隔离基线收据与对象级文档归属或 Runtime Build 事实不一致”。源码对账证明 assessment 已计算 `preexistingDocumentRevisionsUnchanged`，receipt producer 没有序列化，而 consumer 强制要求 passed 值为 true。
 - 决定：在现有 `GuardedPhotoshopExecutionBaseline` 中保存 assessment 的布尔事实，并由 `readGuardedPhotoshopExecutionBaselineReceipt()` 原样投影。错误首写工具在 Host dispatch 前可恢复时清空该值并重新观察；真实对象 revision 漂移投影 false 并保持 blocked。v2 版本不升级，因为 consumer 与既有手写 v2 fixture 已把该字段视为 intended contract；本修复是在 producer 补齐既有契约，不改变语义。
 - 测试裁决：不能再只分别测试 producer 和 consumer。Design Reliability 必须用 producer 实际生成且完成对账的 receipt 直接调用 consumer validator，并保留 true /false 攻击断言。手写 receipt 只覆盖其它协议组合，不得作为本字段唯一绿色证据。
@@ -13,7 +22,7 @@
 
 ## D-113 本 TaskRun 新建文档按对象逐个结算，Harness 不替 Agent 关闭或改稿
 
-- 状态：已采用并完成代码与提交前验证阶段；D-112 提交、clean identities、65/65 与 r34 真实归因已完成，D-113 运行事实 /业务 /Runtime /作者权 /工具 /Executor /Capability /简化棘轮、类型、Agent production build 与唯一完整核心 65/65 通过；独立提交、clean identities 与 r35 待验证。
+- 状态：active；实现已进入当前提交历史，r35 后续证明单文档生命周期与同版本 PSD/JPG 可以闭合；多候选、失败恢复和商业质量继续由 S1 / S2 多样本验证。
 - 触发事实：r34 的 DeepSeek Agent 创建 v1 后发现对比度问题，又调用 `composeDesign(document.mode=new)` 创建 v2；v2 的同 revision PSD/JPG 与 Profile Completion 均通过，但 v1 仍未保存、dirty，使外层 Attempt 正确失败。D-112 paired delivery 没有失效，缺口是 Completion 只看最终目标，没有核对本 TaskRun 创建集合。
 - 决定：同一 TaskRun 的每个受信任 `document_creation` 对象必须在再次新建或完成前进入终态：按当前交付范围取得与最新内容 revision 对应的真实保存 /导出收据，或由 Agent 显式 `closeDocument(documentId)` 成功关闭。前一对象未结算时，通用执行 preflight 拒绝下一次 `createDocument` /`composeDesign(new)`；`composeDesign(active)` 与结算后的后续新建不受阻。
 - 作者权与安全：Harness 只报告对象未结算事实，不自动调用关闭、不从文件名 /品类 /助手文字选择弃稿、不把 `new` 改成 `active`。破坏性关闭继续使用既有 HITL；模型决定原地修订、交付当前候选或请求关闭。多文档任务按顺序逐个结算，不被全局单文档上限误伤。

@@ -1,5 +1,10 @@
 # 架构优化方案 × 现有代码落地映射
 
+> 文档类型：D 层历史代码映射。
+> 当前开发权限：不能直接指导当前开发；commit、行号、工具数量和命令均可能过时。
+> 适用范围：commit `22c20bba` 附近的架构对照。
+> 不能覆盖：CurrentTask、Plan、Status、Design Agent OS、当前代码和真实运行。
+
 > 对照文档：`docs/design-agent-architecture-optimization-v1.md`（优化方案 V1.0）与 `docs/design-agent-blueprint-a0-a9.md`（A0–A9 权威概念蓝图）。
 > 本文回答一个问题：方案里的每一件事，仓库现状是"已建成 / 部分建成 / 真没有"，落地时改哪里。
 > 全部映射均实读代码核实（file:line，基于 commit 22c20bba 工作区）；行号随代码演进会漂移，符号名为准。

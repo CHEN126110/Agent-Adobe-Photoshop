@@ -108,7 +108,7 @@
     - `MattingService` now projects that box into final mask space and constrains the final mask to the user selection after inference
     - this is now a real selection-constrained postprocess path, but still not true selection-guided model inference
 27. Audited the `DesignEcho-UXP` webpack performance warning:
-    - added `C:\UXP\2.0\DesignEcho-Agent\docs\uxp-webpack-warning-review.md`
+    - historical note: a one-time UXP webpack warning review was added here and has since been removed from the active worktree; use Git for archaeology
     - confirmed the warning is real (`runtime.js` about 499727 bytes)
     - confirmed the main source is our own single-entry eager tool architecture (`src/index.ts -> ToolRegistry -> full tool registration`)
     - confirmed the practical risk is UXP cold-start / first-open overhead, not web download latency
@@ -282,7 +282,7 @@ For the matting performance track:
 4. only after that evaluate queueing and deeper binary-protocol cleanup
 5. use `C:\UXP\2.0\DesignEcho-Agent\docs\matting-implementation-and-reliability-review.md` as the current truth source before changing the matting stack further
 6. treat selection matting as “selection-constrained postprocess” for now; do not describe it as true selection-guided inference until the export/inference path changes
-7. use `C:\UXP\2.0\DesignEcho-Agent\docs\uxp-webpack-warning-review.md` as the truth source before making any UXP bundle-size or startup-performance changes
+7. before UXP bundle-size or startup-performance changes, inspect the current build and package configuration; the former one-time warning review is historical and no longer an active truth source
 8. use `C:\UXP\2.0\DesignEcho-Agent\docs\matting-performance-review-and-plan.md` as the truth source before the next round of matting optimizations
 
 ## Update rule
