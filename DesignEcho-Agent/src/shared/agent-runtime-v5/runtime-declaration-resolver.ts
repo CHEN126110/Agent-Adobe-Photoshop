@@ -74,6 +74,19 @@ export interface RuntimeDeclarationProfileCatalog {
     excludedMethodTaskTypes: string[];
 }
 
+/**
+ * 一个用户级 workflow entry 可供 Agent 声明的 Artifact Profile family。
+ *
+ * workflow entry 只是选择手柄；taskType 与 workMode 才组成真正的 Runtime Profile。
+ * legacy id 和 method Manifest 不参与这个投影，blocked Profile 也不会被提示给模型。
+ */
+export interface RuntimeWorkflowEntryDeclarationFamily {
+    workflowEntrySkillId: string;
+    taskType: string;
+    supportedWorkModes: RuntimeDesignWorkMode[];
+    profileIds: string[];
+}
+
 export interface ResolveRuntimeDeclarationInput {
     taskType?: unknown;
     workMode?: unknown;
@@ -387,6 +400,46 @@ export function listDeclarableRuntimeWorkModes(
             profile.taskType === normalizedTaskType && profile.workMode === workMode
         ))
     ));
+}
+
+export function listRuntimeWorkflowEntryDeclarationFamilies(
+    workflowEntrySkillId: unknown,
+    catalog: RuntimeDeclarationProfileCatalog = buildRuntimeDeclarationProfileCatalog()
+): RuntimeWorkflowEntryDeclarationFamily[] {
+    const normalizedSkillId = normalize(workflowEntrySkillId);
+    if (!normalizedSkillId) return [];
+    const taskTypes = unique(
+        listSkillManifests()
+            .filter((manifest) => (
+                manifest.planning_role !== 'method'
+                && (manifest.workflow_entry_skill_ids || []).includes(normalizedSkillId)
+            ))
+            .map((manifest) => manifest.task_type)
+    );
+    return taskTypes.map((taskType) => {
+        const profiles = catalog.declarableProfiles.filter((profile) => profile.taskType === taskType);
+        if (profiles.length === 0) return undefined;
+        return {
+            workflowEntrySkillId: normalizedSkillId,
+            taskType,
+            supportedWorkModes: RUNTIME_DESIGN_WORK_MODES.filter((workMode) => (
+                profiles.some((profile) => profile.workMode === workMode)
+            )),
+            profileIds: unique(profiles.map((profile) => profile.profileId))
+        };
+    }).filter((family): family is RuntimeWorkflowEntryDeclarationFamily => Boolean(family));
+}
+
+/**
+ * 只有一个 Artifact taskType 时返回 family；workMode 仍由 Agent 显式选择。
+ * 多 Profile Package（例如 SKU）保持未选择，绝不按 Manifest 注册顺序取首项。
+ */
+export function resolveRuntimeWorkflowEntryDeclarationFamily(
+    workflowEntrySkillId: unknown,
+    catalog?: RuntimeDeclarationProfileCatalog
+): RuntimeWorkflowEntryDeclarationFamily | undefined {
+    const families = listRuntimeWorkflowEntryDeclarationFamilies(workflowEntrySkillId, catalog);
+    return families.length === 1 ? families[0] : undefined;
 }
 
 function buildRepairResolution(

@@ -201,6 +201,9 @@ import {
     type AgentTaskRuntimeContractBundle
 } from '../../../shared/agent-runtime-v5/runtime-contract-bundle';
 import {
+    buildRuntimeDeclarationProfileCatalog,
+    listRuntimeWorkflowEntryDeclarationFamilies,
+    resolveRuntimeWorkflowEntryDeclarationFamily,
     resolveRuntimeDeclarationForAgentTask,
     type RuntimeDeclarationRepairCode,
     type RuntimeDeclarationResolution
@@ -3168,14 +3171,24 @@ function requiresResolvedInteractionOwner(params?: Record<string, any>): boolean
         && controlPlane.executionAuthorization === 'confirmed_tool_required';
 }
 
+function canOfferRecommendedRuntimeOwner(
+    params: Record<string, any> | undefined,
+    recommendation: { mode?: string } | undefined
+): boolean {
+    const controlPlane = params?.agentIntentControlPlane as Partial<AgentIntentControlPlaneDecision> | undefined;
+    return recommendation?.mode === 'execute'
+        && controlPlane?.requestKind === 'autonomous_execution'
+        && requiresResolvedInteractionOwner(params);
+}
+
 function buildUnresolvedInteractionOwnerMessage(params?: Record<string, any>): string {
     const recommendation = isSkillRoutingRecommendation(params?.skillRoutingRecommendation)
         ? params?.skillRoutingRecommendation
         : undefined;
-    const candidateTaskType = recommendation
-        ? findManifestTaskTypeForSkill(recommendation.skillId)
+    const candidateFamily = recommendation && canOfferRecommendedRuntimeOwner(params, recommendation)
+        ? resolveRuntimeWorkflowEntryDeclarationFamily(recommendation.skillId)
         : undefined;
-    if (candidateTaskType && recommendation) {
+    if (candidateFamily && recommendation) {
         const skill = getSkillById(recommendation.skillId);
         return [
             '这项设计需要由明确的专业工作方式负责，通用表单不能代替它。',
@@ -3230,9 +3243,21 @@ function resolveProviderOwnedInteractionSkillIds(
  * Manifest 才提供规格化生产阶段。两类都必须先让模型看见，才能由它理解任务后绑定。
  */
 function buildWorkflowMenuLines(): string[] {
-    const items = listSkillManifests()
-        .map((manifest) => {
-            const entrySkillId = (manifest.workflow_entry_skill_ids || [])[0] || (manifest.legacy_skill_ids || [])[0];
+    const catalog = buildRuntimeDeclarationProfileCatalog();
+    const manifestsByTaskType = new Map(
+        listSkillManifests().map((manifest) => [manifest.task_type, manifest])
+    );
+    const taskTypes = Array.from(new Set(
+        catalog.declarableProfiles.map((profile) => profile.taskType)
+    ));
+    const items = taskTypes
+        .map((taskType) => {
+            const profiles = catalog.declarableProfiles.filter((profile) => (
+                profile.taskType === taskType
+            ));
+            const manifest = manifestsByTaskType.get(taskType);
+            if (!manifest) return '';
+            const entrySkillId = (manifest.workflow_entry_skill_ids || [])[0];
             const entrySkill = entrySkillId ? getSkillById(entrySkillId) : undefined;
             const whenToUse = Array.isArray(entrySkill?.whenToUse) ? String(entrySkill?.whenToUse[0] || '').trim() : '';
             // Task Profile 是任务语义与交付角色的唯一 crosswalk。模型在首次选择 Profile
@@ -3243,32 +3268,27 @@ function buildWorkflowMenuLines(): string[] {
             ).trim();
             const declarationGuidance = taskProfileGuidance || whenToUse;
             const label = String(manifest.display_name || manifest.skill_id || '').trim();
-            if (!label || !manifest.task_type) return '';
+            if (!label) return '';
             const executionMeaning = manifest.execution_model === 'agentic'
                 ? '开放创意：绑定专业方法后仍由你自主设计'
                 : '规格化生产：绑定后按可验证阶段执行';
-            return `  · ${label}（Profile：${manifest.task_type}；${executionMeaning}）${declarationGuidance ? `——${declarationGuidance.slice(0, 420)}` : ''}`;
+            const supportedWorkModes = Array.from(new Set(
+                profiles.map((profile) => profile.workMode).filter(Boolean)
+            ));
+            const workModeText = supportedWorkModes.length > 0
+                ? `；workMode：${supportedWorkModes.join('/')}`
+                : '';
+            return `  · ${label}（taskType：${taskType}${workModeText}；${executionMeaning}）${declarationGuidance ? `——${declarationGuidance.slice(0, 420)}` : ''}`;
         })
         .filter(Boolean);
     if (items.length === 0) return [];
     return [
-        '可选的专业工作方法：先由你判断当前明确委托的交付物是否匹配。当前工具列表已有匹配 Skill 时直接调用 Skill。只有系统在下方明确给出对应 Profile、且当前工具列表没有匹配 Skill 时，才在首次专业写入前调用 declareDesignIntent({ taskTypeId: <Profile> }) 记录并绑定你自己的判断，不要绕过后再以通用流程冒充该交付物已完成。绑定只提供方法、能力范围、预算和验收口径，不替你决定素材、构图、文案或审美；只是提问、查看或把该领域当来源素材时不要绑定。',
+        '可选的专业工作方法：先由你判断当前明确委托的交付物是否匹配。当前工具列表已有匹配 Skill 时直接调用 Skill。只有系统明确给出可声明的 taskType、且当前工具列表没有匹配 Skill 时，才在首次专业写入前调用 declareDesignIntent；存在 workMode 时必须同时提交你根据用户目标判断出的 workMode。不要绕过后再以通用流程冒充该交付物已完成。绑定只提供方法、能力范围、预算和验收口径，不替你决定素材、构图、文案或审美；只是提问、查看或把该领域当来源素材时不要绑定。',
         ...items
     ];
 }
 
-/** 候选工作流对应的 Runtime Profile（task_type）：给模型一个可直接绑定的 id，而不是抽象的「结构化设计意图」。 */
-function findManifestTaskTypeForSkill(skillId: string): string | undefined {
-    const normalized = String(skillId || '').trim();
-    if (!normalized) return undefined;
-    const manifest = listSkillManifests().find((item) => (
-        (item.legacy_skill_ids || []).includes(normalized)
-        || (item.workflow_entry_skill_ids || []).includes(normalized)
-    ));
-    return manifest?.task_type ? String(manifest.task_type) : undefined;
-}
-
-function buildBaseRuntimeContext(params: Record<string, any>, context?: any): string {
+export function buildBaseRuntimeContext(params: Record<string, any>, context?: any): string {
     const lines: string[] = [];
     if (areSkillBridgesForbidden(params)) {
         lines.push(
@@ -3301,23 +3321,51 @@ function buildBaseRuntimeContext(params: Record<string, any>, context?: any): st
     const skillRoutingRecommendation = isSkillRoutingRecommendation(params.skillRoutingRecommendation)
         ? params.skillRoutingRecommendation
         : undefined;
+    const selectedPackageFamilies = selectedSkillHandoff && !params?.declaredTaskType
+        ? listRuntimeWorkflowEntryDeclarationFamilies(selectedSkillHandoff.skillId)
+        : [];
+    const selectedPackageRequiresProfile = selectedPackageFamilies.length > 1;
     const designDocumentRoleContext = buildDesignDocumentRoleContext({
         userInput: getAutonomousTaskText(params, context),
         currentDocumentName: resolveCurrentPhotoshopDocumentName(context),
         hasCurrentDocument: resolveCurrentPhotoshopDocumentPresence(context) === true,
         workMode: normalizeRuntimeDesignWorkMode(params?.declaredWorkMode)
     });
-    if (selectedSkillHandoff) {
+    if (selectedSkillHandoff && selectedPackageRequiresProfile) {
+        const packageProfileLines = selectedPackageFamilies.map((family) => {
+            const workModeText = family.supportedWorkModes.length > 0
+                ? `；workMode：${family.supportedWorkModes.join('/')}`
+                : '';
+            return `  · taskType：${family.taskType}${workModeText}`;
+        });
+        lines.push(
+            `用户已经选择专业能力包「${selectedSkillHandoff.skillId}」，但它包含多个交付 Profile。`,
+            '- 这只确定了能力包，没有替你选择具体交付物。请根据用户当前目标从下方 taskType 中明确选择；不要按列表顺序默认使用第一个。',
+            ...packageProfileLines
+        );
+    } else if (selectedSkillHandoff) {
         lines.push(
             `当前任务已经选用专业工作方法「${selectedSkillHandoff.skillId}」。`,
             '- 规则明确的生产步骤优先交给它；项目事实、视觉判断和局部设计修正仍由你负责。',
             '- 它受阻或当前稿件需要修正时，使用现在可用的可逆编辑继续处理，再回到原任务。'
         );
     }
-    // 意图理解交给模型：没有 Runtime owner 时，把全部 Manifest 菜单给它自己选。
+    const recommendedDeclarationFamily = skillRoutingRecommendation
+        && canOfferRecommendedRuntimeOwner(params, skillRoutingRecommendation)
+        ? resolveRuntimeWorkflowEntryDeclarationFamily(skillRoutingRecommendation.skillId)
+        : undefined;
+    // 意图理解交给模型：没有 Runtime owner 时，把 Manifest 菜单给它自己选。唯一候选
+    // 已经把精确 Profile 单独投影到下方，不再重复整份菜单；一个 Skill 对应多个 Profile
+    //（例如 SKU 包）时保持完整菜单，不能按注册顺序偷偷取第一个。
     // 如果只列 staged，agentic 交付物在 canonical 正则未命中时会被 Harness 隐身，
     // 模型只能退化成通用工具循环，既拿不到专业方法也拿不到正确交付契约。
-    if (!selectedSkillHandoff && !areSkillBridgesForbidden(params) && !params?.declaredTaskType) {
+    if (
+        !selectedSkillHandoff
+        && !areSkillBridgesForbidden(params)
+        && !params?.declaredTaskType
+        && requiresResolvedInteractionOwner(params)
+        && !recommendedDeclarationFamily
+    ) {
         lines.push(...buildWorkflowMenuLines());
     }
     if (
@@ -3328,18 +3376,22 @@ function buildBaseRuntimeContext(params: Record<string, any>, context?: any): st
         const recommendationRequiresRuntimeOwner = isManifestOwnedSkill(
             skillRoutingRecommendation.skillId
         );
-        if (recommendationRequiresRuntimeOwner && !selectedSkillHandoff) {
+        if (recommendationRequiresRuntimeOwner && !selectedSkillHandoff && recommendedDeclarationFamily) {
             // recommendation 只提供候选身份：若 Skill 已在当前工具列表中，模型直接调用；只有
             // 系统给出了精确 Profile 且 Skill 不可见时，才允许用 declareDesignIntent 原地绑定。
-            const candidateTaskType = findManifestTaskTypeForSkill(skillRoutingRecommendation.skillId);
+            const candidateTaskType = recommendedDeclarationFamily.taskType;
+            const supportedWorkModes = recommendedDeclarationFamily.supportedWorkModes;
+            const declarationExample = supportedWorkModes.length > 0
+                ? `declareDesignIntent({ taskTypeId: "${candidateTaskType}", workMode: "<从 ${supportedWorkModes.join(' / ')} 中选择>" })`
+                : `declareDesignIntent({ taskTypeId: "${candidateTaskType}" })`;
             lines.push(
                 `候选工作流是「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」${candidateTaskType ? `（Profile：${candidateTaskType}）` : ''}。`,
                 candidateTaskType
-                    ? `- 如果用户要的就是这类交付物：当前工具列表已有匹配 Skill 就直接调用；只有没有匹配 Skill 时，才使用系统给出的 Profile 调用 declareDesignIntent({ taskTypeId: "${candidateTaskType}" }) 原地绑定。任务身份未绑定前，不要创建阻塞式通用卡片或申请该领域的内部原子能力。`
-                    : '- 如果它确实拥有当前交付物且当前工具列表已有匹配 Skill，直接调用 Skill；没有系统明确给出的 Profile 时不要自行调用 declareDesignIntent。',
+                    ? `- 这只是候选，是否匹配仍由你判断。如果用户明确委托的就是这类交付物，请现在调用 ${declarationExample} 记录你的完整选择；workMode 必须来自你对“新建设计、重设计还是局部编辑”的理解，Harness 不代选。不要等到可选素材调查或首次写入之后。必要的项目或当前文档身份读取可以作为同一回合的只读调用。`
+                    : '- 这个 Skill 对应多个 Profile，系统没有替你选其中一个。请根据上方完整 Profile 菜单判断；没有精确 Profile 时不要猜测 declareDesignIntent 参数。',
                 '- 如果用户要的只是把它当来源素材或并不匹配，就忽略这项建议，用当前普通设计能力继续完成，不要停在只读调查。'
             );
-        } else {
+        } else if (!recommendationRequiresRuntimeOwner) {
             lines.push(
                 `当前任务可能适合「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」。`,
                 '- 先确认它与用户真正要做的事相符；相符就直接使用，并带上已经确认的素材和约束，不重复规划它内部的工作。',
@@ -3754,6 +3806,15 @@ export function resolveAutonomousCapabilityRuntime(
         || explicitStructuredSkillId
         || runResumeContractBinding?.selectedSkillId
         || undefined;
+    const structuredManifestSelection = resolveSkillRuntimeManifestSelection({
+        skillId: structuredSkillId,
+        taskType: structuredTaskType
+    });
+    const packageProfileSelectionRequired = Boolean(
+        !structuredTaskType
+        && structuredManifestSelection.status === 'conflict'
+        && structuredManifestSelection.conflictReason === 'workflow_entry_profile_ambiguous'
+    );
     const resolvedContractCandidate = handoffInvalid
         || handoffConflictsWithDeclaration
         || runResumeBindingInvalid
@@ -3791,6 +3852,7 @@ export function resolveAutonomousCapabilityRuntime(
         selectedSkillId: structuredSkillId,
         selectedTaskType: structuredTaskType,
         manifestSkillId: resolvedContractBundle?.manifest.skill_id,
+        profileSelectionRequired: packageProfileSelectionRequired,
         selectionSource: runtimeContractSelectionSource,
         selectionExpected: rawHandoff !== undefined
             || rawRunResumeContractBinding !== undefined

@@ -163,8 +163,10 @@ requireToken('executor', "intentControlPlane?.toolScope !== 'none'", 'A no-tool 
 requireToken('executor', 'candidateTools.some((tool) => tool.name === skillRoutingRecommendation.skillId)', 'A recommendation must be exposed only when its Skill provider survives the current deny policy.');
 requireToken('session', 'RECOMMENDED_SKILL_BOOTSTRAP_CAPABILITY_IDS', 'Unique Skill recommendation must reuse one generic readonly bootstrap seed.');
 requireToken('session', 'buildRecommendedSkillFastPathBaseline', 'Unique Skill recommendation must have one stateless baseline builder.');
+forbidPattern('session', /RECOMMENDED_RUNTIME_OWNER_SELECTION_CAPABILITY_IDS|buildRecommendedRuntimeOwnerSelectionBaseline/, 'A Manifest recommendation must not shrink the Agent Tool surface before the model selects an owner.');
 requireToken('executor', 'const useRecommendedSkillFastPath = Boolean(', 'Executor must select the recommendation fast path without a business branch.');
-requireToken('executor', 'baselineCapabilityIds = buildRecommendedSkillFastPathBaseline(', 'Generic advisory recommendations must keep the compact Skill fast-path baseline.');
+requireToken('executor', '&& exposeSkillRoutingRecommendation', 'Only a visible non-Manifest Skill may use the compact recommendation baseline.');
+requireToken('executor', 'baselineCapabilityIds = buildRecommendedSkillFastPathBaseline(', 'Non-Manifest advisory recommendations must keep the compact Skill fast-path baseline.');
 requireToken('executor', 'listSkillManifests().flatMap(', 'The pre-Manifest deny set must be derived from the Runtime Manifest catalog, not routing metadata.');
 requireToken('executor', 'manifest.workflow_entry_skill_ids', 'Workflow entries must remain unavailable until their owning Manifest is selected.');
 requireToken('executor', 'manifestRequiredCapabilityIds,', 'The complete pre-Manifest owner deny set must be passed into the Capability Session.');

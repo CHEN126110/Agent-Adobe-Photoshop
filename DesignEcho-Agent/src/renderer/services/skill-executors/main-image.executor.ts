@@ -18,7 +18,10 @@ import { getPhotoshopConnectionStatus } from '../mcp-host.client';
 import { emitSkillStep } from './skill-step-events';
 import {
     getMainImageDeliveryDocument,
+    MAIN_IMAGE_DEFAULT_SIZE_KEYS,
     MAIN_IMAGE_SIZE_SPECS,
+    resolveMainImagePrepareSize,
+    type MainImagePrepareSizeResolution,
     resolveMainImageSizeKeys
 } from './main-image-delivery-spec';
 import {
@@ -154,6 +157,12 @@ const MAIN_IMAGE_PRODUCT_PATH_TOOL_NAMES = [
 ];
 
 const MAIN_IMAGE_CUSTOM_EXPLICIT_SIZE_KEY = 'custom-explicit-main-image';
+
+const MAIN_IMAGE_PREPARE_WORKSPACE_OPTIONS = MAIN_IMAGE_DEFAULT_SIZE_KEYS.map((sizeKey) => ({
+    size: sizeKey,
+    width: MAIN_IMAGE_SIZE_SPECS[sizeKey].width,
+    height: MAIN_IMAGE_SIZE_SPECS[sizeKey].height
+}));
 
 const FORBIDDEN_IMAGE_PAYLOAD_PATTERNS = [
     /raw-image-payload/gi,
@@ -1078,6 +1087,68 @@ function buildPublicMainImageOperationResults(
     }));
 }
 
+function buildMainImagePrepareSizeFailure(
+    resolution: MainImagePrepareSizeResolution,
+    toolResults: Array<Record<string, unknown>>
+): AgentResult {
+    let error = 'main_image_agentic_prepare_size_invalid';
+    let message = '主图工作区规格无效，本轮没有写入 Photoshop。';
+    let summary = '请只保留一个标准主图工作区规格，再重新调用 prepare。';
+
+    switch (resolution.status) {
+        case 'missing':
+            error = 'main_image_agentic_prepare_size_missing';
+            message = 'prepare 缺少由 Agent 明确选择的标准主图工作区规格，本轮没有写入 Photoshop。';
+            summary = '请根据当前项目与设计目标选择 800、750 或 1200 中的一个规格，再重新调用 prepare。';
+            break;
+        case 'multiple':
+            error = 'main_image_agentic_prepare_size_multiple';
+            message = '一次 prepare 只能创建一个标准主图工作区，本轮收到多个规格，因此没有写入 Photoshop。';
+            summary = '请从已提交的标准规格中保留一个，再重新调用 prepare；不要同时提交 size 与多个 sizes。';
+            break;
+        case 'invalid':
+            error = 'main_image_agentic_prepare_size_invalid';
+            message = 'prepare 收到了无法识别的主图工作区规格，本轮没有写入 Photoshop。';
+            summary = '请把无效值改为 800、750 或 1200 中的一个标准规格，再重新调用 prepare。';
+            break;
+        case 'custom_not_supported':
+            error = 'main_image_agentic_prepare_custom_size_not_supported';
+            message = '开放创意 prepare 不创建自定义尺寸工作区，本轮没有写入 Photoshop。';
+            summary = '请移除 customSize，并根据当前项目选择 800、750 或 1200 中的一个标准工作区规格后重试。';
+            break;
+        case 'conflict':
+            error = 'main_image_agentic_prepare_size_conflict';
+            message = 'prepare 同时收到了标准规格与自定义或无效尺寸，规格来源冲突，本轮没有写入 Photoshop。';
+            summary = '请移除 customSize、targetSize、canvasSize 与多余尺寸，只提交一个标准 size 后重试。';
+            break;
+        case 'resolved':
+            break;
+    }
+
+    return {
+        success: false,
+        nonFatal: true,
+        message,
+        error,
+        toolResults,
+        data: {
+            status: `blocked_${error}`,
+            prepareSizeResolution: resolution,
+            allowedWorkspaceSizes: MAIN_IMAGE_PREPARE_WORKSPACE_OPTIONS,
+            agentReActContinuation: {
+                status: 'needs_action',
+                summary,
+                nextAction: 'retry_main_image_prepare_with_one_standard_size',
+                requiredArguments: {
+                    mainImageProductionAction: 'prepare',
+                    size: '800 | 750 | 1200'
+                },
+                omitArguments: ['customSize', 'targetSize', 'canvasSize', 'sizes']
+            }
+        }
+    };
+}
+
 async function runControlledMainImageProductPath(input: {
     params: Record<string, any>;
     context?: SkillExecuteParams['context'];
@@ -1142,10 +1213,12 @@ async function runControlledMainImageProductPath(input: {
     )
         || input.params.createEmptySkeleton === true
         || agenticProductionAction === 'prepare';
-    const hasExplicitPrepareSize = Boolean(input.params.size)
-        || Array.isArray(input.params.sizes) && input.params.sizes.length > 0;
-    const explicitPrepareSizeKeys = agenticProductionAction === 'prepare'
-        ? resolveMainImageSizeKeys(input.params)
+    const prepareSizeResolution = agenticProductionAction === 'prepare'
+        ? resolveMainImagePrepareSize(input.params)
+        : null;
+    const explicitPrepareSizeKeys = prepareSizeResolution?.status === 'resolved'
+        && prepareSizeResolution.sizeKey
+        ? [prepareSizeResolution.sizeKey]
         : [];
     if (agenticProductionAction === 'prepare'
         && !isMainImageAgenticRuntimeTaskIdentity(input.runtimeTaskIdentity)) {
@@ -1167,22 +1240,11 @@ async function runControlledMainImageProductPath(input: {
         };
     }
     if (agenticProductionAction === 'prepare'
-        && (!hasExplicitPrepareSize || explicitPrepareSizeKeys.length !== 1)) {
-        return {
-            success: false,
-            nonFatal: true,
-            message: '一次工作区准备只接受一个由 Agent 明确选择的标准主图规格；请选定后重新调用。',
-            error: 'main_image_agentic_prepare_requires_one_explicit_size',
-            toolResults,
-            data: {
-                status: 'blocked_main_image_agentic_prepare_requires_one_explicit_size',
-                agentReActContinuation: {
-                    status: 'needs_action',
-                    summary: '请根据当前项目规则选择一个明确规格，再以 prepare 重新提交；不要让 Harness 自动替你选择。',
-                    nextAction: 'choose_one_explicit_main_image_size'
-                }
-            }
-        };
+        && prepareSizeResolution?.status !== 'resolved') {
+        return buildMainImagePrepareSizeFailure(
+            prepareSizeResolution || resolveMainImagePrepareSize(null),
+            toolResults
+        );
     }
     if (mode === 'product-disposable-live'
         && isProductionSubmission

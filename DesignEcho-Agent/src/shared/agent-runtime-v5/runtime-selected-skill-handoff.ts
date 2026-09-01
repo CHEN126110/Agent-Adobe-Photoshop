@@ -36,6 +36,7 @@ export interface RuntimeSelectedSkillHandoff {
 export type RuntimeContractStatusKind =
     | 'resolved'
     | 'no_skill_selected'
+    | 'profile_selection_required'
     | 'selected_manifest_missing';
 
 export interface RuntimeContractStatus {
@@ -129,6 +130,7 @@ export function buildRuntimeContractStatus(input: {
     manifestSkillId?: unknown;
     selectionSource?: RuntimeContractStatus['selectionSource'];
     selectionExpected?: boolean;
+    profileSelectionRequired?: boolean;
 }): RuntimeContractStatus {
     const selectedSkillId = normalizeSkillId(input.selectedSkillId);
     const selectedTaskType = normalizeTaskType(input.selectedTaskType);
@@ -143,6 +145,16 @@ export function buildRuntimeContractStatus(input: {
             version: RUNTIME_CONTRACT_STATUS_VERSION,
             status: 'no_skill_selected',
             reason: '当前任务没有结构化 Skill 或 task type 选择；保留通用 Agent 能力发现。',
+            boundaries
+        };
+    }
+    if (input.profileSelectionRequired === true && selectedSkillId && !selectedTaskType) {
+        return {
+            version: RUNTIME_CONTRACT_STATUS_VERSION,
+            status: 'profile_selection_required',
+            selectedSkillId,
+            ...(input.selectionSource ? { selectionSource: input.selectionSource } : {}),
+            reason: '用户级 Skill Package 包含多个 Artifact Profile；等待 Agent 明确选择 taskType，不能按注册顺序代选。',
             boundaries
         };
     }

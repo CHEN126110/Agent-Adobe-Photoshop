@@ -108,6 +108,12 @@ const {
     'src/renderer/services/skill-executors/main-image.executor.ts'
 ));
 const {
+    resolveMainImagePrepareSize
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/main-image-delivery-spec.ts'
+));
+const {
     selectDesignKnowledgeResultsForSkillUse
 } = require(path.join(root, 'src/renderer/services/skill-executors/design-planner-context.ts'));
 const {
@@ -2895,6 +2901,48 @@ check(
     JSON.stringify(positiveMainImageDriftResults)
 );
 
+const mainImagePrepareSizeProtocolEvidence = {
+    resolved800: resolveMainImagePrepareSize({ size: '800' }),
+    resolved750: resolveMainImagePrepareSize({ size: '750' }),
+    resolved1200: resolveMainImagePrepareSize({ size: '1200' }),
+    missing: resolveMainImagePrepareSize({}),
+    multiple: resolveMainImagePrepareSize({ sizes: ['800', '750'] }),
+    singularSizes: resolveMainImagePrepareSize({ sizes: ['800'] }),
+    duplicateFields: resolveMainImagePrepareSize({ size: '800', sizes: ['800'] }),
+    ratioAlias: resolveMainImagePrepareSize({ size: '1:1' }),
+    pixelAlias: resolveMainImagePrepareSize({ size: '1500x2000' }),
+    invalid: resolveMainImagePrepareSize({ size: '900' }),
+    custom: resolveMainImagePrepareSize({
+        size: 'custom',
+        customSize: { width: 1440, height: 1440 }
+    }),
+    conflict: resolveMainImagePrepareSize({
+        size: '800',
+        customSize: { width: 1440, height: 1440 }
+    })
+};
+check(
+    '主图 prepare 尺寸协议只解析 Agent 明确选择的单一标准工作区，不从 customSize 推断规格',
+    mainImagePrepareSizeProtocolEvidence.resolved800.status === 'resolved'
+        && mainImagePrepareSizeProtocolEvidence.resolved800.sizeKey === '800'
+        && mainImagePrepareSizeProtocolEvidence.resolved750.status === 'resolved'
+        && mainImagePrepareSizeProtocolEvidence.resolved750.sizeKey === '750'
+        && mainImagePrepareSizeProtocolEvidence.resolved1200.status === 'resolved'
+        && mainImagePrepareSizeProtocolEvidence.resolved1200.sizeKey === '1200'
+        && mainImagePrepareSizeProtocolEvidence.missing.status === 'missing'
+        && mainImagePrepareSizeProtocolEvidence.multiple.status === 'multiple'
+        && mainImagePrepareSizeProtocolEvidence.singularSizes.status === 'conflict'
+        && mainImagePrepareSizeProtocolEvidence.duplicateFields.status === 'conflict'
+        && mainImagePrepareSizeProtocolEvidence.ratioAlias.status === 'invalid'
+        && mainImagePrepareSizeProtocolEvidence.pixelAlias.status === 'invalid'
+        && mainImagePrepareSizeProtocolEvidence.invalid.status === 'invalid'
+        && mainImagePrepareSizeProtocolEvidence.custom.status === 'custom_not_supported'
+        && mainImagePrepareSizeProtocolEvidence.custom.standardSizeKeys.length === 0
+        && mainImagePrepareSizeProtocolEvidence.conflict.status === 'conflict'
+        && mainImagePrepareSizeProtocolEvidence.conflict.standardSizeKeys.length === 0,
+    JSON.stringify(mainImagePrepareSizeProtocolEvidence)
+);
+
 const agenticMainImageProjectRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), 'designecho-main-image-agentic-')
 );
@@ -2978,6 +3026,75 @@ try {
     });
     const invalidPrepareIdentityHostCallDelta = environment.toolCalls.length
         - beforeInvalidPrepareIdentityCallCount;
+    const prepareSizeFailureCases = [];
+    for (const sizeCase of [
+        {
+            name: 'missing',
+            params: {},
+            expectedStatus: 'missing',
+            expectedError: 'main_image_agentic_prepare_size_missing'
+        },
+        {
+            name: 'invalid',
+            params: { size: '900' },
+            expectedStatus: 'invalid',
+            expectedError: 'main_image_agentic_prepare_size_invalid'
+        },
+        {
+            name: 'custom',
+            params: {
+                size: 'custom',
+                customSize: { width: 1440, height: 1440 }
+            },
+            expectedStatus: 'custom_not_supported',
+            expectedError: 'main_image_agentic_prepare_custom_size_not_supported'
+        },
+        {
+            name: 'conflict',
+            params: {
+                size: '800',
+                customSize: { width: 1440, height: 1440 }
+            },
+            expectedStatus: 'conflict',
+            expectedError: 'main_image_agentic_prepare_size_conflict'
+        },
+        {
+            name: 'multiple',
+            params: { sizes: ['800', '750'] },
+            expectedStatus: 'multiple',
+            expectedError: 'main_image_agentic_prepare_size_multiple'
+        },
+        {
+            name: 'singular-sizes-field',
+            params: { sizes: ['800'] },
+            expectedStatus: 'conflict',
+            expectedError: 'main_image_agentic_prepare_size_conflict'
+        },
+        {
+            name: 'ratio-alias',
+            params: { size: '1:1' },
+            expectedStatus: 'invalid',
+            expectedError: 'main_image_agentic_prepare_size_invalid'
+        }
+    ]) {
+        const beforeHostCallCount = environment.toolCalls.length;
+        const result = await mainImageExecutor.execute({
+            params: {
+                ...commonParams,
+                mainImageProductionAction: 'prepare',
+                ...sizeCase.params
+            },
+            context: commonContext,
+            guardedAtomicToolExecutor: guardedExecutor,
+            runtimeDeliveryPlanAuthority: deliveryAuthority,
+            runtimeTaskIdentity
+        });
+        prepareSizeFailureCases.push({
+            ...sizeCase,
+            result,
+            hostCallDelta: environment.toolCalls.length - beforeHostCallCount
+        });
+    }
     const prepareResult = await mainImageExecutor.execute({
         params: {
             ...commonParams,
@@ -3170,6 +3287,7 @@ try {
         prepareResult,
         invalidPrepareIdentityResult,
         invalidPrepareIdentityHostCallDelta,
+        prepareSizeFailureCases,
         workspace,
         prepareCallCount,
         prepareSaveExportCalls,
@@ -3228,6 +3346,19 @@ check(
         && agenticMainImageEvidence?.invalidPrepareIdentityResult?.error
             === 'main_image_agentic_prepare_runtime_task_identity_required'
         && agenticMainImageEvidence?.invalidPrepareIdentityHostCallDelta === 0
+        && agenticMainImageEvidence?.prepareSizeFailureCases?.length === 7
+        && agenticMainImageEvidence.prepareSizeFailureCases.every((sizeCase) => (
+            sizeCase.result?.success === false
+            && sizeCase.result?.nonFatal === true
+            && sizeCase.result?.error === sizeCase.expectedError
+            && sizeCase.result?.data?.prepareSizeResolution?.status === sizeCase.expectedStatus
+            && sizeCase.result?.data?.agentReActContinuation?.nextAction
+                === 'retry_main_image_prepare_with_one_standard_size'
+            && sizeCase.result?.data?.allowedWorkspaceSizes?.map((item) => (
+                `${item.size}:${item.width}x${item.height}`
+            )).join(',') === '800:1500x1500,750:1500x2000,1200:1440x2160'
+            && sizeCase.hostCallDelta === 0
+        ))
         && agenticMainImageEvidence?.workspace?.status === 'prepared'
         && agenticMainImageEvidence?.prepareResult?.data?.mainImageExecutionScope === 'disposable-document'
         && agenticMainImageEvidence?.workspace?.boundaries?.grantsPermission === false
@@ -3277,6 +3408,15 @@ check(
         prepareStatus: agenticMainImageEvidence?.prepareResult?.data?.status,
         invalidPrepareIdentityError: agenticMainImageEvidence?.invalidPrepareIdentityResult?.error,
         invalidPrepareIdentityHostCallDelta: agenticMainImageEvidence?.invalidPrepareIdentityHostCallDelta,
+        prepareSizeFailureCases: agenticMainImageEvidence?.prepareSizeFailureCases?.map((sizeCase) => ({
+            name: sizeCase.name,
+            expectedStatus: sizeCase.expectedStatus,
+            actualStatus: sizeCase.result?.data?.prepareSizeResolution?.status,
+            expectedError: sizeCase.expectedError,
+            actualError: sizeCase.result?.error,
+            nonFatal: sizeCase.result?.nonFatal,
+            hostCallDelta: sizeCase.hostCallDelta
+        })),
         prepareError: agenticMainImageEvidence?.prepareResult?.error,
         prepareBlockers: agenticMainImageEvidence?.prepareResult?.data?.blockers,
         workspace: agenticMainImageEvidence?.workspace,

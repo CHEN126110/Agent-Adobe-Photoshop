@@ -67,6 +67,8 @@ export {
     buildRuntimeDeclarationProfileCatalog,
     listDeclarableRuntimeTaskTypes,
     listDeclarableRuntimeWorkModes,
+    listRuntimeWorkflowEntryDeclarationFamilies,
+    resolveRuntimeWorkflowEntryDeclarationFamily,
     resolveRuntimeDeclarationForAgentTask
 } from './runtime-declaration-resolver';
 export type {
@@ -79,7 +81,8 @@ export type {
     RuntimeDeclarationProfileIssue,
     RuntimeDeclarationProfileIssueCode,
     RuntimeDeclarationRepairCode,
-    RuntimeDeclarationResolution
+    RuntimeDeclarationResolution,
+    RuntimeWorkflowEntryDeclarationFamily
 } from './runtime-declaration-resolver';
 export {
     buildRuntimeStagePlan

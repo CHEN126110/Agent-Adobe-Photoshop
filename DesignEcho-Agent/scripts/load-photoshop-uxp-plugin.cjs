@@ -9,13 +9,17 @@ const {
   acquirePhotoshopRuntimeLease,
   releasePhotoshopRuntimeLease
 } = require('./lib/design-reliability-photoshop-runtime-lease.cjs');
+const {
+  verifyPhotoshopRuntimeBuildIdentity
+} = require('./lib/photoshop-runtime-build-identity.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_MANIFEST = path.resolve(ROOT, '..', 'DesignEcho-UXP', 'manifest.json');
 const DEFAULT_PORT = parsePositiveInteger(process.env.UXP_DEVTOOLS_PORT, 14001);
+const DEFAULT_LOAD_REQUEST_TIMEOUT_MS = 45_000;
 const DEFAULT_TIMEOUT_MS = parsePositiveInteger(
   process.env.DESIGNECHO_UXP_PLUGIN_LOAD_TIMEOUT_MS,
-  15_000
+  DEFAULT_LOAD_REQUEST_TIMEOUT_MS
 );
 const MCP_ENDPOINT = process.env.MCP_ENDPOINT || 'http://127.0.0.1:8768/mcp';
 const DEFAULT_BRIDGE_WAIT_TIMEOUT_MS = parsePositiveInteger(
@@ -70,8 +74,8 @@ function buildRecoveryActions(classification) {
       ];
     case 'load_timeout':
       return [
-        'Clear any modal dialog in Photoshop, then rerun this loader.',
-        'If Photoshop still keeps the old runtime, restart Photoshop and run this loader again.'
+        'Run the read-only bridge health check first; if live Runtime identity already matches disk, do not retry. Otherwise clear any modal dialog before one new attempt.',
+        'Do not launch overlapping retries. If Photoshop still keeps the old Runtime, restart Photoshop before the next single load.'
       ];
     case 'devtools_service_unavailable':
       return [
@@ -116,14 +120,6 @@ function buildPluginLoadMessage(pluginFolder) {
     },
     breakOnStart: false,
     isPlaygroundPlugin: false
-  };
-}
-
-function buildPluginUnloadMessage(pluginSessionId) {
-  return {
-    command: 'Plugin',
-    action: 'unload',
-    pluginSessionId
   };
 }
 
@@ -227,6 +223,152 @@ async function waitForBridgeReady(options = {}) {
     attempts,
     status: last
   };
+}
+
+function isTimeoutError(error) {
+  return /timed out|timeout/i.test(normalizeError(error));
+}
+
+function summarizeRuntimeVerification(verification, liveRuntime) {
+  return {
+    ready: verification.ready === true,
+    liveMatchesManifest: verification.live?.matchesManifest === true,
+    liveMatchesCurrentCheckout: verification.live?.matchesCurrentCheckout === true,
+    issueCodes: verification.issues.map((issue) => issue.code),
+    liveLoadedAt: String(liveRuntime?.loadedAt || '').trim() || null
+  };
+}
+
+async function inspectLiveRuntimeIdentity(options = {}) {
+  const result = await callTool('photoshop.tools.call', {
+    name: 'diagnoseState',
+    arguments: { verbose: false }
+  }, {
+    requestTimeoutMs: Math.min(3_000, options.requestTimeoutMs)
+  });
+  const payload = result?.result && typeof result.result === 'object'
+    ? result.result
+    : result;
+  const liveRuntime = payload?.state?.runtime || null;
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: path.resolve(options.pluginFolder, '..'),
+    uxpRoot: options.pluginFolder,
+    requireLive: true,
+    ...(liveRuntime ? { liveRuntime } : {})
+  });
+  return {
+    matched: verification.ready === true,
+    verification: summarizeRuntimeVerification(verification, liveRuntime)
+  };
+}
+
+async function reconcileTimedOutLoad(options = {}) {
+  const timeoutMs = parsePositiveInteger(options.timeoutMs, DEFAULT_BRIDGE_WAIT_TIMEOUT_MS);
+  const pollMs = parsePositiveInteger(options.pollMs, DEFAULT_BRIDGE_POLL_MS);
+  const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
+  let last = null;
+  let consecutiveStableMatches = 0;
+  let stableLoadedAt = null;
+  const inspectRuntimeIdentity = options.inspectRuntimeIdentity || inspectLiveRuntimeIdentity;
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    try {
+      last = await inspectRuntimeIdentity({
+        pluginFolder: options.pluginFolder,
+        requestTimeoutMs: timeoutMs
+      });
+      if (isFreshRuntimeIdentityMatch(last, options.loadStartedAtMs)) {
+        const currentLoadedAt = last.verification.liveLoadedAt;
+        consecutiveStableMatches = stableLoadedAt === currentLoadedAt
+          ? consecutiveStableMatches + 1
+          : 1;
+        stableLoadedAt = currentLoadedAt;
+      } else {
+        consecutiveStableMatches = 0;
+        stableLoadedAt = null;
+      }
+      if (consecutiveStableMatches >= 2) {
+        return {
+          matched: true,
+          attempts,
+          stableReadCount: consecutiveStableMatches,
+          verification: last.verification
+        };
+      }
+    } catch (error) {
+      last = {
+        matched: false,
+        error: normalizeError(error)
+      };
+      consecutiveStableMatches = 0;
+      stableLoadedAt = null;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(pollMs, remainingMs));
+  }
+
+  return {
+    matched: false,
+    attempts,
+    last
+  };
+}
+
+function isCompleteRuntimeIdentityMatch(value) {
+  return value?.matched === true
+    && value.verification?.ready === true
+    && value.verification.liveMatchesManifest === true
+    && value.verification.liveMatchesCurrentCheckout === true
+    && Array.isArray(value.verification.issueCodes)
+    && value.verification.issueCodes.length === 0;
+}
+
+function isFreshRuntimeIdentityMatch(value, loadStartedAtMs) {
+  if (!isCompleteRuntimeIdentityMatch(value)) return false;
+  const liveLoadedAtMs = Date.parse(String(value.verification.liveLoadedAt || ''));
+  return Number.isFinite(liveLoadedAtMs)
+    && Number.isFinite(loadStartedAtMs)
+    && liveLoadedAtMs >= loadStartedAtMs - 1_000;
+}
+
+function isCompleteRuntimeReconciliation(value, loadStartedAtMs) {
+  return value?.stableReadCount >= 2
+    && isFreshRuntimeIdentityMatch(value, loadStartedAtMs);
+}
+
+async function requestPluginLoad(options = {}) {
+  const loadStartedAtMs = Number.isFinite(options.loadStartedAtMs)
+    ? options.loadStartedAtMs
+    : Date.now();
+  const requestMessage = {
+    command: 'proxy',
+    clientId: options.appClient.id,
+    message: buildPluginLoadMessage(options.pluginFolder)
+  };
+
+  try {
+    return {
+      reply: await options.client.request(requestMessage, options.timeoutMs),
+      lateSuccessReconciliation: null
+    };
+  } catch (error) {
+    if (!isTimeoutError(error)) throw error;
+    const reconciliation = await options.reconcileLateSuccess();
+    if (isCompleteRuntimeReconciliation(reconciliation, loadStartedAtMs)) {
+      return {
+        reply: null,
+        lateSuccessReconciliation: reconciliation
+      };
+    }
+    const lastEvidence = reconciliation?.last || reconciliation || null;
+    throw new Error(
+      `${normalizeError(error)} Late-success reconciliation did not verify the live Photoshop Runtime `
+      + `against the complete disk manifest identity: ${JSON.stringify(lastEvidence)}`
+    );
+  }
 }
 
 function createDevtoolsClient({ port, timeoutMs, appId }) {
@@ -378,30 +520,57 @@ async function loadPlugin(options = {}) {
       }
     });
 
-    const firstLoad = await client.request({
-      command: 'proxy',
-      clientId: appClient.id,
-      message: buildPluginLoadMessage(pluginFolder)
-    });
-    let unload = null;
-    let load = firstLoad;
-    if (options.replaceLoadedPlugin) {
-      const existingPluginSessionId = String(firstLoad.pluginSessionId || '').trim();
-      if (!existingPluginSessionId) {
-        throw new Error('UXP Developer Tools did not return a pluginSessionId for the loaded DesignEcho plugin.');
-      }
-      unload = await client.request({
-        command: 'proxy',
-        clientId: appClient.id,
-        message: buildPluginUnloadMessage(existingPluginSessionId)
+    let preLoadIdentity = null;
+    try {
+      preLoadIdentity = await inspectLiveRuntimeIdentity({
+        pluginFolder,
+        requestTimeoutMs: Math.min(timeoutMs, 3_000)
       });
-      await sleep(250);
-      load = await client.request({
-        command: 'proxy',
-        clientId: appClient.id,
-        message: buildPluginLoadMessage(pluginFolder)
-      });
+    } catch {
+      // Bridge may legitimately be absent before the first load. The load request remains authoritative.
     }
+    if (isCompleteRuntimeIdentityMatch(preLoadIdentity)) {
+      return {
+        success: true,
+        app: appClient.app,
+        manifestPath,
+        pluginFolder,
+        pluginId: manifest.id || null,
+        pluginName: manifest.name || null,
+        validate: { success: validate.success === true },
+        load: {
+          pluginSessionId: null,
+          replacedLoadedPlugin: false,
+          unloadedPluginSessionId: null,
+          requestCount: 0,
+          alreadyCurrent: true,
+          lateSuccessReconciled: false,
+          lateSuccessReconciliation: null
+        },
+        bridge: options.waitForBridge
+          ? await waitForBridgeReady({
+            timeoutMs: bridgeTimeoutMs,
+            pollMs: options.bridgePollMs
+          })
+          : null
+      };
+    }
+
+    const loadStartedAtMs = Date.now();
+    const loadOutcome = await requestPluginLoad({
+      client,
+      appClient,
+      pluginFolder,
+      timeoutMs,
+      loadStartedAtMs,
+      reconcileLateSuccess: () => reconcileTimedOutLoad({
+        pluginFolder,
+        timeoutMs: bridgeTimeoutMs,
+        pollMs: options.bridgePollMs,
+        loadStartedAtMs
+      })
+    });
+    const load = loadOutcome.reply || {};
 
     return {
       success: true,
@@ -416,9 +585,11 @@ async function loadPlugin(options = {}) {
       load: {
         pluginSessionId: load.pluginSessionId || null,
         replacedLoadedPlugin: options.replaceLoadedPlugin === true,
-        unloadedPluginSessionId: unload
-          ? String(unload.pluginSessionId || firstLoad.pluginSessionId || '') || null
-          : null
+        unloadedPluginSessionId: null,
+        requestCount: 1,
+        alreadyCurrent: false,
+        lateSuccessReconciled: Boolean(loadOutcome.lateSuccessReconciliation),
+        lateSuccessReconciliation: loadOutcome.lateSuccessReconciliation
       },
       bridge: options.waitForBridge
         ? await waitForBridgeReady({
@@ -436,7 +607,7 @@ async function loadPlugin(options = {}) {
   }
 }
 
-function runSelfTest() {
+async function runSelfTest() {
   const rootRelativeManifest = normalizeManifestPath('../DesignEcho-UXP/manifest.json');
   if (!rootRelativeManifest.endsWith(path.join('DesignEcho-UXP', 'manifest.json'))) {
     throw new Error(`Unexpected manifest normalization: ${rootRelativeManifest}`);
@@ -459,13 +630,168 @@ function runSelfTest() {
   if (buildRecoveryActions('load_timeout').length < 2) {
     throw new Error('Timeout recovery actions must be actionable.');
   }
+  if (DEFAULT_LOAD_REQUEST_TIMEOUT_MS < 30_000) {
+    throw new Error('Default UXP request timeout must cover the observed Photoshop Host replacement latency.');
+  }
+  if (parsePositiveInteger('12000', DEFAULT_LOAD_REQUEST_TIMEOUT_MS) !== 12_000) {
+    throw new Error('Explicit UXP request timeout overrides must remain supported.');
+  }
+  if (!isCompleteRuntimeIdentityMatch({
+    matched: true,
+    verification: {
+      ready: true,
+      liveMatchesManifest: true,
+      liveMatchesCurrentCheckout: true,
+      issueCodes: [],
+      liveLoadedAt: '2026-09-01T04:59:00.000Z'
+    }
+  })) {
+    throw new Error('An already-current live Runtime must be recognized before issuing another load.');
+  }
   const loadMessage = buildPluginLoadMessage('C:\\safe-plugin');
-  const unloadMessage = buildPluginUnloadMessage('session-1');
   if (loadMessage.action !== 'load'
-    || loadMessage.params?.provider?.path !== 'C:\\safe-plugin'
-    || unloadMessage.action !== 'unload'
-    || unloadMessage.pluginSessionId !== 'session-1') {
-    throw new Error('Plugin load/unload protocol messages must match the UXP Developer Tools contract.');
+    || loadMessage.params?.provider?.path !== 'C:\\safe-plugin') {
+    throw new Error('Plugin load protocol message must match the UXP Developer Tools contract.');
+  }
+
+  const replaceRequests = [];
+  const replaceOutcome = await requestPluginLoad({
+    client: {
+      request: async (message) => {
+        replaceRequests.push(message);
+        return { pluginSessionId: 'session-replaced' };
+      }
+    },
+    appClient: { id: 'photoshop-client' },
+    pluginFolder: 'C:\\safe-plugin',
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    reconcileLateSuccess: async () => ({ matched: false })
+  });
+  if (replaceRequests.length !== 1
+    || replaceRequests[0]?.message?.action !== 'load'
+    || replaceOutcome.reply?.pluginSessionId !== 'session-replaced') {
+    throw new Error('Replace path must issue exactly one effective Plugin load request.');
+  }
+
+  const loopLoadStartedAtMs = Date.now();
+  let loopInspectionCount = 0;
+  const loopReconciliation = await reconcileTimedOutLoad({
+    pluginFolder: 'C:\\safe-plugin',
+    timeoutMs: 100,
+    pollMs: 1,
+    loadStartedAtMs: loopLoadStartedAtMs,
+    inspectRuntimeIdentity: async () => {
+      loopInspectionCount += 1;
+      return {
+        matched: true,
+        verification: {
+          ready: true,
+          liveMatchesManifest: true,
+          liveMatchesCurrentCheckout: true,
+          issueCodes: [],
+          liveLoadedAt: new Date(loopLoadStartedAtMs + 1_000).toISOString()
+        }
+      };
+    }
+  });
+  if (loopInspectionCount !== 2
+    || loopReconciliation.matched !== true
+    || loopReconciliation.stableReadCount !== 2) {
+    throw new Error('Late-success reconciliation must require two consecutive fresh identity reads.');
+  }
+
+  const selfTestLoadStartedAtMs = Date.parse('2026-09-01T05:00:00.000Z');
+  const lateSuccessOutcome = await requestPluginLoad({
+    client: {
+      request: async () => {
+        throw new Error('Timed out waiting for request 1.');
+      }
+    },
+    appClient: { id: 'photoshop-client' },
+    pluginFolder: 'C:\\safe-plugin',
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    loadStartedAtMs: selfTestLoadStartedAtMs,
+    reconcileLateSuccess: async () => ({
+      matched: true,
+      attempts: 2,
+      stableReadCount: 2,
+      verification: {
+        ready: true,
+        liveMatchesManifest: true,
+        liveMatchesCurrentCheckout: true,
+        issueCodes: [],
+        liveLoadedAt: '2026-09-01T05:00:02.000Z'
+      }
+    })
+  });
+  if (lateSuccessOutcome.reply !== null
+    || lateSuccessOutcome.lateSuccessReconciliation?.matched !== true) {
+    throw new Error('A timed-out load may succeed only after complete live Runtime identity reconciliation.');
+  }
+
+  let mismatchRejected = false;
+  try {
+    await requestPluginLoad({
+      client: {
+        request: async () => {
+          throw new Error('Timed out waiting for request 2.');
+        }
+      },
+      appClient: { id: 'photoshop-client' },
+      pluginFolder: 'C:\\safe-plugin',
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      loadStartedAtMs: selfTestLoadStartedAtMs,
+      reconcileLateSuccess: async () => ({
+        matched: true,
+        attempts: 2,
+        stableReadCount: 2,
+        verification: {
+          ready: false,
+          liveMatchesManifest: false,
+          liveMatchesCurrentCheckout: true,
+          issueCodes: ['live_manifest_builtAt_mismatch'],
+          liveLoadedAt: '2026-09-01T05:00:02.000Z'
+        }
+      })
+    });
+  } catch (error) {
+    mismatchRejected = normalizeError(error).includes('Late-success reconciliation did not verify');
+  }
+  if (!mismatchRejected) {
+    throw new Error('Timed-out load must remain failed when complete Runtime identity does not match.');
+  }
+  let stalePreexistingRuntimeRejected = false;
+  try {
+    await requestPluginLoad({
+      client: {
+        request: async () => {
+          throw new Error('Timed out waiting for request 3.');
+        }
+      },
+      appClient: { id: 'photoshop-client' },
+      pluginFolder: 'C:\\safe-plugin',
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      loadStartedAtMs: selfTestLoadStartedAtMs,
+      reconcileLateSuccess: async () => ({
+        matched: true,
+        attempts: 2,
+        stableReadCount: 2,
+        verification: {
+          ready: true,
+          liveMatchesManifest: true,
+          liveMatchesCurrentCheckout: true,
+          issueCodes: [],
+          liveLoadedAt: '2026-09-01T04:59:00.000Z'
+        }
+      })
+    });
+  } catch (error) {
+    stalePreexistingRuntimeRejected = normalizeError(error).includes(
+      'Late-success reconciliation did not verify'
+    );
+  }
+  if (!stalePreexistingRuntimeRejected) {
+    throw new Error('A pre-existing matching Runtime must not prove that the timed-out load completed.');
   }
   console.log(JSON.stringify({
     success: true,
@@ -476,14 +802,21 @@ function runSelfTest() {
       'bridge wait error is classified',
       'active runtime capture lease is classified',
       'recovery actions are available',
-      'load/unload protocol messages preserve the UXP Developer Tools session identity'
+      'default UXP request timeout covers observed Host replacement latency',
+      'explicit request timeout override remains supported',
+      'an already-current live Runtime is a pre-load no-op',
+      'replace path issues one effective Plugin load request',
+      'late reconciliation counts two consecutive fresh live identity reads',
+      'late Host success requires a fresh and stable complete Runtime identity',
+      'identity mismatch remains failed after load timeout',
+      'a stale pre-existing matching Runtime cannot prove the timed-out load completed'
     ]
   }, null, 2));
 }
 
 async function main() {
   if (process.argv.includes('--self-test')) {
-    runSelfTest();
+    await runSelfTest();
     return;
   }
 

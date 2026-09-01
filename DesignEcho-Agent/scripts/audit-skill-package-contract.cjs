@@ -28,6 +28,10 @@ const skillPackageServiceSource = fs.readFileSync(
 );
 
 const { listSkillManifests } = require(path.join(runtimeRoot, 'skill-runtime.ts'));
+const {
+  listRuntimeWorkflowEntryDeclarationFamilies,
+  resolveRuntimeWorkflowEntryDeclarationFamily
+} = require(path.join(runtimeRoot, 'runtime-declaration-resolver.ts'));
 const { buildRuntimeContractBundleForAgentTask } = require(path.join(runtimeRoot, 'runtime-contract-bundle.ts'));
 const {
   DETAIL_PAGE_EVALUATION_PROFILE_ID,
@@ -89,6 +93,7 @@ const {
 } = require(path.join(rendererRuntimeRoot, 'tool-result-provenance.ts'));
 const { buildSkillToolSchemas } = require(path.join(executorRoot, 'skill-tools.ts'));
 const {
+  buildBaseRuntimeContext,
   resolveAutonomousCapabilityRuntime
 } = require(path.join(executorRoot, 'autonomous-agent.executor.ts'));
 
@@ -624,11 +629,13 @@ const recommendedRoutingRecord = {
   bindsRuntimeIdentity: false,
   grantsPermission: false
 };
+const productionIntentControlPlane = {
+  requestKind: 'autonomous_execution',
+  toolScope: 'write_photoshop',
+  executionAuthorization: 'confirmed_tool_required'
+};
 const productionFastPath = resolveAutonomousCapabilityRuntime({
-  agentIntentControlPlane: {
-    toolScope: 'write_photoshop',
-    executionAuthorization: 'confirmed_tool_required'
-  },
+  agentIntentControlPlane: productionIntentControlPlane,
   skillRoutingRecommendation: recommendedRoutingRecord
 }, {}).capabilitySession;
 assert(productionFastPath.activeTools.length < 12, 'production recommendation fast path exceeded Tool budget');
@@ -645,17 +652,164 @@ assert.deepStrictEqual(
   recommendationRequiresRuntimeOwner ? [] : [recommendedWorkflowBridge.name],
   'owner-declared Skill recommendation bypassed Runtime handoff or generic fast-path behavior drifted'
 );
+const mainImageRecommendation = {
+  ...recommendedRoutingRecord,
+  skillId: 'main-image-design',
+  capabilityId: 'skill.main-image-design',
+  mode: 'execute'
+};
 const productionBroadDiscovery = resolveAutonomousCapabilityRuntime({
-  agentIntentControlPlane: {
-    toolScope: 'write_photoshop',
-    executionAuthorization: 'confirmed_tool_required'
-  }
+  agentIntentControlPlane: productionIntentControlPlane
 }, {}).capabilitySession;
+const mainImageRecommendedSession = resolveAutonomousCapabilityRuntime({
+  agentIntentControlPlane: productionIntentControlPlane,
+  skillRoutingRecommendation: mainImageRecommendation
+}, {}).capabilitySession;
+assert.deepStrictEqual(
+  mainImageRecommendedSession.activeTools.map((tool) => tool.name),
+  productionBroadDiscovery.activeTools.map((tool) => tool.name),
+  'an advisory Manifest recommendation changed the broad Agent Tool surface'
+);
+assert(
+  !mainImageRecommendedSession.activeTools.some((tool) => tool.name === 'main-image-design'),
+  'advisory main-image recommendation executed its Skill before the model selected a Profile'
+);
+const mainImageDeclarationFamily = resolveRuntimeWorkflowEntryDeclarationFamily('main-image-design');
+assert.strictEqual(
+  mainImageDeclarationFamily?.taskType,
+  'ecommerce.main_image.v1',
+  'main-image workflow entry lost its declarable Artifact family'
+);
+assert.deepStrictEqual(
+  mainImageDeclarationFamily?.supportedWorkModes,
+  ['create_new', 'redesign', 'edit_existing'],
+  'main-image declaration family no longer exposes exact model-owned work modes'
+);
+const detailPageDeclarationFamily = resolveRuntimeWorkflowEntryDeclarationFamily('detail-page-design');
+assert.strictEqual(
+  detailPageDeclarationFamily?.taskType,
+  'ecommerce.detail_page.v1',
+  'detail-page workflow entry lost its declarable Artifact family'
+);
+assert.deepStrictEqual(
+  listRuntimeWorkflowEntryDeclarationFamilies('sku-batch')
+    .map((family) => family.taskType)
+    .sort(),
+  [
+    'ecommerce.sku_batch.v1',
+    'ecommerce.sku_color_card.v1',
+    'ecommerce.sku_template.v1'
+  ],
+  'SKU package Task Profile family drifted'
+);
+assert.strictEqual(
+  resolveRuntimeWorkflowEntryDeclarationFamily('sku-batch'),
+  undefined,
+  'multi-profile SKU Skill was silently collapsed by Manifest registration order'
+);
+const explicitSkuPackageHandoff = {
+  version: 'runtime-selected-skill-handoff/v1',
+  skillId: 'sku-batch',
+  source: 'user_explicit_selection',
+  routeClass: 'business-workflow',
+  directExecution: 'forbidden',
+  boundaries: {
+    selectionRecordOnly: true,
+    executesSkill: false,
+    grantsToolPermission: false,
+    derivedFromTaskText: false
+  }
+};
+const explicitSkuPackageRuntime = resolveAutonomousCapabilityRuntime({
+  agentIntentControlPlane: productionIntentControlPlane,
+  runtimeSelectedSkillHandoff: explicitSkuPackageHandoff
+}, {});
+assert.strictEqual(
+  explicitSkuPackageRuntime.runtimeContractStatus.status,
+  'profile_selection_required',
+  'explicit SKU Package selection became a missing-manifest fatal instead of model-owned Profile selection'
+);
+assert.strictEqual(explicitSkuPackageRuntime.runtimeContractBundle, undefined);
+assert.strictEqual(explicitSkuPackageRuntime.agenticManifestBundle, undefined);
+const explicitSkuPackageContext = buildBaseRuntimeContext({
+  agentIntentControlPlane: productionIntentControlPlane,
+  runtimeSelectedSkillHandoff: explicitSkuPackageHandoff
+}, {});
+assert(explicitSkuPackageContext.includes('包含多个交付 Profile'));
+assert(explicitSkuPackageContext.includes('ecommerce.sku_color_card.v1'));
+assert(explicitSkuPackageContext.includes('ecommerce.sku_batch.v1'));
+assert(explicitSkuPackageContext.includes('ecommerce.sku_template.v1'));
+assert.deepStrictEqual(
+  listRuntimeWorkflowEntryDeclarationFamilies('layout-replication'),
+  [],
+  'method-only legacy id became a declarable Artifact Profile'
+);
+const mainImageRuntimeContext = buildBaseRuntimeContext({
+  agentIntentControlPlane: productionIntentControlPlane,
+  skillRoutingRecommendation: mainImageRecommendation
+}, {});
+assert(mainImageRuntimeContext.includes('Profile：ecommerce.main_image.v1'));
+assert(mainImageRuntimeContext.includes('create_new / redesign / edit_existing'));
+assert(mainImageRuntimeContext.includes('workMode 必须来自你'));
+assert(!mainImageRuntimeContext.includes('可选的专业工作方法：'));
+const inspectMainImageRecommendation = {
+  ...mainImageRecommendation,
+  mode: 'inspect'
+};
+const readOnlyIntentControlPlane = {
+  requestKind: 'read_only_inspect',
+  toolScope: 'read_only',
+  executionAuthorization: 'candidate_only'
+};
+const inspectRuntime = resolveAutonomousCapabilityRuntime({
+  agentIntentControlPlane: readOnlyIntentControlPlane,
+  skillRoutingRecommendation: inspectMainImageRecommendation
+}, {}).capabilitySession;
+const inspectBaseline = resolveAutonomousCapabilityRuntime({
+  agentIntentControlPlane: readOnlyIntentControlPlane
+}, {}).capabilitySession;
+assert.deepStrictEqual(
+  inspectRuntime.activeTools.map((tool) => tool.name),
+  inspectBaseline.activeTools.map((tool) => tool.name),
+  'inspect recommendation changed the read-only Agent Tool surface'
+);
+assert(
+  !buildBaseRuntimeContext({
+    agentIntentControlPlane: readOnlyIntentControlPlane,
+    skillRoutingRecommendation: inspectMainImageRecommendation
+  }, {}).includes('declareDesignIntent'),
+  'inspect recommendation incorrectly requested a production Runtime declaration'
+);
+const noToolIntentControlPlane = {
+  requestKind: 'conversation',
+  toolScope: 'none',
+  executionAuthorization: 'none'
+};
+assert(
+  !buildBaseRuntimeContext({
+    agentIntentControlPlane: noToolIntentControlPlane,
+    skillRoutingRecommendation: inspectMainImageRecommendation
+  }, {}).includes('declareDesignIntent'),
+  'no-tool recommendation instructed the model to call an unavailable declaration Tool'
+);
+const mainImageManifest = manifests.find((manifest) => manifest.task_type === 'ecommerce.main_image.v1');
+assert(mainImageManifest, 'main-image manifest missing');
+assert.strictEqual(mainImageRecommendedSession.bindAgenticManifestOwner(mainImageManifest), true);
+for (const postBindToolName of [
+  'main-image-design',
+  'getCanvasSnapshot',
+  'getLayerHierarchy',
+  'placeImage',
+  'transformLayer',
+  'createTextLayer'
+]) {
+  assert(
+    mainImageRecommendedSession.activeTools.some((tool) => tool.name === postBindToolName),
+    `agentic owner bind lost broad Agent capability: ${postBindToolName}`
+  );
+}
 const invalidMultiRecommendation = resolveAutonomousCapabilityRuntime({
-  agentIntentControlPlane: {
-    toolScope: 'write_photoshop',
-    executionAuthorization: 'confirmed_tool_required'
-  },
+  agentIntentControlPlane: productionIntentControlPlane,
   skillRoutingRecommendation: [recommendedRoutingRecord, recommendedRoutingRecord]
 }, {}).capabilitySession;
 assert(

@@ -637,6 +637,18 @@ assert(incompleteRedesign.issues
 const skuBatchManifest = listSkillManifests()
   .find((manifest) => manifest.task_type === 'ecommerce.sku_batch.v1');
 assert(skuBatchManifest, 'SKU batch manifest is missing');
+const skuColorCardManifest = listSkillManifests()
+  .find((manifest) => manifest.task_type === 'ecommerce.sku_color_card.v1');
+assert(skuColorCardManifest, 'SKU color-card manifest is missing');
+const skuTemplateManifest = listSkillManifests()
+  .find((manifest) => manifest.task_type === 'ecommerce.sku_template.v1');
+assert(skuTemplateManifest, 'SKU template manifest is missing');
+const mainImageManifest = listSkillManifests()
+  .find((manifest) => manifest.task_type === 'ecommerce.main_image.v1');
+assert(mainImageManifest, 'main-image manifest is missing');
+const referenceReplicationManifest = listSkillManifests()
+  .find((manifest) => manifest.task_type === 'design.reference_replication.v1');
+assert(referenceReplicationManifest, 'reference-replication manifest is missing');
 const incompleteDefaultProductionCatalog = buildRuntimeDeclarationProfileCatalog([{
   ...skuBatchManifest,
   production_obligation: undefined
@@ -701,6 +713,70 @@ assert.throws(
   /Skill manifest task_type 重复/,
   'injected registry did not reject conflicting manifest identities'
 );
+
+const packageAwareRegistry = createSkillRuntimeRegistry(listSkillManifests());
+const ambiguousSkuWorkflowEntry = packageAwareRegistry.resolveManifestSelection({
+  skillId: 'sku-batch'
+});
+assert.strictEqual(ambiguousSkuWorkflowEntry.status, 'conflict');
+assert.strictEqual(
+  ambiguousSkuWorkflowEntry.conflictReason,
+  'workflow_entry_profile_ambiguous'
+);
+assert.deepStrictEqual(ambiguousSkuWorkflowEntry.candidateTaskTypes, [
+  'ecommerce.sku_batch.v1',
+  'ecommerce.sku_color_card.v1',
+  'ecommerce.sku_template.v1'
+]);
+[
+  skuBatchManifest,
+  skuColorCardManifest,
+  skuTemplateManifest
+].forEach((manifest) => {
+  const selection = packageAwareRegistry.resolveManifestSelection({
+    skillId: 'sku-batch',
+    taskType: manifest.task_type
+  });
+  assert.strictEqual(selection.status, 'resolved');
+  assert.strictEqual(selection.artifactManifest, manifest);
+});
+const exactSkuManifestSelection = packageAwareRegistry.resolveManifestSelection({
+  skillId: skuBatchManifest.skill_id
+});
+assert.strictEqual(exactSkuManifestSelection.status, 'resolved');
+assert.strictEqual(exactSkuManifestSelection.artifactManifest, skuBatchManifest);
+const legacySingleProfileSelection = packageAwareRegistry.resolveManifestSelection({
+  skillId: 'main-image-design'
+});
+assert.strictEqual(legacySingleProfileSelection.status, 'resolved');
+assert.strictEqual(legacySingleProfileSelection.artifactManifest, mainImageManifest);
+const workflowEntryTaskTypeMismatch = packageAwareRegistry.resolveManifestSelection({
+  skillId: 'sku-batch',
+  taskType: mainImageManifest.task_type
+});
+assert.strictEqual(workflowEntryTaskTypeMismatch.status, 'conflict');
+assert.strictEqual(workflowEntryTaskTypeMismatch.conflictReason, 'artifact_manifest_conflict');
+assert.deepStrictEqual(workflowEntryTaskTypeMismatch.candidateTaskTypes, [
+  'ecommerce.sku_batch.v1',
+  'ecommerce.sku_color_card.v1',
+  'ecommerce.sku_template.v1'
+]);
+const unresolvedWorkflowEntryTaskType = packageAwareRegistry.resolveManifestSelection({
+  skillId: 'sku-batch',
+  taskType: 'ecommerce.not_registered.v1'
+});
+assert.strictEqual(unresolvedWorkflowEntryTaskType.status, 'unresolved_task_type');
+assert.strictEqual(
+  unresolvedWorkflowEntryTaskType.unresolvedTaskType,
+  'ecommerce.not_registered.v1'
+);
+const methodOverlaySelection = packageAwareRegistry.resolveManifestSelection({
+  skillId: referenceReplicationManifest.skill_id,
+  taskType: detailPageManifest.task_type
+});
+assert.strictEqual(methodOverlaySelection.status, 'resolved');
+assert.strictEqual(methodOverlaySelection.artifactManifest, detailPageManifest);
+assert.deepStrictEqual(methodOverlaySelection.methodManifests, [referenceReplicationManifest]);
 
 assert.deepStrictEqual(
   listDeclarableRuntimeWorkModes('ecommerce.sku_batch.v1', catalog),
@@ -798,16 +874,25 @@ assert(
 const buildWorkflowMenuLinesForAudit = vm.runInNewContext(
   `(${extractNamedFunctionSource(executorSource, 'buildWorkflowMenuLines')
     .replace('function buildWorkflowMenuLines(): string[]', 'function buildWorkflowMenuLines()')})`,
-  { listSkillManifests, getSkillById, getDesignTaskTypeSpec }
+  {
+    buildRuntimeDeclarationProfileCatalog,
+    listSkillManifests,
+    getSkillById,
+    getDesignTaskTypeSpec
+  }
 );
 const preBindingWorkflowMenuLines = buildWorkflowMenuLinesForAudit();
 const preBindingMainImageLine = preBindingWorkflowMenuLines.find((line) => (
-  String(line).includes('Profile：ecommerce.main_image.v1')
+  String(line).includes('taskType：ecommerce.main_image.v1')
 ));
 assert(preBindingMainImageLine, 'pre-binding workflow menu omitted the main-image Profile');
 assert(
   preBindingMainImageLine.includes(mainImageRoleGuidance),
   'pre-binding workflow menu did not expose the complete main-image Task Profile guidance'
+);
+assert(
+  preBindingMainImageLine.includes('workMode：create_new/redesign/edit_existing'),
+  'pre-binding workflow menu omitted the declarable main-image workMode family'
 );
 const toolExecutorSource = fs.readFileSync(path.resolve(
   __dirname,

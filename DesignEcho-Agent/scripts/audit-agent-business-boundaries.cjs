@@ -17032,7 +17032,9 @@ async function run() {
         ...(toolSchemasText.includes('If a matching Skill tool is already visible, call that Skill directly')
           && toolSchemasText.includes('only when the system prompt explicitly names the exact Profile id')
           && toolSchemasText.includes('pass that id as taskTypeId')
-          && executorText.includes('declareDesignIntent({ taskTypeId: <Profile> })')
+          && executorText.includes('resolveRuntimeWorkflowEntryDeclarationFamily')
+          && executorText.includes('canOfferRecommendedRuntimeOwner')
+          && executorText.includes('workMode 必须来自你')
           && !executorText.includes('declareDesignIntent({ taskType:')
           && !toolSchemasText.includes('with that taskType to bind it')
           ? []

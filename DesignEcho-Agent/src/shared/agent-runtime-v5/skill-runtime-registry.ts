@@ -33,7 +33,10 @@ export interface SkillRuntimeManifestSelection {
     artifactManifest?: SkillRuntimeManifest;
     methodManifests: SkillRuntimeManifest[];
     manifests: SkillRuntimeManifest[];
-    conflictReason?: 'artifact_manifest_conflict';
+    conflictReason?:
+        | 'artifact_manifest_conflict'
+        | 'workflow_entry_profile_ambiguous';
+    candidateTaskTypes?: string[];
     unresolvedTaskType?: string;
 }
 
@@ -76,6 +79,24 @@ function buildUniqueManifestIndex(
     return index;
 }
 
+function buildManifestListIndex(
+    entries: Array<{ key: string; manifest: SkillRuntimeManifest }>
+): ReadonlyMap<string, readonly SkillRuntimeManifest[]> {
+    const index = new Map<string, SkillRuntimeManifest[]>();
+    entries.forEach(({ key, manifest }) => {
+        const normalized = normalizeKey(key);
+        if (!normalized) return;
+        const members = index.get(normalized) || [];
+        if (!members.some((member) => member.skill_id === manifest.skill_id)) {
+            members.push(manifest);
+        }
+        index.set(normalized, members);
+    });
+    return new Map(Array.from(index.entries()).map(([key, members]) => (
+        [key, Object.freeze([...members])]
+    )));
+}
+
 function isMethodManifest(manifest: SkillRuntimeManifest): boolean {
     return manifest.planning_role === 'method';
 }
@@ -86,6 +107,15 @@ function uniqueManifests(manifests: Array<SkillRuntimeManifest | undefined>): Sk
         if (manifest) uniqueById.set(manifest.skill_id, manifest);
     });
     return Array.from(uniqueById.values());
+}
+
+function listArtifactTaskTypes(manifests: readonly SkillRuntimeManifest[]): string[] {
+    return Array.from(new Set(
+        manifests
+            .filter((manifest) => !isMethodManifest(manifest))
+            .map((manifest) => manifest.task_type)
+            .filter(Boolean)
+    )).sort();
 }
 
 function skillRoutesToTaskTypeVariant(
@@ -115,6 +145,11 @@ export function createSkillRuntimeRegistry(
             (manifest.legacy_skill_ids || []).map((key) => ({ key, manifest }))
         ))
     );
+    const manifestsByWorkflowEntrySkillId = buildManifestListIndex(
+        manifests.flatMap((manifest) => (
+            (manifest.workflow_entry_skill_ids || []).map((key) => ({ key, manifest }))
+        ))
+    );
 
     function getManifestBySkillId(skillId?: string): SkillRuntimeManifest | undefined {
         return manifestBySkillId.get(normalizeKey(skillId));
@@ -133,7 +168,14 @@ export function createSkillRuntimeRegistry(
     ): SkillRuntimeManifestSelection {
         const skillId = normalizeKey(input.skillId);
         const taskType = normalizeKey(input.taskType);
-        const skillManifest = getManifestBySkillId(skillId) || getManifestByLegacySkillId(skillId);
+        const exactSkillManifest = getManifestBySkillId(skillId);
+        const workflowEntryManifests = exactSkillManifest
+            ? []
+            : [...(manifestsByWorkflowEntrySkillId.get(skillId) || [])];
+        const legacySkillManifest = !exactSkillManifest && workflowEntryManifests.length === 0
+            ? getManifestByLegacySkillId(skillId)
+            : undefined;
+        const skillManifest = exactSkillManifest || legacySkillManifest;
         const taskTypeManifest = getManifestByTaskType(taskType);
 
         // 结构化 taskType 一旦出现就是权威身份；未知值不能回退到另一个 Skill 猜测。
@@ -144,6 +186,51 @@ export function createSkillRuntimeRegistry(
                 methodManifests: [],
                 manifests: [],
                 unresolvedTaskType: taskType
+            };
+        }
+
+        if (workflowEntryManifests.length > 0) {
+            const workflowArtifactManifests = workflowEntryManifests.filter(
+                (manifest) => !isMethodManifest(manifest)
+            );
+            const workflowMethodManifests = workflowEntryManifests.filter(isMethodManifest);
+            const candidateTaskTypes = listArtifactTaskTypes(workflowArtifactManifests);
+
+            if (!taskTypeManifest && workflowArtifactManifests.length > 1) {
+                return {
+                    status: 'conflict',
+                    methodManifests: workflowMethodManifests,
+                    manifests: uniqueManifests(workflowEntryManifests),
+                    conflictReason: 'workflow_entry_profile_ambiguous',
+                    candidateTaskTypes
+                };
+            }
+
+            if (taskTypeManifest
+                && !workflowArtifactManifests.some(
+                    (manifest) => manifest.task_type === taskTypeManifest.task_type
+                )) {
+                return {
+                    status: 'conflict',
+                    taskTypeManifest,
+                    methodManifests: workflowMethodManifests,
+                    manifests: uniqueManifests([
+                        ...workflowEntryManifests,
+                        taskTypeManifest
+                    ]),
+                    conflictReason: 'artifact_manifest_conflict',
+                    candidateTaskTypes
+                };
+            }
+
+            const artifactManifest = taskTypeManifest || workflowArtifactManifests[0];
+            return {
+                status: 'resolved',
+                skillManifest: artifactManifest,
+                taskTypeManifest,
+                artifactManifest,
+                methodManifests: workflowMethodManifests,
+                manifests: uniqueManifests([artifactManifest, ...workflowMethodManifests])
             };
         }
 

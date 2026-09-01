@@ -131,6 +131,18 @@ const CHILD_DOCUMENT_TARGETS: Record<BusinessDesignSkillId, {
     }
 };
 
+/**
+ * 该父 Skill 的三个子交付身份。
+ *
+ * `sku-batch` 是一个多 Profile Package；父级这里委托的是“组合、命名与批量交付”，
+ * 因而必须显式选择 batch Artifact Profile，不能再依赖 Registry 的 legacy 首项。
+ */
+const CHILD_RUNTIME_TASK_TYPES: Record<BusinessDesignSkillId, string> = {
+    'main-image-design': 'ecommerce.main_image.v1',
+    'detail-page-design': 'ecommerce.detail_page.v1',
+    'sku-batch': 'ecommerce.sku_batch.v1'
+};
+
 function resolveChildExecutorOverride(step: EcommerceSocksDispatchOrchestrationChildStep, executeParams: SkillExecuteParams): SkillExecutor | undefined {
     const override = executeParams.params.childExecutorOverrides?.[step.skillId];
     if (override && typeof override.execute === 'function') {
@@ -480,7 +492,10 @@ async function runManifestOwnedAutonomousChild(
     userIntent: string,
     projectPath?: string
 ): Promise<EcommerceSocksChildDispatchRunResult> {
-    const selection = resolveSkillRuntimeManifestSelection({ skillId: step.skillId });
+    const selection = resolveSkillRuntimeManifestSelection({
+        skillId: step.skillId,
+        taskType: CHILD_RUNTIME_TASK_TYPES[step.skillId]
+    });
     if (selection.status !== 'resolved' || !selection.artifactManifest) {
         return buildFailedChildResultFromError(
             step,

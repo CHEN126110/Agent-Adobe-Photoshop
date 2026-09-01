@@ -33,6 +33,9 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
     // 真机 2026-08-17：绑定 Stage 机的三次详情页任务全部死于简报表单校验，零写入。
     execution_model: 'agentic',
     legacy_skill_ids: ['detail-page-design'],
+    // user-facing workflow entry 与 legacy 兼容 id 分开声明：前者供 Agent 选择
+    // Artifact Profile，后者只服务旧调用解析，不能再由注册顺序承担 owner 身份。
+    workflow_entry_skill_ids: ['detail-page-design'],
     // 未声明 workMode 时只使用中性契约，不能默认把局部编辑升级为从零创作。
     required_inputs: ['goal'],
     optional_inputs: ['current_document', 'target_scope'],

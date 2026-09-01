@@ -38,6 +38,38 @@ DesignEcho 借鉴以下原则：
 | Memory / Context | 项目状态、历史偏好、素材索引、视觉证据 | 不替代当前任务的真实观察 |
 | Evaluation | 触发测试、质量检查、真实结果验收 | 不只检查“脚本跑完” |
 
+## Skill Package 组成与唯一 owner
+
+`Skill Package` 是 Agent 可选择的一个用户级专业能力，不等于单个 Manifest，也不等于
+一份 `SKILL.md`。当前代码不再新建 Package Registry；Package 由现有真相源按以下关系
+只读组合：
+
+| 内容 | 唯一 owner | 说明 |
+| --- | --- | --- |
+| 用户级入口、模型 Tool 名、简短适用边界和模型可写参数 | `SkillDeclaration` | 一个 Package 恰好一个 user-facing workflow entry。 |
+| `task_type`、Manifest、入口 Skill、交付物知识和文档角色 crosswalk | Task Profile | 一个 Package 可以有多个 Profile；不能按 Manifest 注册顺序选第一个。 |
+| 输入来源、execution model、work mode、Capability、预算、评价引用和交付契约 | 每个 Task Profile 对应的 Manifest | Manifest 是 Runtime 合同，不重复保存用户级入口说明。 |
+| 专业工作法、生产经验和按需深读细则 | `skills/<playbookId>/SKILL.md` 与 `references/` | 只提供知识，不绑定 Runtime、不授予权限、不复制 Tool schema。 |
+| 确定性实现与领域交互 | Executor / Skill Provider | 只实现已选 Profile；不做全局路由，不替 Agent 作开放设计判断。 |
+
+主图与详情页当前各有一个入口和一个 `task_type` family；具体 Profile 还包含 Agent 明确
+选择的 `workMode`（例如 `create_new`、`redesign`、`edit_existing`）。SKU 有一个入口，但
+包含色卡、模板和批量生产三个 Artifact `task_type`。多 Profile Package 必须由模型根据完整
+任务语义显式选择；任何 `.find()`、数组首项、文件名或关键词都不能成为 Profile owner。
+
+渐进披露顺序是：先看用户级入口和可忽略候选；模型确认 `task_type + workMode` 后绑定精确
+Profile；再取得该 Profile 的方法、Skill 和 Capability；深度 reference 只在当前设计问题
+确实需要时读取。文本候选只能减少模型比较身份的认知成本，不能裁剪 Agent 原子 Tool 面、
+绑定身份、执行 Skill 或授予 Tool 权限；只读和 no-tool 请求不得被生产 Profile 选择牵引。
+
+以下重复属于标准化缺陷：
+
+1. 在 Playbook、Prompt 或 Executor 再维护一份 Manifest 输入、预算、权限或交付合同；
+2. 在 Manifest 中写固定素材选择、版式、文案或审美答案；
+3. 同一模型参数同时由 Agent 与 Runtime 拥有；
+4. 一个多 Profile Package 没有显式选择，却依赖注册顺序进入其中一个 Profile；
+5. 为修一次触发问题继续增加品类专属 Agent / Harness 分支。
+
 ## 标准字段
 
 每个 skill 至少必须具备：

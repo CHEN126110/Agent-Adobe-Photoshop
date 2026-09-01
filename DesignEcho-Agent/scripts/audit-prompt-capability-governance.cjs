@@ -229,9 +229,10 @@ for (const fullKnowledgeInjection of [
 }
 
 assert(!executorSource.includes('declareDesignIntent({ taskType:'));
-assert(executorSource.includes('declareDesignIntent({ taskTypeId: <Profile> })'));
+assert(executorSource.includes('resolveRuntimeWorkflowEntryDeclarationFamily'));
+assert(executorSource.includes('workMode 必须来自你'));
 assert(executorSource.includes('当前工具列表已有匹配 Skill 时直接调用 Skill'));
-assert(executorSource.includes('只有系统在下方明确给出对应 Profile、且当前工具列表没有匹配 Skill 时'));
+assert(executorSource.includes('只有系统明确给出可声明的 taskType、且当前工具列表没有匹配 Skill 时'));
 assert(executorSource.includes('规格化生产有唯一答案时走最短确定路径'));
 assert(executorSource.includes('开放创意以成品质量为先'));
 assert(executorSource.includes('按结果风险与信息增益取得足够证据'));

@@ -1844,7 +1844,7 @@ export const MainImageSkill: SkillDeclaration = {
     // legacy/deterministic 路由不得跳过 Agent 循环直执；Manifest 绑定后的同一 Agent
     // 可以把自己的逐槽决定提交给这个受控 production entry。
     modelDirectExecution: 'forbidden',
-    description: '主图用途与交付边界会随本工作法提供，不要在开工时重复读取同一手册。工作法不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。开放创意只需要两段式调用：prepare 时提交一个明确规格与设计方向，取得隔离工作文档；随后用通用 Photoshop 工具完成分层设计；finalize 时原样提交 workspaceRef。目录、命名、版本、执行范围和事务授权由 Runtime 在执行点处理，不是模型参数。确定性逐槽生产与白底导出仍由同一 Skill 包内部支持，但不污染开放创意的模型接口。',
+    description: '主图用途与交付边界会随本工作法提供，不要在开工时重复读取同一手册。工作法不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。开放创意只需要两段式调用：prepare 时由 Agent 在 800（1500×1500，1:1）、750（1500×2000，3:4）、1200（1440×2160，2:3）中明确选择一个标准工作区规格并提交设计方向，取得隔离工作文档；随后用通用 Photoshop 工具完成分层设计；finalize 时原样提交 workspaceRef。prepare 不接受 custom/customSize，也不会按比例自动映射到标准规格。目录、命名、版本、执行范围和事务授权由 Runtime 在执行点处理，不是模型参数。确定性逐槽生产与白底导出仍由同一 Skill 包内部支持，但不污染开放创意的模型接口。',
     whenToUse: [
         'User explicitly delegates a main-image, cover, or first-image design deliverable',
         'User asks for a white background image (白底图)',
@@ -1870,12 +1870,12 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['开放创意主图只提交设计师真正拥有的内容：prepare 使用 mainImageProductionAction、一个明确 size（或 customSize）和 agentDesignDecision；取得 mainImageWorkspaceRef 后用通用 Photoshop 工具完成画面；至少一个标准子组真实非空后，以 finalize 和同一 workspaceRef 交付。不要在 prepare/finalize 参数中填写目录、文件名、supportRefs、执行模式、执行范围、授权字段或旧逐槽生产结构；这些由 Skill/Runtime 内部处理。不要把 prepare 当设计完成，也不要在 finalize 重新置图。未显式指定规格时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 选择；Harness 不代选规格。白底图只需声明 imageType=white-bg 与 sourceAssetKind=project-sku-material；项目路径与安全输出位置由 Runtime 解析。用户明确只要空骨架文件时才设置 createEmptySkeleton=true。'],
+        parameterExtractionHints: ['开放创意主图只提交设计师真正拥有的内容：prepare 使用 mainImageProductionAction、一个明确的标准 size 和 agentDesignDecision；size=800 表示 1500×1500（1:1），size=750 表示 1500×2000（3:4），size=1200 表示 1440×2160（2:3）。prepare 只能选择其中一个，不能提交 custom、customSize 或多个 sizes，也不能让 Harness 按比例代选。取得 mainImageWorkspaceRef 后用通用 Photoshop 工具完成画面；至少一个标准子组真实非空后，以 finalize 和同一 workspaceRef 交付。不要在 prepare/finalize 参数中填写目录、文件名、supportRefs、执行模式、执行范围、授权字段或旧逐槽生产结构；这些由 Skill/Runtime 内部处理。不要把 prepare 当设计完成，也不要在 finalize 重新置图。未显式指定规格时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 选择。白底图只需声明 imageType=white-bg 与 sourceAssetKind=project-sku-material；项目路径与安全输出位置由 Runtime 解析。用户明确只要空骨架文件时才设置 createEmptySkeleton=true。'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
             '如果用户是在处理现有主图的优化、导出或排版，使用这个 skill，而不是模板创建 skill。',
-            '普通“做主图”未给规格时，先让 Agent 从当前项目的同类成品与已确认 delivery 规则中选择交付规格；800/750/1200 是无更可靠项目证据时的 Skill 基线，不能由早期参数默认器抢先冻结。',
+            '普通“做主图”未给规格时，先让 Agent 从当前项目的同类成品与已确认 delivery 规则中选择交付规格；标准映射固定为 800=1500×1500（1:1）、750=1500×2000（3:4）、1200=1440×2160（2:3），不能由早期参数默认器抢先冻结，也不能把 custom/customSize 自动映射到任一标准规格。',
             '800/750/1200 都保留点击图和转化图容器；槽位是否填充由当前 Agent/用户决定，空槽不导出。白底图是 SKU 源文件导出，不从点击图或转化图裁切。',
             '先判断用户是在询问/规划还是明确要求生成文件；工具边界负责限制写入范围，不要用固定规则禁止模型根据任务选择工具。',
             '普通创意主图先由 Agent 自主形成设计判断；需要落入标准生产结构时，由 Agent 将逐槽决定提交给当前 Manifest 的唯一 production entry。明确的 SKU 白底图导出请求属于确定性素材生产，可使用同一受控入口。'
@@ -1888,12 +1888,12 @@ export const MainImageSkill: SkillDeclaration = {
     parameters: [
         deliveryConventionParam(),
         strParam('deliveryVersion', 'Agent- or user-selected safe version label required when deliveryConvention.versionPolicy=new_version; it must be rendered through {version} in both editable and raster targets.'),
-        strParam('size', 'Output size preset', false, {
+        strParam('size', 'Main-image size preset. For prepare choose exactly one standard workspace: 800 = 1500×1500 (1:1), 750 = 1500×2000 (3:4), 1200 = 1440×2160 (2:3). custom is retained only for non-prepare legacy custom planning and is rejected by prepare.', false, {
             enum: ['800', '750', '1200', 'custom']
         }),
-        objParam('customSize', 'Custom size object {width,height}'),
+        objParam('customSize', 'Non-prepare legacy custom size {width,height}. Omit this field for prepare; prepare accepts only one standard size preset: 800, 750, or 1200.'),
         objParam('agentDesignDecision', 'Agent-authored main-image direction; no Harness default visual plan is supplied'),
-        strParam('mainImageProductionAction', 'Two-step open-creative production action: prepare one standard workspace, then finalize the same Agent-authored workspace', false, {
+        strParam('mainImageProductionAction', 'Two-step open-creative production action: prepare exactly one 800/750/1200 standard workspace, then finalize the same Agent-authored workspace', false, {
             enum: ['prepare', 'finalize']
         }),
         strParam('mainImageWorkspaceRef', 'Opaque workspace reference returned by prepare; required unchanged for finalize'),
@@ -1915,7 +1915,7 @@ export const MainImageSkill: SkillDeclaration = {
         strParam('mainImageCapability', 'Stable main-image business capability id'),
         strParam('whiteBackgroundSourceDocumentPath', 'White background source document path'),
         strParam('whiteBackgroundOutputRelativePath', 'White background export relative path'),
-        arrParam('sizes', 'Batch output sizes list; each entry is a size preset key such as "800", "750", "1200" or a delivery ratio key', false, {
+        arrParam('sizes', 'Non-prepare batch output sizes list. Do not use for prepare; prepare requires one explicit standard size in the singular size field.', false, {
             items: { type: 'string' }
         }),
         strParam('mainImageExecutionMode', 'Controlled execution mode for the main-image executor', false, {
