@@ -90,9 +90,11 @@
 - D-131 通过后启动的主图诊断在约 245 秒按首偏差纪律停止：16 次模型调用约 235 秒、20 次 Tool 约 10 秒。Agent 已比较联系表并说明平铺 /模特角色，但没有绑定主图 Profile 或调用 `main-image-design`；它用 `openProjectFile` 尝试 JPG，随后在生产画布试放两张候选、重复截图、装载删除能力并清理试放层后才置入第三张。首个确定性根因是原样短提示末尾句号使 Skill recommendation 消失；该 Run 有局部进展但不属于 Skill 主图成功，也不进入 S1 分母。
 - D-134（0888b25f）正常程序在全新一次性项目和干净新对话完成一次自然句实机复测：真实建档 1500×1500、置入模特图、色带加标题、保存 PSD 并导出 JPG，构图叙事可解释且按真实像素自我纠错，但全程未绑定 `ecommerce.main_image.v1`，终态 failed / needs_review，不进入 S1 分母。已验证：advisory 候选真实产出、引导块静态重放逐字节复现、上下文零裁剪、订阅通道透传逻辑无截断、declareDesignIntent 在 SDK 子进程 argv 白名单中实证可达。首偏差归因保持**待验证诊断**：组合后的实际系统提示未被运行实拍，且唯一候选以文本提示而非结构化选择手柄提供、绑定后旧候选提示缺一致移除边界，Harness 呈现方式与模型采纳可能共同作用。该模型经该通道 requestedThinking 恒为 disabled，与用户 thinking.enabled=true 偏好不符；D-133 之前的声明基线全部来自 deepseek-v4-flash-vision-exp，跨模型不可比。
 - D-134 的 Final Judge 对成品返回完整中文评审散文（工艺分 7/10、三条具体问题、诚实未评价项）但无机读评分批次，协议以 score_batch_invalid 诚实失败、未补默认分；活动文档两次漂移到外部残留文档均被执行前守卫按设计中止，运行期间外部 Photoshop 文档集合确有变化（外部并发成立）。
+- 应用自更新通道已落地（2026-09-01 用户拍板：私下分发 + OSS 静态源）：electron-updater 泛化 provider，更新源唯一真相点在 `main/config/app-update-source.ts`（RFC 2606 `.invalid` 占位防劫持，建桶后改一处常量），仅打包态生效；Renderer 只读状态投影 + 显式安装（顶栏徽章 + 设置「常规 → 关于与更新」主动检查入口）。`npm run build && npm run dist` 打包链路已实跑验证，release/ 产出安装包、blockmap 与 latest.yml 三件套（sha512 完整）。
 
 ## 当前未核实
 
+- 应用自更新的真桶端到端升级链（真实 OSS 桶 + 两个打包版本互升）未验证；开发态运行时诚实报 `unsupported_dev`、占位源报 `unconfigured`，均不发网络请求。UXP 插件不在打包产物内，插件在其他设备仍需 UXP Developer Tool 手动加载，属后续独立切片。
 - 5 Case 技术成功率、重复运行稳定性和恢复成功率。
 - 主图、详情页、SKU 各自的多样本 Photoshop E2E 与可编辑交付稳定性。
 - 无业务 Skill 的通用单画布设计能否稳定达到成熟设计师水平。

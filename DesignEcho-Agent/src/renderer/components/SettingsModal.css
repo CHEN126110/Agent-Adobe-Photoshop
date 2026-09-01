@@ -1791,8 +1791,13 @@
                     color: var(--de-text);
                 }
 
-                .btn-secondary:hover {
+                .btn-secondary:hover:not(:disabled) {
                     background: var(--de-bg);
+                }
+
+                .btn-secondary:disabled {
+                    opacity: 0.6;
+                    cursor: not-allowed;
                 }
 
                 .btn-primary {

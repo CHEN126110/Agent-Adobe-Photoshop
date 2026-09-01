@@ -21,6 +21,7 @@ import { KnowledgeSourceManagementPanel } from './KnowledgeSourceManagementPanel
 import { UserPreferencesPanel } from './UserPreferencesPanel';
 import { ChatGptSubscriptionCard } from './ChatGptSubscriptionCard';
 import { ClaudeSubscriptionCard } from './ClaudeSubscriptionCard';
+import { AppUpdateSettingsSection } from './AppUpdateBadge';
 import { getUserFacingSkills } from '../../shared/skills/skill-declarations';
 import { getSkillExecutor } from '../services/skill-executors';
 import { normalizeDesignDimensionSpec } from '../../shared/design-dimension-spec';
@@ -3055,6 +3056,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     </select>
                                 </div>
                             </div>
+
+                            {/* 关于与更新（版本信息 + 用户主动检查更新入口） */}
+                            <AppUpdateSettingsSection />
                         </div>
                     )}
 
