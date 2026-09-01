@@ -44,6 +44,8 @@
 - 创意任务模型可见面已由 `b10da18a` 首次收敛：首轮保留项目 /画面观察、Eagle、图片、图形、可编辑文字和局部变换；大型 `composeDesign`、隔离 `evaluateDesign` 与已自动注入方法的 `readSkillPlaybook` 转为同一 Capability Session 的按需能力。主图 /详情页 Skill 不再要求开工重复读取同一手册。agentic 通用原则使用 1,112 字符紧凑底座，staged 全量原则仍保留 6,408 字符。该变更不改变 Tool preflight、TaskRun、Photoshop 事务、读回或交付完成权。
 - Skill 现支持把完整内部生产参数与模型可见参数分开投影；投影只能隐藏 optional 技术字段，不能隐藏 required 输入。主图模型接口只保留 Agent-owned 规格、设计和素材语义，Runtime-owned execution mode /scope 在执行入口剥离；prepare 强制 disposable scope，且不在不保存 /不导出的阶段验证 delivery convention /support refs。agentic 常驻上下文只保留任务特有方法 overlay 与紧凑原则，Artifact /Craft 索引按需可达；该机制不选择 Skill、不决定素材或画面。
 - 能力 /意愿问句现在会让出仍包含具体只读目标的礼貌表达：去掉“你可以 /你能不能”等开头后，若正文仍是项目 /文档 /SKU 检查或参考检索，就保留非写入语义；写入形态和纯能力询问继续保持 `chat_only`，不能因此取得执行授权。对话出口会拒绝 DSML、`<tool_call>` 与 angle-JSON Tool 协议正文并触发一次自然语言 repair；清洗器只做最后防泄漏，不把协议故障伪装成成功。
+- Reflexion 重入容量门按续作类型分流：提供容量证明的重入路径先识别续作类型再取对应最低容量——completed 审美返工与执行 / 复核目标阶段用完整下限，targetStage=E2 的交付闭合用不要求视觉候选的交付下限；「视觉额度耗尽但剩余工具与时间足够交付」的 E2 续作不再被误拦，不提供证明的调用方保持旧行为。
+- 唯一 advisory 候选已实现两段式入口：候选提示由动态上下文逐轮渲染，declareDesignIntent 以 enum taskTypeId/workMode 充当结构化选择手柄；模型声明成功时 declaredTaskType、Runtime owner 绑定与 Skill 可见性在同一 Tool result 边界提交，候选提示随即在下一轮移除。Harness 不自动选 Skill；inspect / no-tool 控制面不渲染候选手柄。该机制已有静态与行为断言，尚未经正常程序实机复现。
 
 ## 已核实（构建与自动检查）
 
@@ -84,7 +86,7 @@
 - 新普通项目 Run 665 使用自然短提示后，Agent 能说明“穿着场景主视觉、四色平铺辅助”的选择理由，却在约 15 分钟内没有产生内容写入。10 次模型调用累计约 1,176,756 ms，14 次 Tool 约 11,527 ms，9 次有 usage 的调用累计约 380,978 input token；前三次主图 Skill 调用被 prepare 阶段无关的 support refs /scope 拒绝，第四次才建成空工作文档。运行在取得明确停滞证据后停止。该样本证明 `b10da18a` 降低首轮 Tool 面仍不够，Skill schema 与常驻知识自身也在形成竞争式控制；它不证明模型没有设计判断，也不进入成功率分母。
 - D-130 重测前的项目查看 Run 在约 4.4 秒内以 `success / final_response` 结束，但实际为 1 次模型调用、0 Tool、`toolSchemaChars=2`，并向用户显示 `<{"name":"list_directory",...}`。根因是“你可以帮我”礼貌委托被能力问句判据提前降为 `chat_only`，随后对话协议泄漏检测漏掉 angle-JSON 变体。该运行没有修改 Photoshop，但污染了对话，不能计为响应速度改善。
 - D-131 通过后启动的主图诊断在约 245 秒按首偏差纪律停止：16 次模型调用约 235 秒、20 次 Tool 约 10 秒。Agent 已比较联系表并说明平铺 /模特角色，但没有绑定主图 Profile 或调用 `main-image-design`；它用 `openProjectFile` 尝试 JPG，随后在生产画布试放两张候选、重复截图、装载删除能力并清理试放层后才置入第三张。首个确定性根因是原样短提示末尾句号使 Skill recommendation 消失；该 Run 有局部进展但不属于 Skill 主图成功，也不进入 S1 分母。
-- D-134（0888b25f）正常程序在全新一次性项目和干净新对话完成一次自然句实机复测：真实建档 1500×1500、置入模特图、色带加标题、保存 PSD 并导出 JPG，构图叙事可解释且按真实像素自我纠错，但全程未绑定 `ecommerce.main_image.v1`，终态 failed / needs_review，不进入 S1 分母。Harness 注入链逐环无罪（advisory 候选、引导块逐字节复现、上下文零裁剪、订阅通道全量透传、declareDesignIntent 在 SDK 子进程 argv 白名单中实证可达）；首偏差 owner 为 Agent（claude-subscription-opus 未采纳 advisory）。该模型经该通道 requestedThinking 恒为 disabled，与用户 thinking.enabled=true 偏好不符；D-133 之前的声明基线全部来自 deepseek-v4-flash-vision-exp，跨模型不可比。
+- D-134（0888b25f）正常程序在全新一次性项目和干净新对话完成一次自然句实机复测：真实建档 1500×1500、置入模特图、色带加标题、保存 PSD 并导出 JPG，构图叙事可解释且按真实像素自我纠错，但全程未绑定 `ecommerce.main_image.v1`，终态 failed / needs_review，不进入 S1 分母。已验证：advisory 候选真实产出、引导块静态重放逐字节复现、上下文零裁剪、订阅通道透传逻辑无截断、declareDesignIntent 在 SDK 子进程 argv 白名单中实证可达。首偏差归因保持**待验证诊断**：组合后的实际系统提示未被运行实拍，且唯一候选以文本提示而非结构化选择手柄提供、绑定后旧候选提示缺一致移除边界，Harness 呈现方式与模型采纳可能共同作用。该模型经该通道 requestedThinking 恒为 disabled，与用户 thinking.enabled=true 偏好不符；D-133 之前的声明基线全部来自 deepseek-v4-flash-vision-exp，跨模型不可比。
 - D-134 的 Final Judge 对成品返回完整中文评审散文（工艺分 7/10、三条具体问题、诚实未评价项）但无机读评分批次，协议以 score_batch_invalid 诚实失败、未补默认分；活动文档两次漂移到外部残留文档均被执行前守卫按设计中止，运行期间外部 Photoshop 文档集合确有变化（外部并发成立）。
 
 ## 当前未核实

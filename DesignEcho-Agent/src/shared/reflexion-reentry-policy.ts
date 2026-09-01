@@ -40,7 +40,9 @@ import {
 import type { RuntimePerformanceUsage } from './agent-runtime-v5/runtime-accounting';
 import {
     AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM,
+    AGENT_DELIVERY_CLOSURE_REENTRY_MINIMUM,
     evaluateAgentExecutionCapacity,
+    type AgentExecutionCapacityMinimum,
     type AgentPerformanceBudget
 } from './agent-performance-policy';
 
@@ -617,6 +619,26 @@ export interface QualityAwareReentryDecision extends ReflexionReentryDecision {
  *   - 无进展（失败签名与上一轮相同）仍即停，不受涨分放宽（治原地打转）。
  * - 本函数只判「停 / 继续返工」并给出停机类别与分数轨迹；不改变运行结果的成败裁决。
  */
+/**
+ * 按续作类型解析容量下限：容量门必须先识别「这段续作要独立闭合什么」，再要求
+ * 对应的最低余量，不能用单一重下限套所有路径。
+ *
+ * - targetStage === 'E2'（含 E2 自身签发、未标目标阶段的补交付）：交付闭合只需
+ *   保存 / 导出 / 结算，不做新的视觉判断——视觉额度耗尽不得拦截交付。
+ * - 其余（审美返工、R4 等执行 / 复核目标阶段、未知目标）：新一代需要真实观察
+ *   与复核，沿用完整下限。
+ */
+function resolveReentryCapacityMinimum(
+    handoff?: ReflexionHandoffLike | null
+): Readonly<AgentExecutionCapacityMinimum> {
+    const targetStage = String(handoff?.targetStage || '').trim();
+    const sourceOwner = String(handoff?.sourceOwner || '').trim();
+    if (targetStage === 'E2' || (sourceOwner === 'E2' && !targetStage)) {
+        return AGENT_DELIVERY_CLOSURE_REENTRY_MINIMUM;
+    }
+    return AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM;
+}
+
 export function decideQualityAwareReflexionReentry(input: QualityAwareReentryInput): QualityAwareReentryDecision {
     const decision = decideQualityAwareReflexionReentryUngated(input);
     if (!decision.shouldReenter || !input.performanceCapacity) {
@@ -626,11 +648,12 @@ export function decideQualityAwareReflexionReentry(input: QualityAwareReentryInp
     // 此前不查剩余容量，预算已耗尽仍诞生下一代，下一代在循环入口即以 performance_budget
     // 停机，其「还没开始做」零进展文案会覆盖上一代的真实进展终态。任何重入路径只要
     // 调用方能提供同一请求的真实用量与预算，就必须证明还容得下一段可独立闭合的执行；
-    // 证明不足即拒绝启动，而不是启动后立刻死亡。该门只拒绝注定失败的新 generation，
-    // 不授予额度、不延长 deadline、不改变已有裁决。
+    // 证明不足即拒绝启动，而不是启动后立刻死亡。下限按续作类型解析（E2 交付闭合
+    // 不要求视觉额度），避免把「视觉耗尽但仍够交付」的合法续作误拦。该门只拒绝
+    // 注定失败的新 generation，不授予额度、不延长 deadline、不改变已有裁决。
     const capacity = evaluateAgentExecutionCapacity({
         ...input.performanceCapacity,
-        minimum: AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM
+        minimum: resolveReentryCapacityMinimum(input.handoff)
     });
     if (capacity.sufficient) {
         return decision;

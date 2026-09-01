@@ -3288,6 +3288,45 @@ function buildWorkflowMenuLines(): string[] {
     ];
 }
 
+/**
+ * 唯一 advisory 候选的结构化选择手柄提示（两段式入口治理，评审 2026-09-01）：
+ * 候选只描述「是什么 + 如何用 declareDesignIntent（enum taskTypeId / workMode）
+ * 结构化完成选择」。它由动态上下文逐轮渲染：模型声明成功时，declaredTaskType、
+ * Runtime owner 绑定与 Skill 可见性在同一个 Tool result 边界提交，本提示随即在
+ * 下一轮消失，不在绑定后继续催促。Harness 只提供候选，不自动选 Skill、不授予
+ * 任何权限；候选不匹配时模型可以直接忽略。
+ */
+export function buildRuntimeWorkflowCandidatePromptSection(params?: Record<string, any>): string {
+    const skillRoutingRecommendation = isSkillRoutingRecommendation(params?.skillRoutingRecommendation)
+        ? params?.skillRoutingRecommendation
+        : undefined;
+    if (!skillRoutingRecommendation || areSkillBridgesForbidden(params)) return '';
+    // 声明成功（或预解析 / 预绑定）后候选已经完成使命，立即移除。
+    if (params?.declaredTaskType) return '';
+    const selectedSkillHandoff = validateRuntimeSelectedSkillHandoff(params?.runtimeSelectedSkillHandoff)
+        ? params?.runtimeSelectedSkillHandoff
+        : undefined;
+    if (selectedSkillHandoff) return '';
+    if (!isManifestOwnedSkill(skillRoutingRecommendation.skillId)) return '';
+    const family = canOfferRecommendedRuntimeOwner(params, skillRoutingRecommendation)
+        ? resolveRuntimeWorkflowEntryDeclarationFamily(skillRoutingRecommendation.skillId)
+        : undefined;
+    if (!family) return '';
+    const recommendedSkill = getSkillById(skillRoutingRecommendation.skillId);
+    const candidateTaskType = family.taskType;
+    const supportedWorkModes = family.supportedWorkModes;
+    const declarationExample = supportedWorkModes.length > 0
+        ? `declareDesignIntent({ taskTypeId: "${candidateTaskType}", workMode: "<从 ${supportedWorkModes.join(' / ')} 中选择>" })`
+        : `declareDesignIntent({ taskTypeId: "${candidateTaskType}" })`;
+    return [
+        `候选工作流是「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」${candidateTaskType ? `（Profile：${candidateTaskType}）` : ''}。`,
+        candidateTaskType
+            ? `- 这只是候选，是否匹配仍由你判断。如果用户明确委托的就是这类交付物，请现在调用 ${declarationExample} 记录你的完整选择；workMode 必须来自你对“新建设计、重设计还是局部编辑”的理解，Harness 不代选。不要等到可选素材调查或首次写入之后。必要的项目或当前文档身份读取可以作为同一回合的只读调用。`
+            : '- 这个 Skill 对应多个 Profile，系统没有替你选其中一个。请根据完整 Profile 菜单判断；没有精确 Profile 时不要猜测 declareDesignIntent 参数。',
+        '- 如果用户要的只是把它当来源素材或并不匹配，就忽略这项建议，用当前普通设计能力继续完成，不要停在只读调查。'
+    ].join('\n');
+}
+
 export function buildBaseRuntimeContext(params: Record<string, any>, context?: any): string {
     const lines: string[] = [];
     if (areSkillBridgesForbidden(params)) {
@@ -3376,22 +3415,11 @@ export function buildBaseRuntimeContext(params: Record<string, any>, context?: a
         const recommendationRequiresRuntimeOwner = isManifestOwnedSkill(
             skillRoutingRecommendation.skillId
         );
-        if (recommendationRequiresRuntimeOwner && !selectedSkillHandoff && recommendedDeclarationFamily) {
-            // recommendation 只提供候选身份：若 Skill 已在当前工具列表中，模型直接调用；只有
-            // 系统给出了精确 Profile 且 Skill 不可见时，才允许用 declareDesignIntent 原地绑定。
-            const candidateTaskType = recommendedDeclarationFamily.taskType;
-            const supportedWorkModes = recommendedDeclarationFamily.supportedWorkModes;
-            const declarationExample = supportedWorkModes.length > 0
-                ? `declareDesignIntent({ taskTypeId: "${candidateTaskType}", workMode: "<从 ${supportedWorkModes.join(' / ')} 中选择>" })`
-                : `declareDesignIntent({ taskTypeId: "${candidateTaskType}" })`;
-            lines.push(
-                `候选工作流是「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」${candidateTaskType ? `（Profile：${candidateTaskType}）` : ''}。`,
-                candidateTaskType
-                    ? `- 这只是候选，是否匹配仍由你判断。如果用户明确委托的就是这类交付物，请现在调用 ${declarationExample} 记录你的完整选择；workMode 必须来自你对“新建设计、重设计还是局部编辑”的理解，Harness 不代选。不要等到可选素材调查或首次写入之后。必要的项目或当前文档身份读取可以作为同一回合的只读调用。`
-                    : '- 这个 Skill 对应多个 Profile，系统没有替你选其中一个。请根据上方完整 Profile 菜单判断；没有精确 Profile 时不要猜测 declareDesignIntent 参数。',
-                '- 如果用户要的只是把它当来源素材或并不匹配，就忽略这项建议，用当前普通设计能力继续完成，不要停在只读调查。'
-            );
-        } else if (!recommendationRequiresRuntimeOwner) {
+        // Manifest-owned 唯一候选不再写进静态基座：它由 buildRuntimeWorkflowCandidatePromptSection
+        // 经动态上下文逐轮渲染，声明成功（declaredTaskType 与 owner 绑定 / Skill 可见性
+        // 同一 Tool result 边界提交）后立即消失（两段式入口治理，评审 2026-09-01）。
+        // 这里仍保留 recommendedDeclarationFamily 的计算，用于上方菜单的去重抑制。
+        if (!recommendationRequiresRuntimeOwner) {
             lines.push(
                 `当前任务可能适合「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」。`,
                 '- 先确认它与用户真正要做的事相符；相符就直接使用，并带上已经确认的素材和约束，不重复规划它内部的工作。',
@@ -5677,6 +5705,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 tools: capabilitySession.activeTools,
                 getDynamicOperatingContext: () => [
                     capabilitySession.buildPromptSection(),
+                    // 两段式入口（评审 2026-09-01）：唯一 advisory 候选以结构化选择手柄提示
+                    // 逐轮渲染。声明成功时 declaredTaskType 与 owner 绑定 / Skill 可见性在
+                    // 同一 Tool result 边界写入 runtimeParams，下一轮系统提示立即移除本段。
+                    buildRuntimeWorkflowCandidatePromptSection(runtimeParams),
                     buildDynamicDesignTaskOperatingContext(runtimeParams, context)
                 ].filter(Boolean).join('\n\n'),
                 // 通用交付能力在真实设计版本形成后才进入下一轮 Tool schema。它不绑定

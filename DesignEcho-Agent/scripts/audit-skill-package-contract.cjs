@@ -94,6 +94,7 @@ const {
 const { buildSkillToolSchemas } = require(path.join(executorRoot, 'skill-tools.ts'));
 const {
   buildBaseRuntimeContext,
+  buildRuntimeWorkflowCandidatePromptSection,
   resolveAutonomousCapabilityRuntime
 } = require(path.join(executorRoot, 'autonomous-agent.executor.ts'));
 
@@ -744,14 +745,45 @@ assert.deepStrictEqual(
   [],
   'method-only legacy id became a declarable Artifact Profile'
 );
+// 两段式入口（评审 2026-09-01）：唯一候选提示不再进静态基座，由动态段逐轮渲染，
+// 声明成功（declaredTaskType 同一 Tool result 边界提交）后立即消失。
 const mainImageRuntimeContext = buildBaseRuntimeContext({
   agentIntentControlPlane: productionIntentControlPlane,
   skillRoutingRecommendation: mainImageRecommendation
 }, {});
-assert(mainImageRuntimeContext.includes('Profile：ecommerce.main_image.v1'));
-assert(mainImageRuntimeContext.includes('create_new / redesign / edit_existing'));
-assert(mainImageRuntimeContext.includes('workMode 必须来自你'));
+assert(
+  !mainImageRuntimeContext.includes('候选工作流是'),
+  'unique manifest-owned candidate leaked back into the static base runtime context'
+);
+assert(
+  !mainImageRuntimeContext.includes('declareDesignIntent({'),
+  'static base runtime context still instructs a declaration call'
+);
 assert(!mainImageRuntimeContext.includes('可选的专业工作方法：'));
+const mainImageCandidateSection = buildRuntimeWorkflowCandidatePromptSection({
+  agentIntentControlPlane: productionIntentControlPlane,
+  skillRoutingRecommendation: mainImageRecommendation
+});
+assert(mainImageCandidateSection.includes('Profile：ecommerce.main_image.v1'));
+assert(mainImageCandidateSection.includes('create_new / redesign / edit_existing'));
+assert(mainImageCandidateSection.includes('workMode 必须来自你'));
+assert.strictEqual(
+  buildRuntimeWorkflowCandidatePromptSection({
+    agentIntentControlPlane: productionIntentControlPlane,
+    skillRoutingRecommendation: mainImageRecommendation,
+    declaredTaskType: 'ecommerce.main_image.v1'
+  }),
+  '',
+  'candidate prompt survived a committed declaration instead of being removed at the binding boundary'
+);
+const executorSourceForCandidateWiring = fs.readFileSync(
+  path.join(executorRoot, 'autonomous-agent.executor.ts'),
+  'utf8'
+);
+assert(
+  executorSourceForCandidateWiring.includes('buildRuntimeWorkflowCandidatePromptSection(runtimeParams)'),
+  'dynamic operating context no longer renders the structured workflow candidate handle per turn'
+);
 const inspectMainImageRecommendation = {
   ...mainImageRecommendation,
   mode: 'inspect'
@@ -780,6 +812,14 @@ assert(
   }, {}).includes('declareDesignIntent'),
   'inspect recommendation incorrectly requested a production Runtime declaration'
 );
+assert.strictEqual(
+  buildRuntimeWorkflowCandidatePromptSection({
+    agentIntentControlPlane: readOnlyIntentControlPlane,
+    skillRoutingRecommendation: inspectMainImageRecommendation
+  }),
+  '',
+  'inspect recommendation rendered a production candidate handle in the dynamic section'
+);
 const noToolIntentControlPlane = {
   requestKind: 'conversation',
   toolScope: 'none',
@@ -791,6 +831,14 @@ assert(
     skillRoutingRecommendation: inspectMainImageRecommendation
   }, {}).includes('declareDesignIntent'),
   'no-tool recommendation instructed the model to call an unavailable declaration Tool'
+);
+assert.strictEqual(
+  buildRuntimeWorkflowCandidatePromptSection({
+    agentIntentControlPlane: noToolIntentControlPlane,
+    skillRoutingRecommendation: inspectMainImageRecommendation
+  }),
+  '',
+  'no-tool recommendation rendered a declaration candidate handle in the dynamic section'
 );
 const mainImageManifest = manifests.find((manifest) => manifest.task_type === 'ecommerce.main_image.v1');
 assert(mainImageManifest, 'main-image manifest missing');

@@ -82,6 +82,22 @@ export const AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM: Readonly<AgentExecutionCa
         timeMs: AGENT_MODEL_REQUEST_TIMEOUT_MS * PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE
     });
 
+/**
+ * E2 交付闭合续作（补保存 / 导出 / 同版本收据结算）不做新的视觉判断：一轮定向
+ * 交付调用加一轮结算收尾；工具侧容纳保存、导出与必要的结构读回。视觉候选或
+ * 视觉分析额度耗尽不构成拒绝交付闭合的理由——只要剩余工具与时间足够交付，
+ * 该续作就必须被允许启动。
+ */
+export const AGENT_DELIVERY_CLOSURE_REENTRY_MINIMUM: Readonly<AgentExecutionCapacityMinimum>
+    = Object.freeze({
+        modelCalls: 2,
+        toolCalls: 3,
+        iterations: 2,
+        visionCandidates: 0,
+        visualAnalyses: 0,
+        timeMs: AGENT_MODEL_REQUEST_TIMEOUT_MS * 2
+    });
+
 export type AgentExecutionCapacityDimension =
     | 'model_calls'
     | 'tool_calls'

@@ -5108,6 +5108,81 @@ async function run() {
       || !fundedContinuationReentry.shouldReenter) {
       aestheticProtocolViolations.push('exhausted-budget-still-spawned-doomed-reflexion-generation');
     }
+    // 容量门按续作类型取下限：E2 交付闭合不做新的视觉判断，视觉额度耗尽但剩余
+    // 工具与时间足够交付时必须放行；执行 / 复核目标阶段（如 Runtime→R4）仍需要
+    // 视觉余量；E2 续作在工具额度耗尽时同样拒绝，不得只放宽不设防。
+    const visionExhaustedUsage = {
+      modelCalls: 2,
+      toolCalls: 3,
+      iterations: 2,
+      visionCandidates: 4,
+      visualAnalyses: 3,
+      activeElapsedMs: 1_000,
+      observationKeys: []
+    };
+    const e2DeliveryHandoff = {
+      status: 'reflexion_required',
+      sourceOwner: 'E2',
+      targetStage: 'E2',
+      failureAnalysis: ['同版本 PSD/JPG 交付集合尚未闭合'],
+      nextRoundConstraints: ['补齐已声明交付集合的保存与导出并结算收据']
+    };
+    const e2VisionExhaustedReentry = decideQualityAwareReflexionReentry({
+      handoff: e2DeliveryHandoff,
+      priorReentryCount: 0,
+      stopReason: 'final_response',
+      performanceCapacity: {
+        usage: visionExhaustedUsage,
+        budget: completedImprovementPerformanceCapacity.budget
+      }
+    });
+    const e2ToolExhaustedReentry = decideQualityAwareReflexionReentry({
+      handoff: e2DeliveryHandoff,
+      priorReentryCount: 0,
+      stopReason: 'final_response',
+      performanceCapacity: {
+        usage: { ...visionExhaustedUsage, toolCalls: 12 },
+        budget: completedImprovementPerformanceCapacity.budget
+      }
+    });
+    const runtimeExecutionVisionExhaustedReentry = decideQualityAwareReflexionReentry({
+      handoff: {
+        status: 'reflexion_required',
+        sourceOwner: 'Runtime',
+        targetStage: 'R4',
+        failureAnalysis: ['执行阶段在有界预算内中断'],
+        nextRoundConstraints: ['从当前真实画面状态继续执行阶段']
+      },
+      priorReentryCount: 0,
+      stopReason: 'final_response',
+      performanceCapacity: {
+        usage: visionExhaustedUsage,
+        budget: completedImprovementPerformanceCapacity.budget
+      }
+    });
+    const runtimeDeliveryVisionExhaustedReentry = decideQualityAwareReflexionReentry({
+      handoff: {
+        status: 'reflexion_required',
+        sourceOwner: 'Runtime',
+        targetStage: 'E2',
+        failureAnalysis: ['交付结算在有界预算内中断'],
+        nextRoundConstraints: ['补齐交付集合并结算收据']
+      },
+      priorReentryCount: 0,
+      stopReason: 'final_response',
+      performanceCapacity: {
+        usage: visionExhaustedUsage,
+        budget: completedImprovementPerformanceCapacity.budget
+      }
+    });
+    if (!e2VisionExhaustedReentry.shouldReenter
+      || e2ToolExhaustedReentry.shouldReenter
+      || e2ToolExhaustedReentry.reason !== 'resource_budget_exhausted'
+      || runtimeExecutionVisionExhaustedReentry.shouldReenter
+      || runtimeExecutionVisionExhaustedReentry.reason !== 'resource_budget_exhausted'
+      || !runtimeDeliveryVisionExhaustedReentry.shouldReenter) {
+      aestheticProtocolViolations.push('reentry-capacity-minimum-not-resolved-by-continuation-type');
+    }
     const invalidCompletedHandoffs = [
       { ...completedImprovementHandoff, reviewBinding: undefined },
       {

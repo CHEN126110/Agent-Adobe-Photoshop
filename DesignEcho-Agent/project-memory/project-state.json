@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：D-134 正常程序复测（0888b25f、全新一次性项目、干净新对话）已完成；首偏差归属 Agent——claude-subscription-opus 未采纳 advisory 主图候选而走通用工具链，Harness 注入链逐环无罪（候选、引导块、上下文、通道、allowedTools 全部实证）。跨模型混杂已证实：旧声明基线来自 deepseek+thinking，opus 无采纳率基线且订阅通道恒不请求思考。同轮闭合 Reflexion 容量门缺陷（预算耗尽仍诞生注定停机的下一代并覆盖终态文案）。下一步：opus 自然句采纳率基线 2–3 次，期间不做单样本 advisory 修补；订阅通道 Final Judge 结构化输出与 thinking 偏好处置立项。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：D-134 首偏差归因保持待验证诊断。评审整改已代码落地：Reflexion 容量门按续作类型分流下限（E2 交付闭合不要求视觉额度，E2/Runtime 误拦截回归闭合）；两段式入口治理落地（唯一候选经动态段逐轮渲染，declareDesignIntent 为结构化选择手柄，声明成功同一 Tool result 边界提交 declaredTaskType/owner 绑定/Skill 可见性并移除候选提示）。下一步：正常程序最小复现，严格在第一个确定偏差处停止。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -101,11 +101,11 @@
     "Automatic Evaluation passed a crop-dominant photography result at 89, so current commercial-quality calibration can still convert a technically valid artifact into a false professional success."
   ],
   "nextActions": [
-    "Obtain a 2-3 run natural-prompt adoption baseline for claude-subscription-opus on fresh disposable projects before touching advisory wording or placement; any successful binding run must also exercise the repaired prepare single-size contract.",
+    "Finish the continuation-type-aware reentry capacity gate (completed-aesthetic keeps the full minimum; E2 save/export uses a delivery-closure minimum without vision requirements; Runtime resolves by structured target stage) with E2/Runtime boundary assertions.",
+    "Govern the main-image Skill two-stage entry: project the unique advisory candidate as a model-callable structured selection handle; model performs the selection, Harness never auto-selects; selection, Runtime owner binding and Skill visibility commit as one consistent boundary and the old candidate prompt is removed immediately after binding.",
+    "After the entry governance lands, run one normal-app minimal reproduction and stop strictly at the first definite deviation; treat the D-134 attribution as a pending-verification diagnosis until the composed system prompt is captured live.",
     "Root-fix the subscription-channel Final Judge structured-output protocol so an opus prose critique cannot leave score_batch_invalid as the only outcome.",
     "Resolve the subscription channel ignoring thinking.enabled=true (wire it through or surface the limitation honestly; no silent downgrade).",
-    "If the D-130 direction holds after the baseline, persist the main-image prepare workspace under the existing TaskRun owner and add restart/drift failure injection.",
-    "Calibrate advisory Evaluation against the user's work and Eagle references so strong source photography is not mistaken for sufficient design increment.",
     "Implement request-scoped attachmentRef resolution before the full S1 cohort."
   ],
   "activeRequest": {
