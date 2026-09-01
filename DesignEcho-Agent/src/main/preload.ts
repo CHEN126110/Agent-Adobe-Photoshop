@@ -253,6 +253,18 @@ const api = {
         ipcRenderer.on('claudeSubscription:modelsReady', handler);
         return () => ipcRenderer.removeListener('claudeSubscription:modelsReady', handler);
     },
+    // ===== 应用自更新（Renderer 只读状态 + 显式安装；更新源由主进程常量拥有） =====
+    getAppUpdateState: () =>
+        ipcRenderer.invoke('appUpdate:getState'),
+    checkForAppUpdate: () =>
+        ipcRenderer.invoke('appUpdate:check'),
+    installAppUpdate: () =>
+        ipcRenderer.invoke('appUpdate:install') as Promise<{ success: boolean; error?: string }>,
+    onAppUpdateState: (callback: (state: unknown) => void) => {
+        const handler = (_event: unknown, state: unknown) => callback(state);
+        ipcRenderer.on('appUpdate:state', handler);
+        return () => ipcRenderer.removeListener('appUpdate:state', handler);
+    },
     getCodexSubscriptionStatus: () =>
         ipcRenderer.invoke('codexSubscription:getStatus') as Promise<CodexSubscriptionStatusResult>,
     startCodexSubscriptionLogin: () =>

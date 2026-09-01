@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { AppUpdateBadge } from './AppUpdateBadge';
 
 interface HeaderProps {
     isConnected: boolean;
@@ -59,6 +60,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             <div className="header-right">
+                <AppUpdateBadge />
                 <button className="header-settings-btn" onClick={onSettingsClick} aria-label="打开设置" title="设置">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <circle cx="12" cy="12" r="3" />

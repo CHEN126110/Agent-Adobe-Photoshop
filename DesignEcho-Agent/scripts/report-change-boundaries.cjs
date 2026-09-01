@@ -325,6 +325,12 @@ const BOUNDARIES = [
     match: (entry) => /shape-morphing|sock-morphing|sock-shape|morphing|sku-pose-alignment|sku-pose-panel|sku-retouch\/pose-|layer-pixel-capture|capture-layer-pixels/.test(entry.filePath)
   },
   {
+    id: 'app-self-update',
+    title: '应用自更新（electron-updater 泛化静态源）',
+    validation: ['npm run build:main', 'npm run build:typecheck:renderer', 'npm run audit:handlers'],
+    match: (entry) => /app-update-(contract|source|service|handlers)|AppUpdateBadge/.test(entry.filePath)
+  },
+  {
     id: 'main-process-infra',
     title: '主进程基础设施',
     validation: ['npm run build:main', 'npm run smoke:stream-adapter:http-errors', 'npm run smoke:chat-ui:electron-bridge'],

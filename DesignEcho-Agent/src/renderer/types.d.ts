@@ -258,6 +258,12 @@ export interface DesignEchoAPI {
     listClaudeSubscriptionModels?: () => Promise<ClaudeSubscriptionModelListResult>;
     logoutClaudeSubscription?: () => Promise<ClaudeSubscriptionOperationResult>;
     onClaudeSubscriptionModelsReady?: (callback: () => void) => () => void;
+    getAppUpdateState?: () => Promise<import('../shared/app-update-contract').AppUpdateState>;
+    checkForAppUpdate?: () => Promise<import('../shared/app-update-contract').AppUpdateState>;
+    installAppUpdate?: () => Promise<{ success: boolean; error?: string }>;
+    onAppUpdateState?: (
+        callback: (state: import('../shared/app-update-contract').AppUpdateState) => void
+    ) => () => void;
     getCodexSubscriptionStatus?: () => Promise<CodexSubscriptionStatusResult>;
     startCodexSubscriptionLogin?: () => Promise<CodexSubscriptionOperationResult>;
     cancelCodexSubscriptionLogin?: () => Promise<CodexSubscriptionOperationResult>;

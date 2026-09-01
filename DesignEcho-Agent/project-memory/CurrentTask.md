@@ -104,3 +104,22 @@
 ### 状态
 
 `in_progress`
+
+## 2026-09-01 APP-SELF-UPDATE-001：应用自更新（私下分发 + OSS 静态源）
+
+### 目标
+
+用户拍板：私下分发、更新源用对象存储（OSS 静态托管）、暂不开源。目标是老版本客户端能自动发现新版本、后台下载、由用户显式点击完成安装。
+
+### 当前事实
+
+- 技术路线：electron-updater 6.8.9 generic provider（latest.yml 轮询 + blockmap 差量下载 + sha512 校验 + quitAndInstall）。
+- 已落地：`shared/app-update-contract.ts`（状态契约 + HTTPS/.invalid 校验）、`main/config/app-update-source.ts`（唯一更新源真相点，RFC 2606 `.invalid` 占位防劫持）、`main/services/app-update-service.ts`（启动 30s 后首查 + 4h 周期，仅打包态生效）、`main/ipc-handlers/app-update-handlers.ts`（appUpdate:getState/check/install，主窗口来源校验）、preload 四方法、`AppUpdateBadge.tsx` 挂 Header（仅「下载中/已就绪」渲染，安装前确认会中断任务）、package.json build.publish generic（仅供 electron-builder 生成 app-update.yml，非第二真相源）、变更边界组 `app-self-update`。
+- 更新源是主进程常量，Renderer 只读状态 + 显式安装，不能改源；`DESIGNECHO_UPDATE_FEED_URL` 环境变量仅供发布前指向测试桶灰度自测。
+- 已验证：build:typecheck:renderer、audit:handlers、audit:tools、audit:main-runtime-dependencies 各自通过。
+- 当前未知：真实端到端更新链（真桶 + 两个打包版本升级）未验证——需用户建 OSS 桶、改 app-update-source.ts 一处常量、`npm run dist` 后上传 latest.yml/exe/blockmap 才能实测；开发态运行时诚实报 `unsupported_dev`，不发任何网络请求。
+- 已知缺口（沿用先前记录）：DesignEcho-UXP 插件不在打包产物 extraResources 内，应用自更新不覆盖 UXP 插件升级，属后续独立切片。
+
+### 状态
+
+`in_progress`（等 maintenance:validate 全闸 + 提交推送 + 重启应用实测 dev 态状态诚实性）

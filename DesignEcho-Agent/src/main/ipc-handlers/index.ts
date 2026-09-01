@@ -40,6 +40,7 @@ import { registerSkillPackageHandlers } from './skill-package-handlers';
 import { registerEagleLibraryHandlers } from './eagle-library-handlers';
 import { registerWebSearchHandlers } from './web-search-handlers';
 import { registerModelListingHandlers } from './model-listing-handlers';
+import { registerAppUpdateHandlers } from './app-update-handlers';
 import { registerClaudeSubscriptionHandlers } from './claude-subscription-handlers';
 import { registerCodexSubscriptionHandlers } from './codex-subscription-handlers';
 import { registerRuntimeHandlers } from './runtime-handlers';
@@ -162,5 +163,9 @@ export function setupIPCHandlers(context: IPCContext): void {
     // ChatGPT 订阅登录、目录与限额；协议和凭据不向 renderer 暴露。
     registerCodexSubscriptionHandlers(context);
     registerClaudeSubscriptionHandlers(context);
+
+    // 应用自更新（electron-updater 泛化静态源）：注册即启动周期检查；
+    // 更新源是主进程常量，Renderer 只读状态并显式触发安装。
+    registerAppUpdateHandlers(context);
 
 }
