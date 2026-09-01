@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：D-134 首偏差归因保持待验证诊断。评审整改已代码落地：Reflexion 容量门按续作类型分流下限（E2 交付闭合不要求视觉额度，E2/Runtime 误拦截回归闭合）；两段式入口治理落地（唯一候选经动态段逐轮渲染，declareDesignIntent 为结构化选择手柄，声明成功同一 Tool result 边界提交 declaredTaskType/owner 绑定/Skill 可见性并移除候选提示）。下一步：正常程序最小复现，严格在第一个确定偏差处停止。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：评审整改闭环——Reflexion 容量门按续作类型分流（E2 交付闭合不要求视觉额度，误拦截回归闭合）；两段式入口落地（候选动态渲染、declareDesignIntent 结构化手柄、绑定同边界提交并移除候选）。D-135 最小复现严格首偏差即停（第 6 工具通用建档），随后主进程 inspector 实拍出站 customSystemPrompt（10,079 字符）证实候选段逐字送达：投递链 Harness 侧实拍闭合，opus 自然句采纳 0/2 属模型采纳行为（thinking 恒 disabled 为已知混杂）。下一步：thinking 接通与候选呈现位置的受控 A/B，Final Judge 结构化输出根修。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
