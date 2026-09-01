@@ -122,4 +122,4 @@
 
 ### 状态
 
-`in_progress`（等 maintenance:validate 全闸 + 提交推送 + 重启应用实测 dev 态状态诚实性）
+`done_dev_verified`（65 阶段 maintenance:validate 通过；提交 0f604642 已推送 legacy；应用已用新产物重启，CDP 实测 getAppUpdateState 返回 `unsupported_dev` 且徽章不渲染、无网络请求，Photoshop 桥自动重连。剩余：真桶端到端升级链属用户侧启用步骤，未验证）
