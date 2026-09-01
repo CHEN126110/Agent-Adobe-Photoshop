@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：19c 已代码落地——终审结构化评分提交（submitScoreBatch 工具，批次校验单点不变，终态判定下沉协议 owner）与订阅通道 thinking 接通（目录申报+透传+显式下发+响应透出，judge 保持 disabled）。两段式入口与容量门分流已在位。下一步：正常程序实机验证 judge 结构化收敛与 thinking 生效（同一次自然句最小复现可同时覆盖），仍严格首偏差即停；随后 opus 采纳率基线与呈现位置受控 A/B。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：19c 实机闭环——第五探针取得订阅通道首个 judgeStatus=completed（结构化评分批次经 submitScoreBatch 一次通过；此前四轮探针依次根修 10 分制/字符串诊断/超长 reason/N-A 注释裁决，全部带真实运行证据；thinking 已实机生效 enabled×N）。下一确定性事项：diagnosis-repair 响应升级为结构化提交（同 submitScoreBatch 模式，本轮 repair 仍文本 JSON 解析 invalid）；随后回到 19b-next 采纳率基线与 A/B。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
