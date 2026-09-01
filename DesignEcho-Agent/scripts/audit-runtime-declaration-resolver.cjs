@@ -9402,6 +9402,45 @@ function assertDesignDirectionExplorationIsOptionalAndNonAuthoritative() {
  * 真机 run#242 曾因它被推回 plan_execution_mismatch；复合委托（看看…然后照着做）不受影响。
  */
 async function assertLinkReviewRequestsStayReadOnly() {
+  const politeProjectInventory = buildAgentIntentControlPlaneDecision({
+    userInput: '你可以帮我看看这个项目都有什么',
+    hasImageInput: false,
+    hasDocument: true,
+    photoshopConnected: true
+  });
+  assert.strictEqual(
+    politeProjectInventory.requestKind,
+    'read_only_inspect',
+    'a polite “can you help me inspect” request must not be mistaken for a capability question'
+  );
+  assert.strictEqual(politeProjectInventory.toolScope, 'read_only');
+  assert.strictEqual(politeProjectInventory.executionAuthorization, 'confirmed_tool_required');
+
+  const writeShapedCapabilityQuestion = buildAgentIntentControlPlaneDecision({
+    userInput: '你可以帮我设计一张商品主图吗？',
+    hasImageInput: false,
+    hasDocument: true,
+    photoshopConnected: true
+  });
+  assert.strictEqual(
+    writeShapedCapabilityQuestion.requestKind,
+    'chat_only',
+    'a write-shaped capability question must not silently mint execution authority'
+  );
+  assert.strictEqual(writeShapedCapabilityQuestion.executionAuthorization, 'none');
+
+  const pureCapabilityQuestion = buildAgentIntentControlPlaneDecision({
+    userInput: '你会不会做商品主图？',
+    hasImageInput: false,
+    hasDocument: true,
+    photoshopConnected: true
+  });
+  assert.strictEqual(
+    pureCapabilityQuestion.requestKind,
+    'chat_only',
+    'a genuine capability question must remain conversational'
+  );
+
   const pureReview = buildAgentIntentControlPlaneDecision({
     userInput: '你帮我看看这个淘宝链接的设计 https://item.taobao.com/item.htm?id=927423493569',
     hasImageInput: false,

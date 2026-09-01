@@ -43,6 +43,7 @@
 - Agentic Artifact Completion 现在保留 Manifest 的 `delivery_plan_binding_required` 和 producer Skill 身份。通用收据选择器只接受绑定 typed DeliveryPlan、完整 save/export resultRef proof、逐文件身份、源 Photoshop revision 与 exact artifact set 的 ready receipt；后续内容 mutation 或另一次通用保存 /导出会使旧 receipt 失效。该机制是品类无关的交付归属，不执行 Tool、不决定设计，也不阻断 Agent 使用原子工具工作。
 - 创意任务模型可见面已由 `b10da18a` 首次收敛：首轮保留项目 /画面观察、Eagle、图片、图形、可编辑文字和局部变换；大型 `composeDesign`、隔离 `evaluateDesign` 与已自动注入方法的 `readSkillPlaybook` 转为同一 Capability Session 的按需能力。主图 /详情页 Skill 不再要求开工重复读取同一手册。agentic 通用原则使用 1,112 字符紧凑底座，staged 全量原则仍保留 6,408 字符。该变更不改变 Tool preflight、TaskRun、Photoshop 事务、读回或交付完成权。
 - Skill 现支持把完整内部生产参数与模型可见参数分开投影；投影只能隐藏 optional 技术字段，不能隐藏 required 输入。主图模型接口只保留 Agent-owned 规格、设计和素材语义，Runtime-owned execution mode /scope 在执行入口剥离；prepare 强制 disposable scope，且不在不保存 /不导出的阶段验证 delivery convention /support refs。agentic 常驻上下文只保留任务特有方法 overlay 与紧凑原则，Artifact /Craft 索引按需可达；该机制不选择 Skill、不决定素材或画面。
+- 能力 /意愿问句现在会让出仍包含具体只读目标的礼貌表达：去掉“你可以 /你能不能”等开头后，若正文仍是项目 /文档 /SKU 检查或参考检索，就保留非写入语义；写入形态和纯能力询问继续保持 `chat_only`，不能因此取得执行授权。对话出口会拒绝 DSML、`<tool_call>` 与 angle-JSON Tool 协议正文并触发一次自然语言 repair；清洗器只做最后防泄漏，不把协议故障伪装成成功。
 
 ## 已核实（构建与自动检查）
 
@@ -60,6 +61,7 @@
 - `36a1db51` 的 Manifest-bound Workflow receipt 增量通过 Runtime declaration、Capability、Agent 业务边界、Design Reliability、Renderer 类型检查及 fresh 65 阶段完整核心闸门。验证期间曾分别出现一次既有 SKU 姿态子进程 `3221225477` 和一次 Node/V8 原生崩溃；对应单项立即全通过，最终精确代码版本从头 65/65 通过，没有把原生崩溃删除或冒充产品失败。
 - `b10da18a` 的模型可见面纵切实测把首轮 Tool 从 26 降到 24、序列化 schema 从 42,494 降到 29,154 字符；三项移出能力在一次按需 activation 中恢复为 `composeDesign / evaluateDesign / readSkillPlaybook`。设计作者权、Runtime declaration、Capability Resolver、Skill Package、Agent 业务边界、通用 executor、Tool /Skill 审计、Main /Renderer 类型检查及 fresh 65 阶段完整核心闸门通过。首次完整闸门曾由历史“必须恰好 26 个 Tool”断言失败；该断言没有改成 24，而是替换为原子能力、按需可达性和 30k schema 预算的行为契约，随后从头全绿。
 - Run 665 根修增量已通过 fresh 65 阶段 `maintenance:validate`：主图模型 schema 约 11,007→2,857 字符，绑定后常驻方法上下文为 2,236 字符，pre-bound Tool schema 约 37,308→32,785；审计同时守护模型投影字段合法性、required 参数可见、prepare 不受伪造 support refs /active-document scope 影响、Runtime 技术字段剥离和基础归组能力可达。自动绿色不等于真实提速或视觉质量通过。
+- D-131 礼貌只读委托与文本 Tool 协议增量已通过业务授权边界、简化棘轮（意图正则点保持 137）、Runtime declaration、设计作者权、Renderer 类型检查及 fresh 65 阶段 `maintenance:validate`；自动验证证明未扩大写权限、未增加 legacy 正则债务并能识别 angle-JSON 泄漏，不证明正常程序已经真实执行项目查看。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -79,6 +81,7 @@
 - 同一会话 Run 664 只输入“继续”，Runtime 以 `structured_run_resume` 恢复 `ecommerce.main_image.v1`；16 次 Tool 全部成功，Agent 比较候选后自主换成完整穿着图，同版本 PSD/JPG 交付且所有外部 Photoshop 文档 revision 零变化，canonical 终态为 `completed / 89`。人工像素复核却确认它主要是优质摄影图的方形裁切和放大，鞋子过重、无点击主张和商业信息层级；该样本是续跑技术成功，也是 Evaluation 商业质量误放行，不能计为专业设计通过。
 - Run 663 的固定开销已量化为首轮 26 Tool /42,521 schema 字符、后期 45 /65,705，System Prompt 峰值 21,473；31 次 Agent 回合约 197 万 input token，53 次 Tool 中 30 次观察、8 次控制且 Eagle 调用为 0。Run 664 首轮 System Prompt 27,705、Tool schema 50,640，11 次 Agent 回合约 67 万 input token，12 次观察与 4 次 mutation。它们证明当前复杂度已进入模型设计路径；`b10da18a` 只修模型可见首偏差，尚无新实机结果。
 - 新普通项目 Run 665 使用自然短提示后，Agent 能说明“穿着场景主视觉、四色平铺辅助”的选择理由，却在约 15 分钟内没有产生内容写入。10 次模型调用累计约 1,176,756 ms，14 次 Tool 约 11,527 ms，9 次有 usage 的调用累计约 380,978 input token；前三次主图 Skill 调用被 prepare 阶段无关的 support refs /scope 拒绝，第四次才建成空工作文档。运行在取得明确停滞证据后停止。该样本证明 `b10da18a` 降低首轮 Tool 面仍不够，Skill schema 与常驻知识自身也在形成竞争式控制；它不证明模型没有设计判断，也不进入成功率分母。
+- D-130 重测前的项目查看 Run 在约 4.4 秒内以 `success / final_response` 结束，但实际为 1 次模型调用、0 Tool、`toolSchemaChars=2`，并向用户显示 `<{"name":"list_directory",...}`。根因是“你可以帮我”礼貌委托被能力问句判据提前降为 `chat_only`，随后对话协议泄漏检测漏掉 angle-JSON 变体。该运行没有修改 Photoshop，但污染了对话，不能计为响应速度改善。
 
 ## 当前未核实
 
@@ -95,7 +98,7 @@
 
 ## 当前主要风险
 
-1. Run 665 已给出匹配正常程序证据并证伪“只缩首轮 Tool 数量就足够”：模型仍被大型 Skill schema、重复知识和 Runtime 技术字段拖入多轮无效 prepare。D-130 根修已自动验证但尚未正常程序复测；不能把 schema 下降直接写成速度或设计质量改善。
+1. Run 665 已证伪“只缩首轮 Tool 数量就足够”；其后的项目查看 Run 又证伪“响应快就代表效率高”。D-130 / D-131 根修仍需匹配正常程序分别验证真实 Tool 进展和设计结果，不能用 schema 下降或 4 秒文字终稿替代任务成功。
 2. Evaluation authority 已修复且故障不再转嫁主 Agent；自动高分漏检错字、标题重量、点击目标和商业完成度的校准仍未解决。
 3. 图片内容被压缩成单主体 bbox、矩形目标区和粗锚点，不能完整表达负空间、保护部位、多主体和视觉重量。
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。

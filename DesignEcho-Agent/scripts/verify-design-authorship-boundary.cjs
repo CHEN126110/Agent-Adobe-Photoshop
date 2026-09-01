@@ -191,6 +191,8 @@ const {
     resolveProviderStreamStopReason
 } = require(path.join(root, 'src/shared/provider-stream-completion.ts'));
 const {
+    containsAngledJsonToolCallMarkup,
+    removeAngledJsonToolCallMarkup,
     parseDsmlToolCallBatch
 } = require(path.join(root, 'src/shared/model-tool-call-markup.ts'));
 const {
@@ -4527,6 +4529,7 @@ const mixedPartialPromptToolBatch = parseToolCallsFromText(
 const whitespacePromptMarkerBatch = parseToolCallsFromText(
     '<tool_call >{"name":"saveDocument","arguments":{}}</tool_call>'
 );
+const angledJsonToolLeak = '我先查看项目资源。\n\n<{"name":"listProjectResources","arguments":{"path":"project"}}';
 check(
     '文本 Tool 协议按整批解析：完整 DSML/XML 可用，混合残缺或变体一律零执行',
     validDsmlBatch.valid === true
@@ -4543,6 +4546,8 @@ check(
         && mixedPartialPromptToolBatch.toolCalls.length === 0
         && whitespacePromptMarkerBatch.valid === false
         && whitespacePromptMarkerBatch.toolCalls.length === 0
+        && containsAngledJsonToolCallMarkup(angledJsonToolLeak) === true
+        && removeAngledJsonToolCallMarkup(angledJsonToolLeak) === '我先查看项目资源。'
 );
 const anthropicLengthTerminal = new AnthropicAdapter().parseResponse({
     stop_reason: 'max_tokens',

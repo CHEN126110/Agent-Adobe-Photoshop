@@ -29,6 +29,10 @@ import {
 import { buildConversationalUnavailableMessage } from '../../../shared/conversational-unavailable-message';
 import { classifyModelProviderFailure } from '../../../shared/model-provider-failure';
 import {
+    containsAngledJsonToolCallMarkup,
+    containsDsmlToolCallMarkup
+} from '../../../shared/model-tool-call-markup';
+import {
     buildAgentIntentControlPlaneDecision,
     isAgentSkillCapabilityQuestion,
     type AgentIntentControlPlaneDecision
@@ -867,7 +871,9 @@ function isUnhelpfulClarificationFollowupReply(text: string, options?: { clarifi
 
 function containsToolCallLikeText(text: string): boolean {
     const value = String(text || '');
-    return /<\s*tool_call\b/i.test(value)
+    return containsDsmlToolCallMarkup(value)
+        || containsAngledJsonToolCallMarkup(value)
+        || /<\s*tool_call\b/i.test(value)
         || /<\/\s*tool_call\s*>/i.test(value)
         || /<\s*function\s*=/i.test(value)
         || /<\/\s*function\s*>/i.test(value)

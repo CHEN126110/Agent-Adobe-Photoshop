@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：Run 665 已证实首轮 Tool 精简仍不足，大型 Skill schema、重复常驻知识和 Runtime 技术字段会竞争 Agent 控制权；D-130 已完成内部契约 /模型接口分离并通过 65 阶段核心验证，下一步用同一自然短提示正常程序复测，发现新的明确停滞即停止并修首偏差。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：D-130 复测前又发现礼貌委托被降为 chat_only、0 Tool 快速终止并泄漏 angle-JSON Tool 协议；D-131 已修具体委托语义与文本协议终态，下一步 fresh 核心闸门后先重测项目查看句，再在干净对话继续主图同提示，任何明确停滞即停止。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -32,7 +32,8 @@
       "Manifest-bound agentic completion now carries delivery_plan_binding_required and producer Skill identities; only a typed-plan-bound ready workflow receipt with complete result-ref, file-identity and Photoshop-revision evidence can settle delivery, and later mutations or generic saves invalidate it.",
       "The creative-design first-turn surface now keeps atomic observation, image, shape, editable-text and transform actions while composeDesign, isolated evaluateDesign and duplicate playbook reads remain on demand; agentic universal principles use a compact foundation without weakening hidden TaskRun, preflight, transaction, readback or delivery owners.",
       "The main-image prepare workspace is still Renderer-process memory and cannot yet be safely reconciled after application restart; this remaining identity-lifecycle gap is separate from the now-closed formal completion owner.",
-      "Skill declarations can now project a bounded model-visible parameter subset while retaining their full internal production contract; required inputs cannot be hidden, Runtime-owned main-image execution fields are stripped at dispatch, prepare always uses disposable scope, and agentic permanent context keeps only the task-specific method overlay plus compact principles."
+      "Skill declarations can now project a bounded model-visible parameter subset while retaining their full internal production contract; required inputs cannot be hidden, Runtime-owned main-image execution fields are stripped at dispatch, prepare always uses disposable scope, and agentic permanent context keeps only the task-specific method overlay plus compact principles.",
+      "Polite capability-shaped language now yields only to a concrete non-mutating project/document/SKU inspection or reference search in the remaining clause; write-shaped and pure capability questions remain conversational, while conversational final replies reject DSML, XML and angled JSON Tool-call text and request one natural-language repair instead of exposing the protocol."
     ],
     "build": [
       "S0 documentation governance passed one fresh 65-stage maintenance:validate run, including Agent typecheck, UXP tests and UXP production build.",
@@ -47,7 +48,8 @@
       "Commit 69c54867 and commit b4998b65 each passed a fresh 65-stage maintenance:validate run and were pushed to legacy/codex/agent-uxp; matching Agent and UXP production builds were generated from b4998b65 with gitDirty=false.",
       "Commit 36a1db51 passed Runtime declaration, Capability, business-boundary, Design Reliability and Renderer type checks plus a fresh 65-stage maintenance:validate run; two transient native-process crashes were retained as failed attempts, their exact stages passed alone, and the final exact tree passed 65/65 from the start.",
       "Commit b10da18a reduced the measured first-turn Tool schema from 42,494 to 29,154 characters and compacted agentic universal principles from 6,408 to 1,112 characters while all three removed startup capabilities activate together on demand; authorship, Runtime, Capability, Skill Package, Tool, business-boundary, Main/Renderer type checks and a fresh 65-stage maintenance:validate run passed.",
-      "The Run 665 root-cause increment reduced the main-image model schema from about 11,007 to 2,857 characters, permanent bound method context to 2,236 characters and the pre-bound Tool schema from about 37,308 to 32,785; projection, Runtime-field ownership, prepare-scope behavior, baseline layer hygiene and a fresh 65-stage maintenance:validate run passed."
+      "The Run 665 root-cause increment reduced the main-image model schema from about 11,007 to 2,857 characters, permanent bound method context to 2,236 characters and the pre-bound Tool schema from about 37,308 to 32,785; projection, Runtime-field ownership, prepare-scope behavior, baseline layer hygiene and a fresh 65-stage maintenance:validate run passed.",
+      "The D-131 polite read-only delegation and text Tool-protocol increment passed authorization boundaries, the unchanged 137-point intent simplification ratchet, Runtime declaration, design authorship, Renderer type checking and a fresh 65-stage maintenance:validate run."
     ],
     "manual": [
       "r31 is the only recorded formal zero-intervention technical pass in the earlier main-image reliability evidence; the current S1 cohort is not complete.",
@@ -60,7 +62,8 @@
       "That normal run used the old recommendAssets path and then selected A01/A02, so repeated source choice cannot be attributed to model taste alone; retrieval anchoring and persisted project context were active contributors.",
       "Normal-app Run 663 used a natural short prompt, completed real placeImage and PSD/JPG delivery, and ended 82/needs_review; it bypassed prepare/finalize, delivered both 800 and 1440 variants, and re-placed an exported JPG so the final 1440 editable file had only three layers.",
       "Same-session Run 664 used structured_run_resume for ecommerce.main_image.v1, completed 16 successful Tools, changed the model-selected source after candidate comparison, delivered same-version PSD/JPG and preserved every pre-existing Photoshop document revision; its 89/pass result was a human-confirmed false positive because the output was mainly a square crop/zoom of strong photography with little commercial design increment.",
-      "Normal-app Run 665 on a fresh ordinary project formed a reasonable model-scene-plus-flat-lay direction but was stopped after about fifteen minutes with no content write: ten model calls used about 1,176,756 ms while fourteen Tools used about 11,527 ms; three main-image Skill calls failed on prepare-irrelevant supportRefs/scope before the fourth prepared an empty document."
+      "Normal-app Run 665 on a fresh ordinary project formed a reasonable model-scene-plus-flat-lay direction but was stopped after about fifteen minutes with no content write: ten model calls used about 1,176,756 ms while fourteen Tools used about 11,527 ms; three main-image Skill calls failed on prepare-irrelevant supportRefs/scope before the fourth prepared an empty document.",
+      "A pre-rerun project-inventory request finished in about 4.4 seconds with one model call, zero Tools and a visible angled JSON Tool envelope; the polite concrete request had been misclassified as chat_only, so the fast response was a false terminal rather than task progress."
     ]
   },
   "unverified": [
@@ -93,7 +96,8 @@
     "Automatic Evaluation passed a crop-dominant photography result at 89, so current commercial-quality calibration can still convert a technically valid artifact into a false professional success."
   ],
   "nextActions": [
-    "Build the normal app from the D-130 root fix and rerun the same natural prompt in a new conversation on the existing fresh ordinary project; verify first-try prepare, no baseline layer-capability search, first content-write latency, model turns, reference use and visual outcome, stopping immediately on a new attributable no-progress conflict.",
+    "After the D-131 core gate, build the normal app and first rerun the exact polite project-inventory request in a clean conversation; require real read-only Tools, result feedback and a natural summary with zero internal protocol leakage.",
+    "Only after that inspection passes, rerun the D-130 natural main-image prompt in another clean conversation; verify first-try prepare, no baseline layer-capability search, first content-write latency, model turns, reference use and visual outcome, stopping immediately on a new attributable no-progress conflict.",
     "If the D-130 rerun changes the failure mode in the intended direction, persist the main-image prepare workspace as a bounded fact under the existing TaskRun owner and reconcile current project, document, group and Photoshop revision after restart without granting execution authority.",
     "Add failure injection for process restart, consumed workspace, TaskRun/project/document/group/revision drift and Host file mismatch, then rerun a candidate case eligible for the S1 denominator.",
     "Calibrate advisory Evaluation against the user's work and Eagle references so strong source photography is not mistaken for sufficient design increment.",
@@ -129,7 +133,7 @@
       "Keep the pushed prepare-to-Agent-layered-design-to-finalize seam without a second DesignIR or Skill-owned aesthetic decisions.",
       "Keep advanced compose, critique and playbook capabilities reachable on demand while enforcing a small first-turn atomic design surface, a model-visible Skill parameter projection and compact task-specific agentic context.",
       "Persist the bounded workspace under the Runtime TaskRun and reconcile current Host identity after restart; same-workspace typed receipt is already the only Manifest-bound Skill completion owner.",
-      "Rerun the natural request after D-130 in a new conversation on the fresh ordinary project; stop on the first attributable no-progress conflict, otherwise verify a unique specification, model-authored selection rationale, complex editable layers, canonical finalize delivery, independent Final Judge and zero external-document mutation.",
+      "First prove the polite project-inspection request executes real read-only Tools and returns a natural result without protocol leakage; then rerun the D-130 main-image request in a separate clean conversation, stopping on the first attributable no-progress conflict or otherwise verifying unique specification, model-authored selection rationale, complex editable layers, canonical finalize delivery, independent Final Judge and zero external-document mutation.",
       "Use user/Eagle comparison to calibrate advisory Evaluation against crop-only false passes before selecting another design variable.",
       "Close the generic uploaded-attachment source binding before expanding the S1 cohort; keep scoped CLI as a separate capability-provider phase."
     ]

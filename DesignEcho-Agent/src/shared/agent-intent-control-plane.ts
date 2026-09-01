@@ -474,6 +474,46 @@ const AGENT_CAPABILITY_OR_WILLINGNESS_QUESTION_PATTERNS = [
     /^(?:(?:请问|我想确认|想确认)\s*)?(?:你|agent|智能体|模型|系统)\s*(?:愿意|有办法|会|能|可以|方便|支持|擅长|有能力|有把握|有信心|做得了|处理得了|搞得定)[^。！？!?；;]{0,96}(?:吗|嘛|么|呢|[?？])\s*$/i
 ];
 
+const AGENT_CAPABILITY_META_PREFIXES = Object.freeze(['请问', '我想确认', '想确认']);
+const AGENT_CAPABILITY_SUBJECTS = Object.freeze(['agent', '智能体', '模型', '系统', '你']);
+const AGENT_CAPABILITY_PHRASES = Object.freeze([
+    '是否愿意', '是否可以', '是否方便', '是否支持',
+    '愿不愿意', '有没有办法', '有无办法', '可不可以', '可以不可以',
+    '支持不支持', '会不会', '能不能', '能否', '可以', '方便', '能'
+]);
+const POLITE_DIRECT_REQUEST_CUES = Object.freeze([
+    '麻烦你帮我', '麻烦你给我', '麻烦帮我', '麻烦给我',
+    '帮我', '给我', '替我', '为我', '请你'
+]);
+
+function consumeLeadingToken(value: string, tokens: readonly string[]): string | null {
+    const normalized = value.trimStart();
+    const lower = normalized.toLowerCase();
+    const token = tokens.find((candidate) => lower.startsWith(candidate.toLowerCase()));
+    return token ? normalized.slice(token.length).trimStart() : null;
+}
+
+/**
+ * “你可以帮我看看这个项目吗”在真实对话里是礼貌委托，不是能力测验。
+ * 先移除 Agent 能力句式，只在余下正文仍构成明确任务或上下文检查时让出；
+ * 纯“你可以帮我吗”没有动作，继续按能力 /意愿问题处理。
+ */
+function hasPoliteDirectRequestAfterCapabilityLead(value: unknown): boolean {
+    let remainder = normalizeText(value);
+    const afterMetaPrefix = consumeLeadingToken(remainder, AGENT_CAPABILITY_META_PREFIXES);
+    if (afterMetaPrefix !== null) remainder = afterMetaPrefix;
+    const afterSubject = consumeLeadingToken(remainder, AGENT_CAPABILITY_SUBJECTS);
+    if (afterSubject === null) return false;
+    const afterCapabilityPhrase = consumeLeadingToken(afterSubject, AGENT_CAPABILITY_PHRASES);
+    if (afterCapabilityPhrase === null) return false;
+    const afterRequestCue = consumeLeadingToken(afterCapabilityPhrase, POLITE_DIRECT_REQUEST_CUES);
+    if (afterRequestCue === null || !afterRequestCue) return false;
+    const delegatedText = afterCapabilityPhrase;
+    return isReadOnlyInspectRequest(delegatedText)
+        || isSkuReadOnlyInspectRequest(delegatedText)
+        || includesAny(delegatedText, [REFERENCE_SEARCH_AUTHORIZATION_PATTERN]);
+}
+
 /**
  * 识别“询问 Agent 的能力或意愿”，而不是句尾带礼貌确认的直接委托。
  *
@@ -483,6 +523,7 @@ const AGENT_CAPABILITY_OR_WILLINGNESS_QUESTION_PATTERNS = [
  */
 export function isAgentCapabilityOrWillingnessQuestion(value: unknown): boolean {
     const text = normalizeText(value);
+    if (hasPoliteDirectRequestAfterCapabilityLead(text)) return false;
     return includesAny(text, AGENT_CAPABILITY_OR_WILLINGNESS_QUESTION_PATTERNS);
 }
 

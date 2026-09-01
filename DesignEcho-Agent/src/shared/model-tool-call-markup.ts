@@ -59,8 +59,47 @@ const DSML_STRUCTURAL_TAG_PATTERN = new RegExp(
 const MAX_DSML_CALLS = 4;
 const MAX_DSML_PARAMETERS = 32;
 const MAX_DSML_TEXT_LENGTH = 120_000;
+const MAX_ANGLED_JSON_TOOL_CALL_LENGTH = 4_096;
 const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/u;
 const PARAMETER_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$.-]{0,127}$/u;
+const ANGLED_JSON_OPENING_PATTERN = /(?:^|[\r\n])\s*<\s*\{/gu;
+const JSON_TOOL_NAME_PROPERTY_PATTERN = /["']name["']\s*:\s*["'][A-Za-z][A-Za-z0-9_.:-]{0,127}["']/u;
+const JSON_TOOL_ARGUMENTS_PROPERTY_PATTERN = /["'](?:arguments|params)["']\s*:/u;
+
+function findAngledJsonToolCallMarker(value: unknown): number {
+    const text = String(value || '');
+    if (!text || text.length > MAX_DSML_TEXT_LENGTH) return -1;
+    ANGLED_JSON_OPENING_PATTERN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = ANGLED_JSON_OPENING_PATTERN.exec(text)) !== null) {
+        const markerIndex = text.indexOf('<', match.index);
+        if (markerIndex < 0) continue;
+        const boundedCandidate = text.slice(
+            markerIndex,
+            markerIndex + MAX_ANGLED_JSON_TOOL_CALL_LENGTH
+        );
+        if (JSON_TOOL_NAME_PROPERTY_PATTERN.test(boundedCandidate)
+            && JSON_TOOL_ARGUMENTS_PROPERTY_PATTERN.test(boundedCandidate)) {
+            return markerIndex;
+        }
+    }
+    return -1;
+}
+
+/**
+ * 识别 Provider 把 Tool call JSON 放进正文的残缺变体，例如
+ * `<{"name":"listProjectResources","arguments":{...}}`。这里只标记协议泄漏，
+ * 不把不完整 /非原生协议直接升级为可执行动作。
+ */
+export function containsAngledJsonToolCallMarkup(value: unknown): boolean {
+    return findAngledJsonToolCallMarker(value) >= 0;
+}
+
+export function removeAngledJsonToolCallMarkup(value: unknown): string {
+    const text = String(value || '');
+    const markerIndex = findAngledJsonToolCallMarker(text);
+    return markerIndex >= 0 ? text.slice(0, markerIndex).trim() : text;
+}
 
 function decodeXmlEntities(value: string): string {
     return value

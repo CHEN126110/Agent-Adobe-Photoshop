@@ -32,9 +32,11 @@
 13. `[已完成]` Run 663 /664 的模型可见路径 GMR 已由 `b10da18a` 落地：首轮从 26 Tool /42,494 schema 字符降为 24 /29,154；`composeDesign`、隔离 `evaluateDesign` 和重复 Skill 手册移为按需，图片 /图形 /可编辑文字原子手柄保留；agentic 通用原则从 6,408 字符降为 1,112 字符。三项高级能力仍可一次装载，fresh 65 阶段核心闸门通过。
 14. `[已完成但触发继续 GMR]` 正常程序 Run 665 在新项目用相同自然短提示运行；Agent 形成了合理的主视觉 /辅助素材方向，但 10 次模型调用约耗时 1,176,756 ms、14 次 Tool 仅 11,527 ms，约 15 分钟无内容写入。前三次主图 Skill 调用被 prepare 不应承担的 support refs /scope 拒绝，第四次才成功建空文档；取得明确停滞证据后已停止，不继续购买错误样本。
 15. `[已完成待实机]` D-130 已分离 Skill 内部生产契约与模型可见设计接口：主图模型 schema 约 11,007→2,857 字符，绑定后常驻方法上下文降到 2,236，pre-bound Tool schema 约 37,308→32,785；Runtime 参数在入口剥离，prepare 固定 disposable scope 且不提前校验交付字段，基础归组能力直接可达。专项与 fresh 65 阶段核心闸门通过。
-16. `[进行中]` 从该精确代码构建正常程序，在同一新项目的新对话重跑相同自然短提示；验证首次 Skill prepare、首个内容写入、重复观察 /能力搜索、模型回合、参考使用和真实设计结果。任何新可归因停滞先停止 Attempt、修首个偏差，再继续测试。
-17. `[待开始]` 复测支持精简方向后，把 prepare workspace 最小持久化到既有 TaskRun owner，并注入进程重启、已消费 workspace、TaskRun /project /document /group /revision 和 Host 漂移故障；随后再运行可进入 S1 分母的普通项目 Case。
-18. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
+16. `[已完成但发现前置故障]` 正常程序启动与窗口检查暴露“礼貌委托被当能力问句 + angle-JSON Tool 协议泄漏”：项目查看 Run 约 4.4 秒结束但 0 Tool，并把内部调用显示给用户。主图复测没有启动；该快响应不计效率收益。
+17. `[已完成待实机]` D-131 已让“你可以帮我 +具体只读检查 /参考检索”保留非写入委托语义，写入形态和纯能力问句仍只对话；DSML /XML /angle-JSON 文本 Tool 协议均不能成为自然语言终稿，而进入一次 repair 或诚实协议失败。业务授权、简化棘轮、专项、类型检查与 fresh 65 阶段核心闸门通过。
+18. `[进行中]` fresh 核心闸门后构建正常程序，在干净新对话先重测项目查看句，要求真实只读 Tool、结果回填、自然总结和零协议泄漏；通过后另开新对话继续 D-130 的主图同提示复测，任何新可归因停滞立即停止。
+19. `[待开始]` 复测支持精简方向后，把 prepare workspace 最小持久化到既有 TaskRun owner，并注入进程重启、已消费 workspace、TaskRun /project /document /group /revision 和 Host 漂移故障；随后再运行可进入 S1 分母的普通项目 Case。
+20. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 
 ### 退出条件
 

@@ -2,7 +2,9 @@ import type { BusinessSkillVisualObservationFeedback } from './business-skill-vi
 import { getInternalAgentStatusPublicMessage } from './agent-user-visible-state';
 import { buildConversationalUnavailableMessage } from './conversational-unavailable-message';
 import {
+    containsAngledJsonToolCallMarkup,
     containsDsmlToolCallMarkup,
+    removeAngledJsonToolCallMarkup,
     removeDsmlToolCallMarkup
 } from './model-tool-call-markup';
 
@@ -54,6 +56,7 @@ function containsInternalThinkingLeak(value: string): boolean {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     if (!text) return false;
     return containsDsmlToolCallMarkup(text)
+        || containsAngledJsonToolCallMarkup(text)
         || containsDeveloperDiagnosticText(text)
         || /<\s*\/?\s*(?:tool_call|function|parameter)\b/i.test(text)
         || /\b(?:createTextLayer|createRectangle|moveLayer|renderLayout|placeImage|describeImage|getDocumentInfo|getLayerHierarchy|saveDocument|operationRequests)\b/i.test(text)
@@ -158,7 +161,7 @@ function looksLikeInternalPromptInstructionLeak(value: string): boolean {
 }
 
 function removeToolCallMarkup(content: string): string {
-    let text = removeDsmlToolCallMarkup(content);
+    let text = removeAngledJsonToolCallMarkup(removeDsmlToolCallMarkup(content));
     text = text
         .replace(/<\s*tool_call\b[^>]*>[\s\S]*?<\s*\/\s*tool_call\s*>/gi, '')
         .replace(/<\s*function\s*=[^>]*>[\s\S]*?<\s*\/\s*function\s*>/gi, '')
