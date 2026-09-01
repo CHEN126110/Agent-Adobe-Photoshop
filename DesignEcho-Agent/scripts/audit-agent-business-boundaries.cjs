@@ -4600,11 +4600,13 @@ async function run() {
       || !Array.isArray(scoreBatchItems?.properties?.id?.enum)
       || !scoreBatchItems.properties.id.enum.includes(typeCharacterAssertion.id)
       || !scoreBatchItems.properties.id.enum.includes(alignmentAssertion.id)
-      // diagnosis/applicable 只给 description 不给 type：订阅通道的 zod 桥会把空
-      // properties 的 object 剥空；宽松形态（布尔或字符串）由 parseVlmJudgeResponse 容忍。
-      // score/confidence 必须带 0~1 边界（真机 run 397a7b47：opus 按 10 分制填 score=5），
-      // 越界在 MCP 校验层取得字段级自纠反馈；范围语义仍由 parseVlmJudgeResponse 单点拥有。
-      || 'type' in (scoreBatchItems?.properties?.diagnosis || {})
+      // applicable 只给 description 不给 type（布尔或字符串宽松形态由 parseVlmJudgeResponse 容忍）。
+      // diagnosis 必须是 object（真机 run d28805b8：N/A 项携带字符串 diagnosis 污染整批）；
+      // 通道 zod 桥把无 properties 的 object 转 z.record 保留全部内容并拒收字符串。
+      // score/confidence 必须带 0~1 边界（真机 run 397a7b47：opus 按 10 分制填 score=5）。
+      // 越界与形态错误都在 MCP 校验层取得字段级自纠反馈；语义校验仍由 parseVlmJudgeResponse 单点拥有。
+      || scoreBatchItems?.properties?.diagnosis?.type !== 'object'
+      || 'properties' in (scoreBatchItems?.properties?.diagnosis || {})
       || 'type' in (scoreBatchItems?.properties?.applicable || {})
       || scoreBatchItems?.properties?.score?.type !== 'number'
       || scoreBatchItems?.properties?.score?.minimum !== 0

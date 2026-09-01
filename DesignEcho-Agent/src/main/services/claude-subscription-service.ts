@@ -130,9 +130,16 @@ function jsonSchemaValueToZod(schema: any): z.ZodTypeAny {
         case 'array':
             return withDescription(z.array(jsonSchemaValueToZod(schema.items || {})));
         case 'object': {
+            const propertyEntries = Object.entries(schema.properties || {});
+            // 无 properties 的 object（2026-09-01）：z.object({}) 会把全部子键剥空，等于把
+            // 结构化内容静默丢弃；改用 z.record 保留全部键值，同时仍拒收字符串等非对象
+            // 形态（真机：终审 N/A 项携带字符串 diagnosis，需要字段级错误让模型自纠）。
+            if (propertyEntries.length === 0) {
+                return withDescription(z.record(z.string(), z.unknown()));
+            }
             const shape: Record<string, z.ZodTypeAny> = {};
             const required: string[] = Array.isArray(schema.required) ? schema.required : [];
-            for (const [key, value] of Object.entries(schema.properties || {})) {
+            for (const [key, value] of propertyEntries) {
                 const field = jsonSchemaValueToZod(value);
                 shape[key] = required.includes(key) ? field : field.optional();
             }
