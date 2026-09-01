@@ -110,12 +110,17 @@ function jsonSchemaValueToZod(schema: any): z.ZodTypeAny {
             ? base.describe(schema.description)
             : base;
     switch (schema?.type) {
-        case 'string':
-            return withDescription(
-                Array.isArray(schema.enum) && schema.enum.length > 0
-                    ? z.enum(schema.enum as [string, ...string[]])
-                    : z.string()
-            );
+        case 'string': {
+            if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+                return withDescription(z.enum(schema.enum as [string, ...string[]]));
+            }
+            let text = z.string();
+            // maxLength/minLength 透传（2026-09-01）：让超长文本在 MCP 校验层得到字段级
+            // 自纠反馈（真机：终审 reason 303 字符超出解析器 280 上限被判空，整批失效）。
+            if (typeof schema.minLength === 'number') text = text.min(schema.minLength);
+            if (typeof schema.maxLength === 'number') text = text.max(schema.maxLength);
+            return withDescription(text);
+        }
         case 'number':
         case 'integer': {
             let numeric = z.number();
