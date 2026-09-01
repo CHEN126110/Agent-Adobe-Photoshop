@@ -35,7 +35,9 @@
 16. `[已完成但发现前置故障]` 正常程序启动与窗口检查暴露“礼貌委托被当能力问句 + angle-JSON Tool 协议泄漏”：项目查看 Run 约 4.4 秒结束但 0 Tool，并把内部调用显示给用户。主图复测没有启动；该快响应不计效率收益。
 17. `[已完成]` D-131 已让“你可以帮我 +具体只读检查 /参考检索”保留非写入委托语义，写入形态和纯能力问句仍只对话；DSML /XML /angle-JSON 文本 Tool 协议均不能成为自然语言终稿，而进入一次 repair 或诚实协议失败。正常程序原句已真实读取并汇总 30 张项目 JPG（两个子目录各 15 张），自然终稿与独立目录事实一致，协议泄漏为 0。
 18. `[已完成待实机]` D-132 已关闭主图复测的新首偏差：正常句末标点 /引号不再让唯一 advisory Skill candidate 消失，能力问句保持无生产候选；单张候选由当前多模态 Agent 直接观察且内部模型调用为 0，设计首轮不再用 `openProjectFile` 打开 JPG，`placeImage` 只提交已选素材；同 run 完全相同的 presentation bytes 不重复进入模型。实现没有增加 Agent 主循环行数或 legacy 正则点，fresh 65 阶段核心闸门通过。
-19. `[进行中]` 构建正常程序并在干净新对话重跑原样短提示“帮我设计一张商品主图。”；验证 Agent 主动绑定主图 Profile、首次 Skill prepare、单图观察、首个内容写入、参考选择、唯一规格与 finalize。任何新可归因停滞立即停止，不把通用原子稿或文件存在算成 Skill 成功。
+19. `[已完成·首偏差归属 Agent]` D-134 正常程序复测（0888b25f、全新一次性项目、干净新对话）已完成：Agent 全程未绑定主图 Profile，走通用工具完成建档 / 置入 / 文字 / 保存导出，终态 failed / needs_review。Harness 注入链逐环无罪（候选产出、引导块逐字节复现、上下文零裁剪、通道全量透传、declareDesignIntent 在 allowedTools）；关键混杂是主模型已从 deepseek+thinking 切换为 claude-subscription-opus（无思考、无采纳率基线）。单图直接观察与写类收据链按设计工作；同轮闭合 Reflexion 容量门缺陷（预算耗尽仍诞生注定停机的下一代并覆盖终态文案）。
+19a. `[待开始]` 在 claude-subscription-opus 上用同一自然句、全新项目取得 2–3 次采纳率基线；期间不做 advisory 单样本修补。基线明确偏低时再评估引导位置 / 措辞与思考配置的组合实验；任何一次成功绑定的运行同时验证 prepare 单一 size 合同（D-133 修复至今未被真实触达）。
+19b. `[待开始]` 订阅通道 Final Judge 结构化输出根修（本轮 score_batch_invalid：opus 返回评审散文而非机读评分批次）；订阅通道 requestedThinking 恒为 disabled 与用户偏好 thinking.enabled=true 的矛盾按「只用用户设置的模型、禁静默降级」原则处置（接通或诚实标注）。
 20. `[待开始]` 复测支持精简方向后，把 prepare workspace 最小持久化到既有 TaskRun owner，并注入进程重启、已消费 workspace、TaskRun /project /document /group /revision 和 Host 漂移故障；随后再运行可进入 S1 分母的普通项目 Case。
 21. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 

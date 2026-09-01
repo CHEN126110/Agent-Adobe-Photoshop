@@ -5070,6 +5070,44 @@ async function run() {
       || secondPassedImprovementReentry.shouldReenter) {
       aestheticProtocolViolations.push('passed-completed-aesthetic-improvement-was-not-agent-owned-exactly-once');
     }
+    // 通用容量门（真机 2026-09-01 run 90e7f4a1-b731）：failed / final_response 续作路径
+    // 提供了真实容量证明且余量不足时，不得再诞生注定在循环入口立即停机的下一代；
+    // 余量充足时照常允许一次有界续作，门本身不得过度拦截。
+    const failedContinuationHandoff = {
+      status: 'reflexion_required',
+      sourceOwner: 'R5',
+      targetStage: 'R4',
+      failureAnalysis: ['上一代以 final_response 停在未完成状态'],
+      nextRoundConstraints: ['从当前真实画面状态继续完成本稿']
+    };
+    const exhaustedContinuationReentry = decideQualityAwareReflexionReentry({
+      handoff: failedContinuationHandoff,
+      priorReentryCount: 0,
+      stopReason: 'final_response',
+      performanceCapacity: {
+        usage: {
+          modelCalls: 36,
+          toolCalls: 33,
+          iterations: 36,
+          visionCandidates: 11,
+          visualAnalyses: 11,
+          activeElapsedMs: 995_978,
+          observationKeys: []
+        },
+        budget: completedImprovementPerformanceCapacity.budget
+      }
+    });
+    const fundedContinuationReentry = decideQualityAwareReflexionReentry({
+      handoff: failedContinuationHandoff,
+      priorReentryCount: 0,
+      stopReason: 'final_response',
+      performanceCapacity: completedImprovementPerformanceCapacity
+    });
+    if (exhaustedContinuationReentry.shouldReenter
+      || exhaustedContinuationReentry.reason !== 'resource_budget_exhausted'
+      || !fundedContinuationReentry.shouldReenter) {
+      aestheticProtocolViolations.push('exhausted-budget-still-spawned-doomed-reflexion-generation');
+    }
     const invalidCompletedHandoffs = [
       { ...completedImprovementHandoff, reviewBinding: undefined },
       {

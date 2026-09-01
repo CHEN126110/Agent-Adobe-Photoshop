@@ -84,6 +84,8 @@
 - 新普通项目 Run 665 使用自然短提示后，Agent 能说明“穿着场景主视觉、四色平铺辅助”的选择理由，却在约 15 分钟内没有产生内容写入。10 次模型调用累计约 1,176,756 ms，14 次 Tool 约 11,527 ms，9 次有 usage 的调用累计约 380,978 input token；前三次主图 Skill 调用被 prepare 阶段无关的 support refs /scope 拒绝，第四次才建成空工作文档。运行在取得明确停滞证据后停止。该样本证明 `b10da18a` 降低首轮 Tool 面仍不够，Skill schema 与常驻知识自身也在形成竞争式控制；它不证明模型没有设计判断，也不进入成功率分母。
 - D-130 重测前的项目查看 Run 在约 4.4 秒内以 `success / final_response` 结束，但实际为 1 次模型调用、0 Tool、`toolSchemaChars=2`，并向用户显示 `<{"name":"list_directory",...}`。根因是“你可以帮我”礼貌委托被能力问句判据提前降为 `chat_only`，随后对话协议泄漏检测漏掉 angle-JSON 变体。该运行没有修改 Photoshop，但污染了对话，不能计为响应速度改善。
 - D-131 通过后启动的主图诊断在约 245 秒按首偏差纪律停止：16 次模型调用约 235 秒、20 次 Tool 约 10 秒。Agent 已比较联系表并说明平铺 /模特角色，但没有绑定主图 Profile 或调用 `main-image-design`；它用 `openProjectFile` 尝试 JPG，随后在生产画布试放两张候选、重复截图、装载删除能力并清理试放层后才置入第三张。首个确定性根因是原样短提示末尾句号使 Skill recommendation 消失；该 Run 有局部进展但不属于 Skill 主图成功，也不进入 S1 分母。
+- D-134（0888b25f）正常程序在全新一次性项目和干净新对话完成一次自然句实机复测：真实建档 1500×1500、置入模特图、色带加标题、保存 PSD 并导出 JPG，构图叙事可解释且按真实像素自我纠错，但全程未绑定 `ecommerce.main_image.v1`，终态 failed / needs_review，不进入 S1 分母。Harness 注入链逐环无罪（advisory 候选、引导块逐字节复现、上下文零裁剪、订阅通道全量透传、declareDesignIntent 在 SDK 子进程 argv 白名单中实证可达）；首偏差 owner 为 Agent（claude-subscription-opus 未采纳 advisory）。该模型经该通道 requestedThinking 恒为 disabled，与用户 thinking.enabled=true 偏好不符；D-133 之前的声明基线全部来自 deepseek-v4-flash-vision-exp，跨模型不可比。
+- D-134 的 Final Judge 对成品返回完整中文评审散文（工艺分 7/10、三条具体问题、诚实未评价项）但无机读评分批次，协议以 score_batch_invalid 诚实失败、未补默认分；活动文档两次漂移到外部残留文档均被执行前守卫按设计中止，运行期间外部 Photoshop 文档集合确有变化（外部并发成立）。
 
 ## 当前未核实
 

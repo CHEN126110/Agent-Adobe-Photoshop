@@ -5971,6 +5971,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 if (completedAestheticImprovementReentryUsed) break;
                 const currentPerformanceUsage = activeAutonomousAgent
                     ?.readRequestPerformanceUsageSnapshot();
+                // 容量证明对所有重入路径统一提供（真机 2026-09-01 run 90e7f4a1-b731）：
+                // 只在 completed 审美分支传 capacity 时，failed 续作路径会在预算耗尽后仍
+                // 诞生注定立即停机的下一代，并让零进展文案覆盖真实进展终态。
                 const reentryDecision = decideQualityAwareReflexionReentry({
                     handoff: reflexionHandoff,
                     priorReentryCount: reflexionReentryCount,
@@ -5978,17 +5981,17 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     previousFailureSignature: previousReflexionFailureSignature,
                     scorecardHistory: designScorecardHistory,
                     stopReason: result.stopReason,
-                    ...(isCompletedAestheticImprovement ? {
-                        constraintMode: 'handoff_only' as const,
-                        ...(currentPerformanceUsage && autonomousPerformancePolicy ? {
-                            performanceCapacity: {
-                                usage: currentPerformanceUsage,
-                                budget: {
-                                    ...autonomousPerformancePolicy.budget,
-                                    maxIterations
-                                }
+                    ...(currentPerformanceUsage && autonomousPerformancePolicy ? {
+                        performanceCapacity: {
+                            usage: currentPerformanceUsage,
+                            budget: {
+                                ...autonomousPerformancePolicy.budget,
+                                maxIterations
                             }
-                        } : {})
+                        }
+                    } : {}),
+                    ...(isCompletedAestheticImprovement ? {
+                        constraintMode: 'handoff_only' as const
                     } : {})
                 });
                 if (!reentryDecision.shouldReenter || !reflexionHandoff) {

@@ -52,6 +52,11 @@
 - D-132 已定位该主图 Run 的首个确定性原因：自然提示末尾的“。”使 canonical Skill recommendation 变为 undefined；同句去掉标点才返回 advisory `main-image-design`。当前修复只归一句末非语义标点 /引号，不自动绑定或执行 Skill；能力问句保持无候选。单图 `describeImage` 已改为当前多模态 Agent 直接读像素、内部模型调用 0，设计首轮以它替代 `openProjectFile`，`placeImage` 不再承担预览语义；同 run 完全相同的 presentation bytes 只发送一次。实现下沉现有视觉 /性能模块，`agent.ts` 行数与 legacy 正则点均未上涨，并通过 fresh 65 阶段 `maintenance:validate`；正常程序同提示复测待完成。
 - 新附件故障已归属为 `INTAKE-091`：聊天上传会给主模型文件名和像素，但当前通用执行链没有可由模型引用、由 Tool 解析的请求级附件句柄；项目搜索和任意 CLI 都不能证明同名文件就是上传字节。P0 方案是 `attachmentRef` Input Asset Provider，通用 CLI 独立归属 `INTAKE-088`。
 - revision 5 正式运行前的 Debug Bridge、Photoshop MCP、UXP Runtime、模型、fixture、写授权和外部文档 ownership 均通过只读 preflight；下一轮仍必须在新提交和新 fixture 上重新核对，旧收据不能复用。
+- D-134（0888b25f 实机复测）已在正常程序、全新一次性项目 `Desktop/DesignEcho主图复测-0888b25f`（摄影图 15+15）和干净新对话完成：Run 90e7f4a1-3e89 用原样短提示跑 37 次模型调用（约 983 秒，98.7% 墙钟）、35 个工具、7 次真实写入，真实建档 1500×1500、置入模特图、色带加标题、保存 PSD 并导出 JPG，全程有可解释的构图叙事（为标题找留白、拒绝色块盖手指、按真实像素纠正自己的商品描述），终态 failed / needs_review。
+- D-134 首偏差：Agent 全程未绑定 `ecommerce.main_image.v1`——无 declareDesignIntent、无 main-image-design，建档走通用 createDocument、交付走通用 saveDocument/quickExport。Harness 侧逐环排除：advisory 候选真实产出（mode=execute）；引导块 410 字符（含 declareDesignIntent 示例与三个 workMode）经静态重放逐字节复现；上下文零裁剪（removed=0 / compacted=false）；订阅通道 customSystemPrompt 全量透传；SDK 子进程 argv 捕获证实 declareDesignIntent 位于 24 个 allowedTools。owner=Agent（模型未采纳 advisory）。
+- D-134 关键混杂已证实：D-133「第 3 个工具声明」基线来自 deepseek-v4-flash-vision-exp + thinking enabled；本轮为 claude-subscription-opus 且该通道全部请求 requestedThinking=disabled（用户偏好 thinking.enabled=true 未生效）。opus 在自然句上没有任何采纳率基线，跨模型行为差异不得归因 0888b25f；prepare 修复本轮未被真实触达（技能从未被调用），仍待一次绑定成功的运行验证。
+- D-134 伴生事实：写类收据完整回传（placeImage 带几何验证与事务收据），模型「没回结果」是单轮决策桥的时序叙事而非缺陷；活动文档两次漂移到 5499 均被守卫执行前中止（运行起点活动文档即 5499，运行期间外部文档集合发生变化，判定为外部并发，守卫按设计工作）；Final Judge 以 score_batch_invalid 诚实失败——opus 返回高质量中文评审散文（工艺分 7/10）而非机读评分批次，订阅通道终审缺结构化输出约束是独立待修项。
+- D-134 已闭合的确定性缺陷（run 90e7f4a1-b731）：failed/final_response 续作不查剩余容量，预算耗尽（activeElapsedMs 995,978）仍诞生 Reflexion 第二代，1ms 内 0 调用即 performance_budget 停机，其「还没真正开始做」零进展文案覆盖上一代真实进展终态。已修：`decideQualityAwareReflexionReentry` 对所有提供容量证明的重入路径统一 fail closed（复用 evaluateAgentExecutionCapacity 与既有最小容量），executor 调用点无条件传入容量证明，不提供证明的调用方保持旧行为；audit:agent-business-boundaries 新增穷尽拒绝 / 充足放行 / 无证明兼容三态断言。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
 
 ### 实施边界
@@ -68,7 +73,7 @@
 2. `36a1db51` 已关闭正式 completion 旁路：Manifest-bound 主图不能再由普通 PSD/JPG 保存冒充 Skill finalize；原子 Tool 保持可达，Harness 不替 Agent 选择文件、画面或下一动作。
 3. Run 665 已完成第一轮诊断性 A/B 并在明确停滞后停止：模型已给出较合理设计方向，但 Skill 内部生产字段、Runtime 技术字段和重复常驻知识竞争控制权，导致四次 Skill 调用才完成 prepare，约 15 分钟没有内容写入；该结果触发 D-130 根修，不进入 S1 分母。
 4. D-131 正常程序项目查看句已经通过，不再重复购买同一测试；保留其 30 张资源、15+15 子目录与零协议泄漏记录。
-5. 构建并提交包含 D-132 的正常程序，在同一普通项目的干净新对话重跑原样短提示“帮我设计一张商品主图。”；首先验证 advisory 候选存在、Agent 是否主动声明 `ecommerce.main_image.v1`、首次 `main-image-design` 能否直接 prepare、是否改用单图直接观察而非画布试放，以及同像素是否不重复进入模型。出现新的可归因无进展冲突即停止、保存病历并修首个偏差。
+5. `[已完成]` D-134 复测已执行并取得完整病历：advisory 候选与引导注入逐环无罪，首偏差归属 Agent（opus 未采纳 advisory）；单图直接观察已被真实使用（describeImage×2、内部模型调用 0）。本轮闭合的确定性缺陷是 Reflexion 容量门（见当前事实）。在 claude-subscription-opus 上取得自然句采纳率基线（2–3 次干净新项目运行）之前，不对 advisory 措辞或位置做任何单样本修补；同时立项订阅通道 Final Judge 结构化输出（score_batch_invalid 根修）与 thinking 偏好未生效的诚实处置。
 6. 只有复测证明模型可见接口收敛方向成立，才把主图 prepare workspace 从 Renderer Map 最小收敛为 TaskRun-owned 持久身份，不新增第二 Task Store；随后注入进程重启、错误 TaskRun /project /document /group /revision、已消费 workspace和 Host 漂移故障。
 7. 在完成 workspace reconciliation 后运行 S1 候选 Case；验证对象理解、候选比较、可选参考、复杂分层、唯一规格、finalize、同版本可编辑稿 /导出、Final Judge 与外部文档零变化。
 8. 用用户成稿 /Eagle 参考校准 Evaluation 的误放行；在扩大 S1 队列前闭合上传附件的请求级 `attachmentRef`，通用 CLI 继续作为独立 Provider 阶段。

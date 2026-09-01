@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：D-131 正常程序项目查看已用真实 Tool 通过；随后主图短提示因句末标点丢失 advisory Skill candidate，退化为画布试图与通用原子链。D-132 已修真实用户句末边界、同模型单图观察和重复像素复用且保持 Agent 简化棘轮，下一步构建正常程序重跑原样短提示，任何新明确停滞即停止。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：D-134 正常程序复测（0888b25f、全新一次性项目、干净新对话）已完成；首偏差归属 Agent——claude-subscription-opus 未采纳 advisory 主图候选而走通用工具链，Harness 注入链逐环无罪（候选、引导块、上下文、通道、allowedTools 全部实证）。跨模型混杂已证实：旧声明基线来自 deepseek+thinking，opus 无采纳率基线且订阅通道恒不请求思考。同轮闭合 Reflexion 容量门缺陷（预算耗尽仍诞生注定停机的下一代并覆盖终态文案）。下一步：opus 自然句采纳率基线 2–3 次，期间不做单样本 advisory 修补；订阅通道 Final Judge 结构化输出与 thinking 偏好处置立项。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {
@@ -101,12 +101,12 @@
     "Automatic Evaluation passed a crop-dominant photography result at 89, so current commercial-quality calibration can still convert a technically valid artifact into a false professional success."
   ],
   "nextActions": [
-    "Build the normal app with D-132 and rerun the exact natural prompt '帮我设计一张商品主图。' in a clean conversation; verify advisory candidate visibility, Agent-authored ecommerce.main_image.v1 binding, first-try prepare, direct single-asset observation, no working-canvas previews, duplicate-pixel reuse and first content-write latency.",
-    "If the D-132 rerun still bypasses main-image-design or reaches another attributable no-progress conflict, stop immediately and repair that first divergence before evaluating the draft; do not count generic atomic writes as Skill success.",
-    "If the D-130 rerun changes the failure mode in the intended direction, persist the main-image prepare workspace as a bounded fact under the existing TaskRun owner and reconcile current project, document, group and Photoshop revision after restart without granting execution authority.",
-    "Add failure injection for process restart, consumed workspace, TaskRun/project/document/group/revision drift and Host file mismatch, then rerun a candidate case eligible for the S1 denominator.",
+    "Obtain a 2-3 run natural-prompt adoption baseline for claude-subscription-opus on fresh disposable projects before touching advisory wording or placement; any successful binding run must also exercise the repaired prepare single-size contract.",
+    "Root-fix the subscription-channel Final Judge structured-output protocol so an opus prose critique cannot leave score_batch_invalid as the only outcome.",
+    "Resolve the subscription channel ignoring thinking.enabled=true (wire it through or surface the limitation honestly; no silent downgrade).",
+    "If the D-130 direction holds after the baseline, persist the main-image prepare workspace under the existing TaskRun owner and add restart/drift failure injection.",
     "Calibrate advisory Evaluation against the user's work and Eagle references so strong source photography is not mistaken for sufficient design increment.",
-    "Implement request-scoped attachmentRef resolution before the full S1 cohort; then stage scoped external-file and CLI capabilities separately."
+    "Implement request-scoped attachmentRef resolution before the full S1 cohort."
   ],
   "activeRequest": {
     "id": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",

@@ -582,8 +582,10 @@ export interface QualityAwareReentryInput {
      */
     constraintMode?: 'merge_quality' | 'handoff_only';
     /**
-     * 当前 TaskRun 的真实累计用量与当前有效预算。完成态可选改进必须提供该证明；
-     * 缺失或不足时 fail closed，不能仅凭上一代 stopReason === final_response 猜测仍有余量。
+     * 当前 TaskRun 的真实累计用量与当前有效预算。完成态可选改进必须提供该证明，
+     * 缺失或不足时 fail closed；其余重入路径由调用方尽量提供，提供后同样按剩余
+     * 容量决定是否允许启动下一代，不能仅凭上一代 stopReason === final_response
+     * 猜测仍有余量。
      */
     performanceCapacity?: {
         usage: RuntimePerformanceUsage;
@@ -616,6 +618,33 @@ export interface QualityAwareReentryDecision extends ReflexionReentryDecision {
  * - 本函数只判「停 / 继续返工」并给出停机类别与分数轨迹；不改变运行结果的成败裁决。
  */
 export function decideQualityAwareReflexionReentry(input: QualityAwareReentryInput): QualityAwareReentryDecision {
+    const decision = decideQualityAwareReflexionReentryUngated(input);
+    if (!decision.shouldReenter || !input.performanceCapacity) {
+        return decision;
+    }
+    // 通用容量门（真机 2026-09-01 run 90e7f4a1-b731）：failed / final_response 续作路径
+    // 此前不查剩余容量，预算已耗尽仍诞生下一代，下一代在循环入口即以 performance_budget
+    // 停机，其「还没开始做」零进展文案会覆盖上一代的真实进展终态。任何重入路径只要
+    // 调用方能提供同一请求的真实用量与预算，就必须证明还容得下一段可独立闭合的执行；
+    // 证明不足即拒绝启动，而不是启动后立刻死亡。该门只拒绝注定失败的新 generation，
+    // 不授予额度、不延长 deadline、不改变已有裁决。
+    const capacity = evaluateAgentExecutionCapacity({
+        ...input.performanceCapacity,
+        minimum: AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM
+    });
+    if (capacity.sufficient) {
+        return decision;
+    }
+    return {
+        ...decision,
+        shouldReenter: false,
+        reason: 'resource_budget_exhausted',
+        injectedConstraints: [],
+        reentryCount: input.priorReentryCount
+    };
+}
+
+function decideQualityAwareReflexionReentryUngated(input: QualityAwareReentryInput): QualityAwareReentryDecision {
     const history = Array.isArray(input.scorecardHistory)
         ? input.scorecardHistory.filter((card): card is DesignScorecard => Boolean(card))
         : [];
