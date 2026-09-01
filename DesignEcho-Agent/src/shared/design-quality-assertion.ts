@@ -1044,9 +1044,13 @@ export function parseVlmJudgeResponse(
         ));
         const missingRequiredEvidence = requiredEvidenceRefs.filter((ref) => !evidenceRefs.includes(ref));
         if (hasApplicable && !applicable) {
+            // N/A 可靠性裁决（2026-09-01，三次真实探针 d28805b8/d3707608/bb3e7fd3）：
+            // score+N/A 是实质矛盾（评了分又说不适用），保持硬拒；diagnosis-on-N/A 在三次
+            // 独立运行中内容均只复述不适用理由，是模型对该字段的稳定注释用法而非摇摆，
+            // 且 N/A 项的 diagnosis 本无任何消费者。据此不再因冗余注释废弃整批可靠评分；
+            // 该注释内容直接忽略，不进入结果。
             const reliableNotApplicable = assertion.allowNotApplicable === true
                 && score === undefined
-                && item?.diagnosis === undefined
                 && Boolean(reason)
                 && confidence !== undefined
                 && confidence >= MIN_RELIABLE_VLM_JUDGE_CONFIDENCE;
@@ -1057,7 +1061,7 @@ export function parseVlmJudgeResponse(
                 confidence,
                 reliableNotApplicable
                     ? reason
-                    : '此标准不允许标记为不适用，或 N/A 响应仍携带 score/diagnosis，转人工复核。'
+                    : '此标准不允许标记为不适用，或 N/A 响应仍携带 score，转人工复核。'
             ));
             continue;
         }

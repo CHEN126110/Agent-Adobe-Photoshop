@@ -4556,6 +4556,28 @@ async function run() {
     if (disallowedNaResults[0]?.status !== 'needs_review') {
       aestheticProtocolViolations.push('disallowed-not-applicable-bypassed-evaluation');
     }
+    // N/A 可靠性裁决（2026-09-01 三次真实探针）：冗余 diagnosis 注释不废弃合法 N/A；
+    // score+N/A 仍是实质矛盾，保持硬拒——一松一紧同时钉住。
+    const annotatedNaResults = parseVlmJudgeResponse(JSON.stringify([{
+      id: typeCharacterAssertion.id,
+      applicable: false,
+      confidence: 0.9,
+      reason: '画面无文字且 Brief 不要求文字',
+      diagnosis: { note: '纯色块小样，无文字可评' }
+    }]), [typeCharacterAssertion]);
+    const scoredNaResults = parseVlmJudgeResponse(JSON.stringify([{
+      id: typeCharacterAssertion.id,
+      applicable: false,
+      score: 0.8,
+      confidence: 0.9,
+      reason: '不适用但又给了分'
+    }]), [typeCharacterAssertion]);
+    if (annotatedNaResults[0]?.status !== 'not_applicable'
+      || !isReliableVlmJudgeBatchComplete(annotatedNaResults, [typeCharacterAssertion])
+      || scoredNaResults[0]?.status !== 'needs_review'
+      || isReliableVlmJudgeBatchComplete(scoredNaResults, [typeCharacterAssertion])) {
+      aestheticProtocolViolations.push('not-applicable-annotation-vs-score-contradiction-drifted');
+    }
     if (allNaScorecard.passed
       || allNaScorecard.gate !== 'incomplete_verification'
       || allNaScorecard.coverage.notApplicable !== 1) {
