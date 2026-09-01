@@ -117,8 +117,14 @@ function jsonSchemaValueToZod(schema: any): z.ZodTypeAny {
                     : z.string()
             );
         case 'number':
-        case 'integer':
-            return withDescription(z.number());
+        case 'integer': {
+            let numeric = z.number();
+            // minimum/maximum 透传（2026-09-01）：让越界数值在 MCP 校验层得到字段级
+            // 错误反馈，模型可在同一 query 内自纠（真机：终审 score 被按 10 分制填成 5）。
+            if (typeof schema.minimum === 'number') numeric = numeric.min(schema.minimum);
+            if (typeof schema.maximum === 'number') numeric = numeric.max(schema.maximum);
+            return withDescription(numeric);
+        }
         case 'boolean':
             return withDescription(z.boolean());
         case 'array':
@@ -616,7 +622,9 @@ export class ClaudeSubscriptionService {
                     model: apiModelId,
                     // streaming input 模式下 SDK 把收尾计为一轮：maxTurns=1 会在正常单次决策后
                     // 抛 error_max_turns（真机 probe3），给 2 兜住；工具捕获路径由 abort 收场不受此影响。
-                    maxTurns: 2,
+                    // 2026-09-01 提到 3：带边界校验的工具参数（如终审 score 0~1）被 MCP 拒收时，
+                    // 模型需要一次同 query 自纠窗口；成功路径仍由首个合法调用 abort 收场，不受影响。
+                    maxTurns: 3,
                     // tools: [] 彻底清空 SDK 内置工具面（真机 probe3：模型曾真的调用宿主账号的
                     // Artifact 工具翻数据——allowedTools 只是权限白名单不是工具面裁剪）。
                     tools: [],

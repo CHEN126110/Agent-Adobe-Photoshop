@@ -42,7 +42,8 @@
 19c. `[代码已落地待实机]` 订阅通道两项确定性缺陷根修：
   - Final Judge 结构化评分提交（Provider 中立）：终审调用携带唯一 `submitScoreBatch` 工具（id enum + 其余字段仅 description 透传），模型以一次工具调用提交批次；工具参数序列化回同一 `parseVlmJudgeResponse`（批次校验单点不变），无工具调用时回落正文文本（旧协议不动）。终态判定下沉协议 owner `settleFinalQualityJudgeTerminalResponse`（工具终态放行 / 文本终态归一 / 不完整仍抛错），agent.ts 净 -5 行回到棘轮下方。传输层 required 仅 ['id']，字段缺失由解析器诚实降级，不在 zod 桥硬拒烧重试。
   - thinking 接通：目录改申报 `supported:true/extended_thinking`（渲染端启动自动重拉订阅目录，无陈旧快照）；model-service 订阅分支透传 `thinkingEnabled`；通道显式下发 `thinking:{type:'adaptive'|'disabled'}`（未声明不下发，不替用户填）；响应侧 thinking 块透出到 `ProviderResponse.thinking`。judge 请求保持显式 disabled。
-  - 断言迁移：authorship 边界（终态门跟随协议 owner）、runtime-declaration（judge 恰带一个 submitScoreBatch、repair 无工具）、business-boundaries（双模式提示 / schema 契约 / 结构化解析等价 / 四种拒收）。待正常程序实机验证 judge 首次真实结构化收敛与 thinking 生效。
+  - 断言迁移：authorship 边界（终态门跟随协议 owner）、runtime-declaration（judge 恰带一个 submitScoreBatch、repair 无工具）、business-boundaries（双模式提示 / schema 契约 / 结构化解析等价 / 四种拒收）。
+  - 实机验证（海报探针 run 397a7b47-716c）：thinking 生效（agent_turn enabled ×19）与结构化提交传输闭环（tool_calls 终态、id enum 全中）均已取得；新首偏差 score 10 分制已根修（zod 桥 min/max 透传 + 0~1 类型化 + maxTurns 3 自纠 + 反模式警告），待下一次实机复验 judge 完整收敛。
 20. `[待开始]` 复测支持精简方向后，把 prepare workspace 最小持久化到既有 TaskRun owner，并注入进程重启、已消费 workspace、TaskRun /project /document /group /revision 和 Host 漂移故障；随后再运行可进入 S1 分母的普通项目 Case。
 21. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 

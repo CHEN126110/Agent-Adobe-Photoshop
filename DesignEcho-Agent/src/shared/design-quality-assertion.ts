@@ -653,11 +653,24 @@ export function buildVlmJudgeScoreBatchToolSchema(pending: DesignAssertion[]): {
                                 ? { type: 'string', enum: ids, description: '判定标准 id，必须来自系统提示列出的标准。' }
                                 : { type: 'string', description: '判定标准 id。' },
                             applicable: { description: 'true|false；仅任务确实不存在该内容角色时可为 false。' },
-                            score: { description: '0~1；applicable=true 时必填，false 时禁止。' },
-                            confidence: { description: '0~1。' },
+                            // score/confidence 带 0~1 边界（真机 2026-09-01 run 397a7b47：opus 按
+                            // 10 分制填 score=5，解析器如实拒收）。数值越界由 MCP 校验以字段级
+                            // 错误反馈，模型可同 query 自纠；范围语义仍由 parseVlmJudgeResponse 单点拥有。
+                            score: {
+                                type: 'number',
+                                minimum: 0,
+                                maximum: 1,
+                                description: '0~1 的小数（如 0.85），不是 10 分制；applicable=true 时必填，false 时禁止。'
+                            },
+                            confidence: {
+                                type: 'number',
+                                minimum: 0,
+                                maximum: 1,
+                                description: '0~1 的小数（如 0.9），不是 10 分制。'
+                            },
                             reason: { type: 'string', description: '不超过 40 个汉字的一句话结论。' },
                             evidenceRefs: { description: '需要消费结构 concern 的项：原样列出已消费的 evidenceId 数组。' },
-                            diagnosis: { description: '仅按系统提示要求附带诊断的非通过项填写；结构与系统提示中的示例一致。' }
+                            diagnosis: { description: '仅按系统提示要求附带诊断的非通过项填写；必须是系统提示示例中的结构化对象（visualFinding/causalExplanation/revision），不是一句话字符串。' }
                         },
                         // 传输层只要求 id（批次配对键）；其余字段缺失由 parseVlmJudgeResponse
                         // 诚实降级（needs_review），不在 zod 桥硬拒后浪费模型重试轮次。
@@ -727,7 +740,7 @@ export function buildVlmJudgeSystemPrompt(
     lines.push('- revision：先判断问题来自局部执行，还是元素/素材/方向本身不成立；在保留微调、删除无效元素、替换关系或换方向中选一个最合适的语义动作。最小调整指用最少副作用解决根因，不是必须在错误方案上继续缩放、移动或叠加。另给真正必须保留项、预期效果和改后复核方法；禁止 Tool 名、layerId、像素命令或完成声明。');
     const scoreItemProtocol = '非通过诊断项示例：{"id":"...","applicable":true,"score":0.4,"confidence":0.8,"reason":"...","diagnosis":{"visualFinding":{"scope":"region","target":"主标题区","description":"...","relationship":"...","normalizedBounds":{"x":0.1,"y":0.1,"width":0.8,"height":0.2},"affectedRoles":["headline","subject"]},"causalExplanation":{"goalRelation":"conflicts","mechanism":"...","tradeoff":"..."},"revision":{"action":"...","expectedEffect":"...","preserve":["..."],"verify":["..."]}}}。其它适用项只需 id/applicable/score/confidence/reason；不适用项只需 id/applicable=false/confidence/reason，禁止 score/diagnosis。';
     if (options?.scoreDelivery === 'score_batch_tool') {
-        lines.push(`调用 ${VLM_JUDGE_SCORE_BATCH_TOOL_NAME} 工具提交评分：scores 参数就是覆盖全部标准的完整评分 JSON 数组，一次提交。${scoreItemProtocol}不要在正文输出评分、评审长文或其它文字。`);
+        lines.push(`调用 ${VLM_JUDGE_SCORE_BATCH_TOOL_NAME} 工具提交评分：scores 参数就是覆盖全部标准的完整评分 JSON 数组，一次提交。score 与 confidence 一律 0~1 的小数（如 0.85），不是 10 分制。${scoreItemProtocol}不要在正文输出评分、评审长文或其它文字。`);
     } else {
         lines.push(`只返回 JSON 数组。${scoreItemProtocol}不要其它文字。`);
     }
