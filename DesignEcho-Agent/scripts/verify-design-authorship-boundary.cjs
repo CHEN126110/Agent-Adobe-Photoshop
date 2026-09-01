@@ -7503,8 +7503,6 @@ const projectOverviewTool = designCapabilitySession.activeTools
     .find((tool) => tool.name === 'analyzeProjectContactSheetOverview');
 const browseAssetCandidatesTool = designCapabilitySession.activeTools
     .find((tool) => tool.name === 'browseAssetCandidates');
-const evaluateDesignTool = designCapabilitySession.activeTools
-    .find((tool) => tool.name === 'evaluateDesign');
 const projectOverviewContract = defaultAgentTools
     .find((tool) => tool.name === 'analyzeProjectContactSheetOverview');
 const browseAssetCandidatesContract = defaultAgentTools
@@ -7512,16 +7510,24 @@ const browseAssetCandidatesContract = defaultAgentTools
 const evaluateDesignContract = defaultAgentTools
     .find((tool) => tool.name === 'evaluateDesign');
 const localRevisionToolNames = new Set(designCapabilitySession.activeTools.map((tool) => tool.name));
+const initialDesignToolSchemaCharacters = designCapabilitySession.activeTools.reduce(
+    (total, tool) => total + JSON.stringify(tool).length,
+    0
+);
 const legacyRecommendationActivation = designCapabilitySession.requestCapabilities([
     'project.read.recommendAssets',
     'legacy.tool.recommendAssets'
 ]);
+const optionalAdvancedDesignActivation = designCapabilitySession.requestCapabilities([
+    'photoshop.write.composeDesign',
+    'review.evaluateDesign',
+    'knowledge.search.readSkillPlaybook'
+]);
 check(
-    '项目总览、候选比较、独立评价与最小局部修订手柄首轮可见，但仍由 Agent 决定是否和何时使用',
+    '创意任务首轮保留观察与原子设计手柄，大型整稿、隔离评价和重复手册按需可达',
     activeHierarchyMatch?.availability === 'active'
         && Boolean(projectOverviewTool)
         && Boolean(browseAssetCandidatesTool)
-        && Boolean(evaluateDesignTool)
         && projectOverviewTool?.description.includes('bounded visual inventory')
         && projectOverviewContract?.description.includes('not a mandatory first step')
         && projectOverviewContract?.description.includes('does not prove the project is complete, choose a hero, prescribe a design direction')
@@ -7529,17 +7535,26 @@ check(
         && browseAssetCandidatesContract?.description.includes('The Agent chooses after viewing pixels')
         && legacyRecommendationActivation.status === 'rejected'
         && legacyRecommendationActivation.activatedToolNames.length === 0
-        && evaluateDesignContract?.description.includes('首轮可见不表示固定开工或强制验收')
+        && initialDesignToolSchemaCharacters <= 30000
+        && !localRevisionToolNames.has('composeDesign')
+        && !localRevisionToolNames.has('evaluateDesign')
+        && !localRevisionToolNames.has('readSkillPlaybook')
+        && optionalAdvancedDesignActivation.status === 'activated'
+        && ['composeDesign', 'evaluateDesign', 'readSkillPlaybook'].every((toolName) => (
+            optionalAdvancedDesignActivation.activatedToolNames.includes(toolName)
+        ))
         && evaluateDesignContract?.description.includes('只在隔离批评比直接修订或参考比较更有信息增益时调用')
-        && ['placeImage', 'transformLayer', 'createRectangle', 'createEllipse', 'setTextStyle']
+        && ['placeImage', 'transformLayer', 'createRectangle', 'createEllipse', 'createTextLayer', 'setTextStyle']
             .every((toolName) => localRevisionToolNames.has(toolName)),
     JSON.stringify({
         hierarchySearchResult,
-        activeTools: designCapabilitySession.activeTools.map((tool) => tool.name),
+        initialActiveTools: Array.from(localRevisionToolNames),
+        initialDesignToolSchemaCharacters,
         contractDescriptions: {
             projectOverview: projectOverviewContract?.description,
             browseAssetCandidates: browseAssetCandidatesContract?.description,
             legacyRecommendationActivation,
+            optionalAdvancedDesignActivation,
             evaluateDesign: evaluateDesignContract?.description
         }
     })

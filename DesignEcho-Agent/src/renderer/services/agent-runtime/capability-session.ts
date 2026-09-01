@@ -171,25 +171,20 @@ export const DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS: readonly string[] = Obj
     // 查什么、何时停止仍由 Agent 按当前设计问题决定。
     'eagle.read.searchReferences',
     'eagle.read.analyzeReference',
-    // 业务工作法手册（官方 skill 包）首轮可见：技能描述会引导「开工先读手册」，
-    // 手册工具不可见时该引导就是空指（2026-08-23 真机：模型跳过读手册、按文件名猜色卡站已完成）。
-    'knowledge.search.readSkillPlaybook',
     'photoshop.read.getCanvasSnapshot',
     // 设计写入后的图层身份是跨品类基础事实；直接提供层级读取，避免模型靠画面猜结构。
     'photoshop.read.getLayerHierarchy',
     'photoshop.sandbox.createDocument',
-    // 单画面开放创意保留一个可逆、由 Agent 完整声明设计参数的首稿入口。独立评价同样
-    // 首轮可见，但只是 Agent 可自行取用的视觉证据，不是开工或交付门禁。
-    'photoshop.write.composeDesign',
-    'review.evaluateDesign',
-    // 首稿快照暴露问题后，模型必须有最小的局部修订手柄；这些能力不规定先后、修改对象
-    // 或审美答案，只让模型能增补素材、调整几何、建立图形关系与修改文字样式。
+    // 首轮只给 Agent 直接建立图片、图形和可编辑文字关系所需的原子手柄。整稿编译、
+    // 隔离评价与 Skill 手册仍在同一 Capability Session 中按需可达，但不再把大型 schema
+    // 和已自动注入的方法正文永久塞进每次模型调用。
     'photoshop.write.placeImage',
     'photoshop.write.transformLayer',
     // 主体大小/裁切是跨品类的通用视觉修订能力。直接可见只减少能力发现回合；
     // 比例与锚点仍必须由 Agent 显式声明，工具只求解几何并返回同版本局部画面。
     'photoshop.write.fitLayerSubjectToRegion',
     'photoshop.sandbox.createShape',
+    'photoshop.write.createTextLayer',
     'photoshop.write.setTextStyle'
 ]);
 

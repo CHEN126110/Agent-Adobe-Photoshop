@@ -12644,9 +12644,12 @@ async function run() {
       'skill.sku-batch'
     ]);
     if (!activeToolNames.includes('createDocument')
-      || !activeToolNames.includes('composeDesign')) {
+      || !activeToolNames.includes('createTextLayer')
+      || activeToolNames.includes('composeDesign')
+      || activeToolNames.includes('evaluateDesign')
+      || activeToolNames.includes('readSkillPlaybook')) {
       runtimeSkillHandoffViolations.push(
-        `runtime-skill-handoff:unbound-production-lost-atomic-write-baseline:${text}`
+        `runtime-skill-handoff:unbound-production-model-surface-not-lean:${text}`
       );
     }
     if (legacyActivation.status !== 'rejected'

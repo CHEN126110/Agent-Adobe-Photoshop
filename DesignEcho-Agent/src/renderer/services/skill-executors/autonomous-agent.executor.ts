@@ -3418,8 +3418,12 @@ function buildDynamicDesignTaskOperatingContext(
     ].join('\n\n');
 }
 
-function buildDesignPrinciplesRuntimeContext(designDisciplineActive: boolean): string {
-    const principles = designDisciplineActive
+export function buildDesignPrinciplesRuntimeContext(
+    designDisciplineActive: boolean,
+    detail: 'compact' | 'full' = 'full'
+): string {
+    const useFullFoundation = designDisciplineActive && detail === 'full';
+    const principles = useFullFoundation
         ? buildDesignPrinciplesSummary('all')
         : [
             buildDesignPrinciplesSummary('overview'),
@@ -3448,9 +3452,9 @@ function buildRuntimeStageContextItemsForBundle(input: {
     taskContextItem?: RuntimeContextItem | null;
     designMethodKnowledge?: ReturnType<typeof buildDesignMethodKnowledgeRuntimeContext>;
     /**
-     * agentic 执行模型没有 Stage，知识不再按 R1/R3/R4 渐进装载，而是从第一轮全部可见——
-     * 设计师动手前脑子里本来就装着方法论。实现上去掉 applicableStages，让
-     * selectRuntimeContextItemsForStage 在无 stage 时也保留这些项。
+     * agentic 执行模型没有 Stage，任务方法与交付语义从第一轮可见；通用设计原则只给
+     * 紧凑底座，深层构图、字体与工艺知识继续按当前问题检索。实现上去掉
+     * applicableStages，让无 stage 的任务保留这些已选项，而不是注入整本知识库。
      */
     stageAgnostic?: boolean;
 }): RuntimeContextItem[] {
@@ -3479,7 +3483,10 @@ function buildRuntimeStageContextItemsForBundle(input: {
         source: 'design-principles-foundation',
         trust: 'governed_knowledge',
         slot: 'knowledge_context',
-        content: buildDesignPrinciplesRuntimeContext(input.designDisciplineActive),
+        content: buildDesignPrinciplesRuntimeContext(
+            input.designDisciplineActive,
+            input.stageAgnostic ? 'compact' : 'full'
+        ),
         applicableStages: ['R3', 'R4', 'R5'],
         priority: 90,
         freshness: 'current'

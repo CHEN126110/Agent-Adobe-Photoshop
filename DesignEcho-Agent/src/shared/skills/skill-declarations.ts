@@ -1844,7 +1844,7 @@ export const MainImageSkill: SkillDeclaration = {
     // legacy/deterministic 路由不得跳过 Agent 循环直执；Manifest 绑定后的同一 Agent
     // 可以把自己的逐槽决定提交给这个受控 production entry。
     modelDirectExecution: 'forbidden',
-    description: '开工先用 readSkillPlaybook("main-image-design") 读取主图用途、店铺规格分文档体系和交付边界。手册不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. For open creative work, call prepare with one explicit size to create the standard empty Photoshop workspace, use general Photoshop tools to author the layered design, then call finalize with the returned workspace reference. Finalize exports only groups proven non-empty by live Photoshop readback. The legacy slotAssignments submission remains available for deterministic one-placement production. This Skill never chooses assets, copy, layout, or aesthetic direction.',
+    description: '主图用途、店铺规格分文档体系和交付边界会随本工作法提供，不要在开工时重复读取同一手册；只有用户要求查看或维护手册、或需要核对其中的确定性脚本时才按需读取。工作法不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. For open creative work, call prepare with one explicit size to create the standard empty Photoshop workspace, use general Photoshop tools to author the layered design, then call finalize with the returned workspace reference. Finalize exports only groups proven non-empty by live Photoshop readback. The legacy slotAssignments submission remains available for deterministic one-placement production. This Skill never chooses assets, copy, layout, or aesthetic direction.',
     whenToUse: [
         'User explicitly delegates a main-image, cover, or first-image design deliverable',
         'User asks for a white background image (白底图)',
@@ -1985,7 +1985,7 @@ export const DetailPageDesignSkill: SkillDeclaration = {
     routeClass: 'business-workflow',
     // 模型路由不得直执：详情页设计必须经 Agent 自主 ReAct 循环（先看图后规划的视觉观察纪律在循环内强制）。
     modelDirectExecution: 'forbidden',
-    description: '开工先用 readSkillPlaybook("detail-page-design") 读工作法手册（店铺逐屏叙事框架/1440 规格/组名带理由的命名习惯）。项目级详情页设计任务说明：先摸索项目、读取素材和当前文档，再判断走模板套版还是纯设计；模板优先但不是硬前提，复核未通过时调整策略后继续推进。',
+    description: '详情页逐屏叙事框架、1440 规格与语义命名习惯会随本工作法提供，不要在开工时重复读取同一手册；只有用户要求查看或维护手册、或需要核对其中的确定性脚本时才按需读取。项目级详情页设计任务说明：先理解项目、素材和当前文档，再判断走模板套版还是纯设计；模板优先但不是硬前提，复核未通过时调整策略后继续推进。',
     whenToUse: [
         '用户只说“做详情页 / 设计详情页 / 生成详情页 / 整理详情页”时，先进入本 Skill 的项目级 Agent 循环，不要先要求用户指定模板路径。',
         '项目或当前 Photoshop 文档里可能有详情页模板时，优先检查并理解模板，再决定是否套版。',

@@ -155,17 +155,15 @@ const designFoundationSession = createAgentCapabilitySession({
 });
 const designFoundationInitialTools = designFoundationSession.activeTools.map((tool) => tool.name);
 const designFoundationSchemaSize = JSON.stringify(designFoundationSession.activeTools).length;
-// 2026-08-25 首轮 25→26：设计委托已确认时直接暴露一次性 Runtime Profile 声明入口。
-// 它只让模型记录自己的语义判断，不选择 Profile、不授权 Tool，绑定后由 Resolver 退役。
-assert.strictEqual(
-  designFoundationInitialTools.length,
-  26,
-  `general design first-turn Tool surface grew: ${designFoundationInitialTools.length}`
-);
-// Runtime Profile 枚举和边界说明约增加 2.9k；43k 是本次实测后的审查棘轮，继续防止
-// 首轮能力面未经审查膨胀。
+// 2026-09-01 Run 663/664 的首轮 26 项 / 42.5k schema 把整稿编译、隔离评价和已经
+// 自动注入的方法手册永久塞进每次模型调用。首轮现在只保留原子图片、图形、文字与
+// 观察手柄；高级能力仍可由同一 Capability Session 按需恢复。
 assert(
-  designFoundationSchemaSize < 43_000,
+  designFoundationInitialTools.length <= 24,
+  `general design first-turn Tool surface exceeded the reviewed lean budget: ${designFoundationInitialTools.length}`
+);
+assert(
+  designFoundationSchemaSize <= 30_000,
   `general design first-turn Tool schema exceeded the reviewed progressive-disclosure budget: ${designFoundationSchemaSize}`
 );
 assert(
@@ -177,17 +175,15 @@ assert(
   'ordinary Harness baseline must not expose design Runtime Profile declaration'
 );
 for (const requiredDesignFoundationTool of [
-  'readSkillPlaybook',
   'declareDesignIntent',
   'analyzeProjectContactSheetOverview',
   'browseAssetCandidates',
-  'composeDesign',
-  'evaluateDesign',
   'placeImage',
   'transformLayer',
   'fitLayerSubjectToRegion',
   'createRectangle',
   'createEllipse',
+  'createTextLayer',
   'setTextStyle'
 ]) {
   assert(
@@ -195,6 +191,28 @@ for (const requiredDesignFoundationTool of [
     `general design first turn lost ${requiredDesignFoundationTool}`
   );
 }
+for (const optionalAdvancedTool of ['readSkillPlaybook', 'composeDesign', 'evaluateDesign']) {
+  assert(
+    !designFoundationInitialTools.includes(optionalAdvancedTool),
+    `general design first turn still exposes optional large Tool ${optionalAdvancedTool}`
+  );
+}
+const optionalAdvancedSession = createAgentCapabilitySession({
+  candidateTools,
+  workflowBridgeNames,
+  baselineCapabilityIds: buildAgentCapabilityBaseline(true)
+});
+const optionalAdvancedActivation = optionalAdvancedSession.requestCapabilities([
+  'photoshop.write.composeDesign',
+  'review.evaluateDesign',
+  'knowledge.search.readSkillPlaybook'
+]);
+assert.strictEqual(optionalAdvancedActivation.status, 'activated');
+assert.deepStrictEqual(
+  optionalAdvancedActivation.activatedToolNames.slice().sort(),
+  ['composeDesign', 'evaluateDesign', 'readSkillPlaybook'].sort(),
+  'lean first turn removed advanced design capabilities instead of keeping them on demand'
+);
 assert(!designFoundationInitialTools.includes('capturePhotoshopWindow'));
 const environmentRecoverySession = createAgentCapabilitySession({
   candidateTools,
@@ -622,16 +640,28 @@ assert(
 for (const requiredFirstTurnDesignTool of [
   'analyzeProjectContactSheetOverview',
   'browseAssetCandidates',
-  'evaluateDesign',
   'placeImage',
   'transformLayer',
   'createRectangle',
   'createEllipse',
+  'createTextLayer',
   'setTextStyle'
 ]) {
   assert(
     productionBroadDiscovery.activeTools.some((tool) => tool.name === requiredFirstTurnDesignTool),
     `production broad-discovery first turn lost ${requiredFirstTurnDesignTool}`
+  );
+}
+for (const optionalFirstTurnCapability of [
+  'photoshop.write.composeDesign',
+  'review.evaluateDesign',
+  'knowledge.search.readSkillPlaybook'
+]) {
+  assert(
+    productionBroadDiscovery.getResolution().onDemandCapabilityIds.includes(
+      optionalFirstTurnCapability
+    ),
+    `production broad-discovery lost on-demand capability ${optionalFirstTurnCapability}`
   );
 }
 assert.deepStrictEqual(

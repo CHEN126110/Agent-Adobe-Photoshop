@@ -67,7 +67,8 @@ export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string
     // 学习闭环：用户留改弃进候选区 + 「学到了什么」时间线
     'learn.designCandidates': ['recordDesignVerdict', 'getDesignLearningTimeline', 'learnTasteFromEagle'],
     'preview.renderStoryboard': ['renderLayout'],
-    // 一次成稿车间：单张画面首稿的默认起手式（建画布 → 背景 → 主体 → 文字 → 投影 → 回读）
+    // 整稿车间是可选的批量编译能力；普通创意首轮先保留更小的原子工作台，
+    // Agent 确实已经形成完整 regions / visualStyle 时再按需装载。
     'photoshop.write.composeDesign': ['composeDesign'],
     'eagle.read.searchReferences': ['searchEagleReferences', 'searchDesignKnowledge'],
     'eagle.read.analyzeReference': ['analyzeEagleReference'],
@@ -141,6 +142,7 @@ export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string
     // capability 继续用于旧 Tool surface，但不能借此取得可执行 R4 节点资格。
     'photoshop.write.groupLayersSafely': ['groupLayersSafely'],
     'photoshop.write.lockLayer': ['lockLayer'],
+    'photoshop.write.createTextLayer': ['createTextLayer'],
     'photoshop.write.setTextStyle': ['setTextStyle'],
     'photoshop.write.setTextContent': ['setTextContent'],
     'photoshop.write.setLayerOpacity': ['setLayerOpacity'],

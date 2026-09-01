@@ -42,6 +42,7 @@ const {
 } = require(path.join(runtimeRoot, 'agentic-runtime-binding-context.ts'));
 const {
   buildAutonomousAgenticRuntimeBindingProjection,
+  buildDesignPrinciplesRuntimeContext,
   buildAutonomousDesignBriefInputSources,
   commitAgenticRuntimeDeclarationBinding
 } = require(path.resolve(
@@ -5159,7 +5160,11 @@ async function assertAgenticDeclarationPreservesReadsAndReplansWrites() {
       if (modelCallCount === 2) {
         assert(!visibleTools.some((tool) => tool.name === 'declareDesignIntent'));
         assert(visibleTools.some((tool) => tool.name === 'main-image-design'));
-        assert(visibleTools.some((tool) => tool.name === 'composeDesign'));
+        assert(visibleTools.some((tool) => tool.name === 'createTextLayer'));
+        assert(!visibleTools.some((tool) => tool.name === 'composeDesign'));
+        assert(capabilitySession.getResolution().onDemandCapabilityIds.includes(
+          'photoshop.write.composeDesign'
+        ));
         return {
           stopReason: 'tool_use',
           toolCalls: [{
@@ -6016,13 +6021,23 @@ function assertAgenticManifestOwnerOnlyCapabilityBinding() {
   ), 'pre-bound Agent context compiler dropped the shared agentic Runtime binding projection');
   assert(productionActiveToolNames.includes('main-image-design'),
     'pre-bound autonomous runtime omitted its main-image workflow owner');
-  assert(productionActiveToolNames.includes('composeDesign'),
-    'agentic owner binding removed the broad autonomous design surface');
+  assert(productionActiveToolNames.includes('createTextLayer'),
+    'agentic owner binding removed the atomic editable-text surface');
+  assert(!productionActiveToolNames.includes('composeDesign')
+    && productionRuntime.capabilitySession.getResolution().onDemandCapabilityIds.includes(
+      'photoshop.write.composeDesign'
+    ), 'agentic owner binding did not keep the large compose surface on demand');
   assert.deepStrictEqual(
     productionActiveToolNames.filter((toolName) => workflowBridgeNameSet.has(toolName)),
     ['main-image-design'],
     'pre-bound autonomous runtime exposed another workflow Skill'
   );
+  const compactAgenticDesignPrinciples = buildDesignPrinciplesRuntimeContext(true, 'compact');
+  const fullStagedDesignPrinciples = buildDesignPrinciplesRuntimeContext(true, 'full');
+  assert(compactAgenticDesignPrinciples.length < 2000
+    && fullStagedDesignPrinciples.length > compactAgenticDesignPrinciples.length * 3
+    && compactAgenticDesignPrinciples.includes('设计落地'),
+  'agentic runtime still injects the full universal design handbook instead of a compact foundation');
 
   const runResumeContractBinding = {
     version: 'run-resume-contract-binding/v0',
