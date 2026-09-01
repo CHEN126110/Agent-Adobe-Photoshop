@@ -45,8 +45,11 @@
 - Run 665 的首个偏差已根修为通用模型接口投影：Skill 内部完整参数继续服务 Executor /卡片 /兼容生产，但模型只看到 Agent-owned 参数；Runtime-owned `mainImageExecutionMode / executionScope` 在入口剥离，prepare 固定 disposable scope 且不校验未发生的交付字段。主图模型 schema 从约 11,007 降为 2,857 字符；agentic 只常驻任务特有方法与紧凑原则，绑定后方法上下文为 2,236 字符；pre-bound Tool schema 从约 37,308 降为 32,785。基础图层归组能力直接可达，项目资源搜索改为按需。该增量已通过 fresh 65 阶段 `maintenance:validate`，尚待同提示正常程序复测，不能据此宣称已经提速或做出好设计。
 - 横向审计发现 SKU /详情页模型 schema 仍分别约 13,834 /7,989 字符，说明“内部生产字段与模型设计接口混合”具有跨 Skill 风险；但当前没有真实 Case 证明它们发生了同一故障。本轮只提供通用 `modelParameterNames` 投影和审计约束，不用主图病历替其他 Skill 做结论，也不建立品类分支。
 - D-130 正常程序复测前的窗口检查暴露了独立首偏差：无参数 running-window 脚本在无 Test Bridge 时执行默认对话 Case，污染了当前会话；其中 10:46 的“你可以帮我看看这个项目都有什么”Run 只调用模型 1 次、约 4.4 秒、0 Tool、`toolSchemaChars=2`，并把 `<{"name":"list_directory","arguments":...}` 内部协议显示给用户。该“快速”是未执行而非效率收益，主图 Attempt 因此前置故障未启动。
-- 该故障已根修为两层通用语义：能力问句先让出仍包含项目 /文档 /SKU 只读检查或参考检索的礼貌委托，项目查看句稳定投影 `read_only_inspect + read_only + confirmed_tool_required`；写入形态的“你可以帮我设计 /修改吗”仍为 `chat_only`，不能静默获得写权限。对话回复同时识别 DSML、XML 和 angle-JSON 文本 Tool 协议，首个协议候选不再进入 UI，而触发一次自然语言 repair，失败则保留协议故障。Runtime declaration、设计作者权、业务授权、简化棘轮、Renderer 类型检查及 fresh 65 阶段核心闸门已通过；正常程序同句复测待完成。
+- 该故障已根修为两层通用语义：能力问句先让出仍包含项目 /文档 /SKU 只读检查或参考检索的礼貌委托，项目查看句稳定投影 `read_only_inspect + read_only + confirmed_tool_required`；写入形态的“你可以帮我设计 /修改吗”仍为 `chat_only`，不能静默获得写权限。对话回复同时识别 DSML、XML 和 angle-JSON 文本 Tool 协议，首个协议候选不再进入 UI，而触发一次自然语言 repair，失败则保留协议故障。Runtime declaration、设计作者权、业务授权、简化棘轮、Renderer 类型检查及 fresh 65 阶段核心闸门已通过；正常程序同句复测现已取得真实只读 Tool 与自然终稿。
 - 本轮 EPIPE 弹窗已定位为开发启动器 stdout pipe 提前关闭，非项目配置损坏；四个错误 Electron 进程已精确结束。后续正常程序通过 detached + ignored stdio 启动，并在测试前核对唯一主进程与 6 个端口同属一个 PID，避免普通单实例与 CDP 实例互相抢占。该启动纪律不进入生产 Agent /Harness。
+- D-131 已在正常程序用原句复测通过：约 15 秒内真实调用项目资源读取并自然汇总当前测试项目 30 张 JPG、两个摄影子目录各 15 张，内部 Tool 协议泄漏为 0；独立目录枚举与其数量一致。该结果只证明礼貌只读委托闭合，不证明主图设计能力。
+- 随后的主图诊断仍按首偏差纪律在约 245 秒停止：16 次模型调用、20 次 Tool，模型耗时约 235 秒。Agent 看过项目联系表和候选页，也能说明平铺 /模特图的角色，但没有调用 `declareDesignIntent` 或 `main-image-design`；它误用只支持 PSD /PSB 的 `openProjectFile` 打开 JPG，并把生产画布当单图查看器，先后置入两张候选、重复截图、装载删除能力、删除试放层后再置入第三张。它有真实进展但没有进入专业生产 owner，不能计为主图成功。
+- D-132 已定位该主图 Run 的首个确定性原因：自然提示末尾的“。”使 canonical Skill recommendation 变为 undefined；同句去掉标点才返回 advisory `main-image-design`。当前修复只归一句末非语义标点 /引号，不自动绑定或执行 Skill；能力问句保持无候选。单图 `describeImage` 已改为当前多模态 Agent 直接读像素、内部模型调用 0，设计首轮以它替代 `openProjectFile`，`placeImage` 不再承担预览语义；同 run 完全相同的 presentation bytes 只发送一次。实现下沉现有视觉 /性能模块，`agent.ts` 行数与 legacy 正则点均未上涨，并通过 fresh 65 阶段 `maintenance:validate`；正常程序同提示复测待完成。
 - 新附件故障已归属为 `INTAKE-091`：聊天上传会给主模型文件名和像素，但当前通用执行链没有可由模型引用、由 Tool 解析的请求级附件句柄；项目搜索和任意 CLI 都不能证明同名文件就是上传字节。P0 方案是 `attachmentRef` Input Asset Provider，通用 CLI 独立归属 `INTAKE-088`。
 - revision 5 正式运行前的 Debug Bridge、Photoshop MCP、UXP Runtime、模型、fixture、写授权和外部文档 ownership 均通过只读 preflight；下一轮仍必须在新提交和新 fixture 上重新核对，旧收据不能复用。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
@@ -64,8 +67,8 @@
 1. `69c54867` 与 `b4998b65` 已分别提交并推送；用户未提交的 3 个 UI 文件未进入提交。Run 663 /664 与四份真实交付保留为失败归因证据，不进入 S1 专业质量分子。
 2. `36a1db51` 已关闭正式 completion 旁路：Manifest-bound 主图不能再由普通 PSD/JPG 保存冒充 Skill finalize；原子 Tool 保持可达，Harness 不替 Agent 选择文件、画面或下一动作。
 3. Run 665 已完成第一轮诊断性 A/B 并在明确停滞后停止：模型已给出较合理设计方向，但 Skill 内部生产字段、Runtime 技术字段和重复常驻知识竞争控制权，导致四次 Skill 调用才完成 prepare，约 15 分钟没有内容写入；该结果触发 D-130 根修，不进入 S1 分母。
-4. 先构建包含 D-131 的正常程序，在干净新对话只复测“你可以帮我看看这个项目都有什么”；必须取得真实只读 Tool、结果回填和自然语言总结，内部协议泄漏为 0。若仍无 Tool 或提前结束，停止并继续修该首偏差，不启动主图写任务。
-5. 项目查看句通过后，在同一个新普通项目的另一干净对话重跑主图自然短提示；首先验证首次 `main-image-design` 能否直接 prepare、是否不再搜索基础归组能力、首个内容写入延迟和模型回合是否下降。出现新的可归因无进展冲突即停止、保存病历并修首个偏差。
+4. D-131 正常程序项目查看句已经通过，不再重复购买同一测试；保留其 30 张资源、15+15 子目录与零协议泄漏记录。
+5. 构建并提交包含 D-132 的正常程序，在同一普通项目的干净新对话重跑原样短提示“帮我设计一张商品主图。”；首先验证 advisory 候选存在、Agent 是否主动声明 `ecommerce.main_image.v1`、首次 `main-image-design` 能否直接 prepare、是否改用单图直接观察而非画布试放，以及同像素是否不重复进入模型。出现新的可归因无进展冲突即停止、保存病历并修首个偏差。
 6. 只有复测证明模型可见接口收敛方向成立，才把主图 prepare workspace 从 Renderer Map 最小收敛为 TaskRun-owned 持久身份，不新增第二 Task Store；随后注入进程重启、错误 TaskRun /project /document /group /revision、已消费 workspace和 Host 漂移故障。
 7. 在完成 workspace reconciliation 后运行 S1 候选 Case；验证对象理解、候选比较、可选参考、复杂分层、唯一规格、finalize、同版本可编辑稿 /导出、Final Judge 与外部文档零变化。
 8. 用用户成稿 /Eagle 参考校准 Evaluation 的误放行；在扩大 S1 队列前闭合上传附件的请求级 `attachmentRef`，通用 CLI 继续作为独立 Provider 阶段。

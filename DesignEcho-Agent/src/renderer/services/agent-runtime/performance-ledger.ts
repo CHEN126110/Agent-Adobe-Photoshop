@@ -60,6 +60,8 @@ export interface PerformanceLedgerState {
     visionCandidateCount: number;
     /** 普通视觉池已经发送过的证据键；终审精确重放由独立字段保存。 */
     visionCandidateKeys: Set<string>;
+    /** 当前 Agent 实例内已排入主模型请求的 presentation bytes；只做同 run 去重。 */
+    presentedPrimaryVisualPixelDigests: Set<string>;
     /** 普通 Agent 执行视觉池的图像模型请求；不含独立终审事件。 */
     visualAnalysisCount: number;
     finalQualityJudgeCallCount: number;
@@ -90,6 +92,7 @@ export function createPerformanceLedgerState(): PerformanceLedgerState {
         toolCallCount: 0,
         visionCandidateCount: 0,
         visionCandidateKeys: new Set(),
+        presentedPrimaryVisualPixelDigests: new Set(),
         visualAnalysisCount: 0,
         finalQualityJudgeCallCount: 0,
         finalQualityDiagnosisRepairCallCount: 0,
@@ -379,6 +382,9 @@ export function restorePerformanceLedgerUsage(
             ledger: {
                 ...ledger,
                 visionCandidateKeys: new Set(ledger.visionCandidateKeys),
+                presentedPrimaryVisualPixelDigests: new Set(
+                    ledger.presentedPrimaryVisualPixelDigests
+                ),
                 finalQualityJudgeVisionCandidateKeys: [
                     ...ledger.finalQualityJudgeVisionCandidateKeys
                 ]
@@ -418,7 +424,12 @@ export function restorePerformanceLedgerUsage(
             visionCandidateKeys: new Set([
                 ...ledger.visionCandidateKeys,
                 ...observationKeys
-            ])
+            ]),
+            // 跨 Agent generation 没有旧图像消息可复用；只保留当前实例已经消费的集合，
+            // 不从可序列化 usage/observationKey 反推像素身份。
+            presentedPrimaryVisualPixelDigests: new Set(
+                ledger.presentedPrimaryVisualPixelDigests
+            )
         },
         iterations: Math.max(iterations, nonNegativeInteger(usage.iterations))
     };

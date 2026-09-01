@@ -7823,6 +7823,62 @@ async function assertProviderTruncationRecoveryDoesNotSpendTaskModelBudget() {
     .some((block) => block.type === 'image'), false);
 }
 
+async function assertConsumedIdenticalPixelsAreNotPresentedTwice() {
+  const pixels = Buffer.alloc(900, 17).toString('base64');
+  const buildObservationResult = () => ({
+    success: true,
+    image: {
+      imageData: pixels,
+      mediaType: 'image/jpeg',
+      sourceId: 'project-asset:stable-fixture',
+      sourceKind: 'project_asset',
+      sourceName: 'fixture.jpg'
+    }
+  });
+  const agent = new Agent(
+    {
+      ...buildAgentTestConfig({
+        tools: [requireAgentTool('describeImage')],
+        maxIterations: 3,
+        openingCanvasObservationMode: 'none'
+      }),
+      modelId: 'deepseek-v4-flash-vision-exp',
+      performanceBudget: {
+        maxModelCalls: 3,
+        maxToolCalls: 3,
+        maxVisionCandidates: 3,
+        maxInitialVisionCandidates: 1,
+        maxVisualAnalyses: 3,
+        maxFullResolutionImageReads: 0,
+        softTimeBudgetMs: 60_000
+      }
+    },
+    async () => ({ content: 'fixture', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+
+  const first = buildObservationResult();
+  agent.toolCallLog.push({
+    name: 'describeImage', arguments: { filePath: 'C:\\project\\fixture.jpg', maxSize: 1200 }, result: first
+  });
+  await agent.attachToolImageObservations([{ callId: 'observe-first', success: true, output: first }]);
+  assert.strictEqual(agent.pendingPrimaryVisualObservations.length, 1);
+  assert(agent.pendingPrimaryVisualObservations[0].presentedPixelSha256);
+  agent.pendingPrimaryVisualObservations = [];
+
+  const second = buildObservationResult();
+  agent.toolCallLog.push({
+    name: 'describeImage', arguments: { filePath: 'C:\\project\\fixture.jpg', maxSize: 1201 }, result: second
+  });
+  await agent.attachToolImageObservations([{ callId: 'observe-second', success: true, output: second }]);
+  assert.strictEqual(agent.pendingPrimaryVisualObservations.length, 0);
+  assert.strictEqual(agent.performanceLedger.visionCandidateCount, 1);
+  assert.strictEqual(second.agentVisualObservation?.reason, 'duplicate_visual_presentation');
+  assert(agent.messages.some((message) => (
+    String(message.content || '').includes('已经读取过的画面完全相同')
+  )));
+}
+
 async function assertBareCompletionClaimsCannotBypassTextExits() {
   const expectedMessage = '这次只给出一句完成声明，没有真正做出内容，也没有给出可以查看的结果，所以不能算完成。';
   const directMessages = [];
@@ -12717,6 +12773,7 @@ async function runBehaviorAssertions() {
   await assertLinkReviewRequestsStayReadOnly();
   await assertObservationObligationRequiresRealReadButNotMutation();
   await assertProviderTruncationRecoveryDoesNotSpendTaskModelBudget();
+  await assertConsumedIdenticalPixelsAreNotPresentedTwice();
   await assertBareCompletionClaimsCannotBypassTextExits();
   await assertNaturalFinalResponseContinuesInSameAgentInstance();
   await assertRepeatedTerminalClosureGapStopsWithoutReentryLoop();

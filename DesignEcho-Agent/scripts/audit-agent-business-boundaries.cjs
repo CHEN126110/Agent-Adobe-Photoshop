@@ -2210,6 +2210,15 @@ async function run() {
     'buildDesignMemoryKnowledgeResultsForSkill'
   )?.getText(designPlannerContextSource) || '';
   const toolExecutorText = read(toolExecutorPath);
+  const describeImageCaseStart = toolExecutorText.indexOf("case 'describeImage': {");
+  const describeImageCaseEnd = toolExecutorText.indexOf(
+    "case 'recommendAssets':",
+    describeImageCaseStart
+  );
+  const describeImageCaseText = describeImageCaseStart >= 0
+    && describeImageCaseEnd > describeImageCaseStart
+    ? toolExecutorText.slice(describeImageCaseStart, describeImageCaseEnd)
+    : '';
   const publicPlanPhotoshopAdapterText = read(publicPlanPhotoshopAdapterPath);
   const composeDesignSpecText = read(composeDesignSpecPath);
   const composeDesignExecutorText = read(composeDesignExecutorPath);
@@ -12588,7 +12597,10 @@ async function run() {
     ['帮我做SKU编排', 'sku-batch'],
     ['帮我完成SKU编排', 'sku-batch'],
     ['帮我做详情页', 'detail-page-design'],
-    ['帮我做主图', 'main-image-design']
+    ['帮我做主图', 'main-image-design'],
+    ['帮我设计一张商品主图。', 'main-image-design'],
+    ['帮我设计一张商品主图！', 'main-image-design'],
+    ['“帮我设计一张商品主图。”', 'main-image-design']
   ];
   for (const [text, expectedSkillId] of runtimeSkillRecommendationCases) {
     const decision = buildAutonomousExecutionDecisionForEngine(
@@ -17610,6 +17622,14 @@ async function run() {
           && !toolExecutorText.includes('filePath: topCandidate.path')
           ? []
           : ['asset-placement:place-image-still-selects-a-candidate-inside-the-execution-tool']),
+        ...(describeImageCaseText.includes('getResourcePreview(filePath, maxSize)')
+          && describeImageCaseText.includes("owner: 'calling_agent'")
+          && describeImageCaseText.includes("status: 'pixels_attached'")
+          && describeImageCaseText.includes('内部模型调用为 0')
+          && !describeImageCaseText.includes("invoke('resource:analyzeAsset'")
+          && toolSchemasText.includes('never place an image into the working document merely to inspect it')
+          ? []
+          : ['asset-placement:single-candidate-observation-still-uses-a-second-model-or-photoshop-canvas']),
         ...(!toolSchemasText.includes('selectionDecisionSource:')
           && designPlacementIntelligenceText.includes("authority: 'harness'")
           && designPlacementIntelligenceText.includes("? 'agent_judgment'")

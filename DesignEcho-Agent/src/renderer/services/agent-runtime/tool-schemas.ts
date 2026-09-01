@@ -1836,7 +1836,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'placeImage',
-        description: 'Place an Agent-selected image as an editable layer. This execution tool never scans, ranks, or chooses project assets. targetBounds is geometric placement, not aesthetic approval.',
+        description: 'Commit an Agent-selected image to the working composition as an editable layer. This execution tool never scans, ranks, or chooses project assets; it also never previews them. Use browseAssetCandidates for comparison and describeImage for a larger single-image observation; do not place temporary candidates merely to inspect them. targetBounds is geometric placement, not aesthetic approval.',
         inputSchema: {
             ...objectSchema({
             filePath: { type: 'string', description: '已选项目素材路径。' },
@@ -2044,10 +2044,11 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'describeImage',
-        description: 'Analyze a single local image file with the configured vision model. Returns description, category, main subject, colors, style, suggested placement and effects. Use this to understand what a product photo or asset actually shows before using it in a design.',
+        description: 'Observe ONE known local image directly with the current multimodal Agent. It returns the image pixels and basic file metadata without calling a second model, ranking the asset, selecting a winner, or writing Photoshop. Use it to enlarge a candidate from browseAssetCandidates before deciding whether it belongs in the composition. This is the image-viewing operation; never place an image into the working document merely to inspect it.',
         inputSchema: objectSchema({
             filePath: { type: 'string', description: '本地图片完整路径（先用 searchProjectResources 找）' },
-            hint: { type: 'string', description: '可选：告诉视觉模型你重点想看什么（如「是否白底图」「主体占比」）' }
+            hint: { type: 'string', description: '可选：本次观察要解决的问题（如「主体是否适合作为主视觉」）；只作为当前 Agent 的观察目的，不会发给第二个模型。' },
+            maxSize: { type: 'number', description: '预览长边上限，默认 1200；只在确实需要看清单张候选时提高。' }
         }, ['filePath'])
     },
     {
@@ -2116,7 +2117,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'browseAssetCandidates',
-        description: 'Browse a stable neutral candidate page for direct pixel comparison. Harness does not infer category from requirement text, score, rank, select a winner, or auto-place. G0001/G0002 are identities within candidatePage.candidateSetId, never priority; bind both when discussing another page or scope. Follow nextPage only when more coverage has information value; one page or one selected image is not project-wide understanding. The Agent chooses after viewing pixels.',
+        description: 'Browse a stable neutral candidate page for direct pixel comparison. Harness does not infer category from requirement text, score, rank, select a winner, or auto-place. G0001/G0002 are identities within candidatePage.candidateSetId, never priority; bind both when discussing another page or scope. Follow nextPage only when more coverage has information value; one page or one selected image is not project-wide understanding. The Agent chooses after viewing pixels. When one candidate needs a larger view, call describeImage with its exact path; placeImage is a composition commit, not an image viewer.',
         inputSchema: objectSchema({
             requirement: { type: 'string', description: 'Comparison objective; it never ranks or filters this page.' },
             maxResults: { type: 'number', description: 'Page size 1-12.' },

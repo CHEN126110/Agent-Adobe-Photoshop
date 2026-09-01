@@ -137,7 +137,7 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     addPhotoFilterAdjustment: { name: '照片滤镜', icon: '[F]', description: '创建照片滤镜调整图层。' },
 
     // 素材理解 / 设计知识
-    describeImage: { name: '理解图片', icon: '[A]', description: '理解单张图片的内容。' },
+    describeImage: { name: '查看单张素材', icon: '[A]', description: '把一张已知素材直接交给当前 Agent 查看，不置入画布。' },
     analyzeAssetContent: { name: '分析素材内容', icon: '[A]', description: '理解素材的主体、文字与本质（原片/成品）。' },
     createProjectContactSheetOverview: { name: '生成项目总览', icon: '[A]', description: '把项目图片合成带编号的缩略图总览。' },
     analyzeProjectContactSheetOverview: { name: '观察项目总览', icon: '[A]', description: '用视觉模型理解项目缩略图总览。' },

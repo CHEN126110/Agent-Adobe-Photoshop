@@ -221,7 +221,7 @@ export const AVAILABLE_TOOLS = [
     
     // === 图像处理 ===
     { name: 'removeBackground', description: '完整智能抠图：绑定当前文档/图层，执行本地检测与分割并写回验真；语义目标、实例选择和可选正负点都由 Agent 明确给出', params: '{ layerId?: number, targetPrompt?: string, outputFormat?: "layer"|"mask"|"selection"|"channel", quality?: "fast"|"balanced"|"quality", semanticGuidance?: { version: "semantic-matting-guidance/v1", instanceSelectionMode?: "refine_detected_candidates"|"exact_guided_instances", sets: [{ foregroundPoints: [{x:number,y:number}], backgroundPoints?: [{x:number,y:number}] }] } }' },
-    { name: 'placeImage', description: 'Place an image that the Agent has explicitly selected. This execution tool never scans, ranks, or chooses project assets. When no source is supplied, browse neutral candidates with browseAssetCandidates and call placeImage again with filePath/fileToken/imageData.', params: '{ filePath?: string, fileToken?: string, imageData?: string, name?: string, x?: number, y?: number, targetBounds?: { x?: number, y?: number, left?: number, top?: number, right?: number, bottom?: number, width?: number, height?: number }, targetFit?: "contain"|"cover"|"fill", layerOrder?: "front"|"belowText"|"back", center?: boolean, scale?: number, fitToCanvas?: boolean }' },
+    { name: 'placeImage', description: 'Commit an explicitly selected image to the working composition. This execution tool never scans, ranks, chooses, or previews project assets. Compare with browseAssetCandidates and enlarge one candidate with describeImage before calling placeImage.', params: '{ filePath?: string, fileToken?: string, imageData?: string, name?: string, x?: number, y?: number, targetBounds?: { x?: number, y?: number, left?: number, top?: number, right?: number, bottom?: number, width?: number, height?: number }, targetFit?: "contain"|"cover"|"fill", layerOrder?: "front"|"belowText"|"back", center?: boolean, scale?: number, fitToCanvas?: boolean }' },
     { name: 'replaceLayerContent', description: '目标图层和替换文件都明确后，替换图层内容为新图片', params: '{ filePath: string, layerId?: number }' },
     // === 创建工具 ===
     { name: 'createRectangle', description: '创建矩形', params: '{ x: number, y: number, width: number, height: number, name?: string, color?: {r,g,b}, fillColorHex?: string, cornerRadius?: number }' },
@@ -6967,9 +6967,62 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                 return assetResult;
             }
                 
-            case 'describeImage':
-                // describeImage 与 analyzeAssetContent 功能一致，参数名不同
-                return await window.designEcho.invoke('resource:analyzeAsset', params.filePath || params.imagePath || params.path || '');
+            case 'describeImage': {
+                const filePath = String(params.filePath || params.imagePath || params.path || '').trim();
+                if (!filePath) {
+                    return {
+                        success: false,
+                        error: '观察单张素材失败：缺少已知图片路径。先从项目清单或候选联系表取得精确路径。'
+                    };
+                }
+                if (typeof window.designEcho?.getResourcePreview !== 'function') {
+                    return {
+                        success: false,
+                        error: '观察单张素材失败：当前应用没有可用的本地图像预览桥。'
+                    };
+                }
+                const requestedMaxSize = Number(params.maxSize);
+                const maxSize = Number.isFinite(requestedMaxSize)
+                    ? Math.min(2048, Math.max(512, Math.floor(requestedMaxSize)))
+                    : 1200;
+                const preview = await window.designEcho.getResourcePreview(filePath, maxSize);
+                const imageData = String(preview?.imageData || preview?.base64 || '').trim();
+                if (preview?.success !== true || !imageData) {
+                    return {
+                        success: false,
+                        error: `观察单张素材失败：${preview?.error || '没有取得可用像素。'}`
+                    };
+                }
+                const normalizedPath = filePath.split('\\').join('/');
+                const pathParts = normalizedPath.split('/').filter(Boolean);
+                const sourceName = pathParts[pathParts.length - 1] || '项目素材';
+                const sourceId = `project-asset:${sha256Hex(`${normalizedPath.toLowerCase()}|${imageData}`).slice(0, 24)}`;
+                const observationPurpose = String(params.hint || '').trim();
+                return {
+                    success: true,
+                    asset: {
+                        filePath,
+                        sourceName,
+                        ...(preview?.dimensions ? { dimensions: preview.dimensions } : {}),
+                        ...(typeof preview?.hasAlpha === 'boolean' ? { hasAlpha: preview.hasAlpha } : {})
+                    },
+                    image: {
+                        imageData,
+                        mediaType: 'image/jpeg',
+                        sourceId,
+                        sourceKind: 'project_asset',
+                        sourceName
+                    },
+                    visualObservationHandoff: {
+                        owner: 'calling_agent',
+                        status: 'pixels_attached',
+                        sourceKind: 'project_asset'
+                    },
+                    summary: observationPurpose
+                        ? `已把「${sourceName}」直接交给当前多模态 Agent，观察目的：${observationPurpose}。内部模型调用为 0；本工具没有置入 Photoshop、排序或选择素材。`
+                        : `已把「${sourceName}」直接交给当前多模态 Agent。内部模型调用为 0；本工具没有置入 Photoshop、排序或选择素材。`
+                };
+            }
 
             case 'recommendAssets':
             case 'browseAssetCandidates': {

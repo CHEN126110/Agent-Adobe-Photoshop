@@ -46,6 +46,8 @@ export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string
     'project.listResources': ['listProjectResources'],
     'project.searchResources': ['searchProjectResources'],
     'project.observeAssets': ['analyzeProjectContactSheetOverview'],
+    // 单张项目素材直接交给当前多模态 Agent；不经第二模型，也不借 Photoshop 画布预览。
+    'project.observeAsset': ['describeImage'],
     // 首轮上下文只装载一对一叶子能力；聚合 capability 仍供 Manifest 和按需检索使用。
     // 这样“9 个能力”不会在 provider 层悄悄膨胀为二十多个 Tool schema。
     'knowledge.read.getDesignPrinciples': ['getDesignPrinciples'],

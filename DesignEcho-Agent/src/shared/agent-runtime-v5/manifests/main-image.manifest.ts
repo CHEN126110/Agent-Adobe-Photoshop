@@ -156,6 +156,7 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
         'project.listResources',
         'project.searchResources',
         'project.observeAssets',
+        'project.observeAsset',
         'knowledge.read.designFoundation',
         'memory.designProjectState',
         'preview.renderStoryboard',

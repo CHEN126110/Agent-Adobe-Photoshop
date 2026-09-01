@@ -90,10 +90,20 @@ function buildCanonicalProductionEntryCandidates(requestText: string): string[] 
     const original = String(requestText || '').trim();
     if (!original) return [];
 
+    // canonical entry 仍然只接受完整生产委托；这里仅移除不承载语义的句末标点与
+    // 成对引号。用户在输入框里自然写“帮我做主图。”不能因为一个句号退回宽泛
+    // 工作流菜单，但中间词序、交付物和动作仍必须由 Skill 自己的声明完整命中。
+    const sentenceBoundaryNormalized = trimRoutingCapture(original);
     const candidates = new Set<string>([original]);
-    const withoutPoliteSuffix = original.replace(CANONICAL_PRODUCTION_POLITE_SUFFIX_PATTERN, '').trim();
-    if (withoutPoliteSuffix && withoutPoliteSuffix !== original) {
-        candidates.add(withoutPoliteSuffix);
+    if (sentenceBoundaryNormalized) candidates.add(sentenceBoundaryNormalized);
+
+    for (const candidate of [...candidates]) {
+        const withoutPoliteSuffix = candidate
+            .replace(CANONICAL_PRODUCTION_POLITE_SUFFIX_PATTERN, '')
+            .trim();
+        if (withoutPoliteSuffix && withoutPoliteSuffix !== candidate) {
+            candidates.add(withoutPoliteSuffix);
+        }
     }
 
     for (const candidate of [...candidates]) {

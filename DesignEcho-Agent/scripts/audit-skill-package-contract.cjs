@@ -665,6 +665,7 @@ assert(
 for (const requiredFirstTurnDesignTool of [
   'analyzeProjectContactSheetOverview',
   'browseAssetCandidates',
+  'describeImage',
   'placeImage',
   'transformLayer',
   'createRectangle',
@@ -677,6 +678,13 @@ for (const requiredFirstTurnDesignTool of [
     `production broad-discovery first turn lost ${requiredFirstTurnDesignTool}`
   );
 }
+assert(
+  !productionBroadDiscovery.activeTools.some((tool) => tool.name === 'openProjectFile')
+    && productionBroadDiscovery.getResolution().onDemandCapabilityIds.includes(
+      'photoshop.state.openProjectFile'
+    ),
+  'design first turn must prefer direct asset observation while keeping PSD/PSB opening reachable on demand'
+);
 for (const optionalFirstTurnCapability of [
   'photoshop.write.composeDesign',
   'review.evaluateDesign',

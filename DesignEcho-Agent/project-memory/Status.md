@@ -61,7 +61,8 @@
 - `36a1db51` 的 Manifest-bound Workflow receipt 增量通过 Runtime declaration、Capability、Agent 业务边界、Design Reliability、Renderer 类型检查及 fresh 65 阶段完整核心闸门。验证期间曾分别出现一次既有 SKU 姿态子进程 `3221225477` 和一次 Node/V8 原生崩溃；对应单项立即全通过，最终精确代码版本从头 65/65 通过，没有把原生崩溃删除或冒充产品失败。
 - `b10da18a` 的模型可见面纵切实测把首轮 Tool 从 26 降到 24、序列化 schema 从 42,494 降到 29,154 字符；三项移出能力在一次按需 activation 中恢复为 `composeDesign / evaluateDesign / readSkillPlaybook`。设计作者权、Runtime declaration、Capability Resolver、Skill Package、Agent 业务边界、通用 executor、Tool /Skill 审计、Main /Renderer 类型检查及 fresh 65 阶段完整核心闸门通过。首次完整闸门曾由历史“必须恰好 26 个 Tool”断言失败；该断言没有改成 24，而是替换为原子能力、按需可达性和 30k schema 预算的行为契约，随后从头全绿。
 - Run 665 根修增量已通过 fresh 65 阶段 `maintenance:validate`：主图模型 schema 约 11,007→2,857 字符，绑定后常驻方法上下文为 2,236 字符，pre-bound Tool schema 约 37,308→32,785；审计同时守护模型投影字段合法性、required 参数可见、prepare 不受伪造 support refs /active-document scope 影响、Runtime 技术字段剥离和基础归组能力可达。自动绿色不等于真实提速或视觉质量通过。
-- D-131 礼貌只读委托与文本 Tool 协议增量已通过业务授权边界、简化棘轮（意图正则点保持 137）、Runtime declaration、设计作者权、Renderer 类型检查及 fresh 65 阶段 `maintenance:validate`；自动验证证明未扩大写权限、未增加 legacy 正则债务并能识别 angle-JSON 泄漏，不证明正常程序已经真实执行项目查看。
+- D-131 礼貌只读委托与文本 Tool 协议增量已通过业务授权边界、简化棘轮（意图正则点保持 137）、Runtime declaration、设计作者权、Renderer 类型检查及 fresh 65 阶段 `maintenance:validate`；正常程序原句复测已真实读取并自然汇总 30 张项目 JPG、两个摄影子目录各 15 张，独立目录事实一致且内部协议泄漏为 0。
+- D-132 句末边界、单图直接观察与重复像素复用已通过 Runtime declaration、Capability /Skill Package、业务授权、设计作者权、简化棘轮、Main /Renderer 类型检查及 fresh 65 阶段 `maintenance:validate`。自动验证证明“帮我设计一张商品主图。/！/成对引号”恢复唯一 advisory 主图候选，“你会做主图吗？”仍无生产候选；`describeImage` 由当前多模态 Agent 直接消费像素且内部模型调用为 0，`agent.ts` 仍为 12823 行、legacy 正则点仍为 137。正常程序主图复测尚未完成。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -82,6 +83,7 @@
 - Run 663 的固定开销已量化为首轮 26 Tool /42,521 schema 字符、后期 45 /65,705，System Prompt 峰值 21,473；31 次 Agent 回合约 197 万 input token，53 次 Tool 中 30 次观察、8 次控制且 Eagle 调用为 0。Run 664 首轮 System Prompt 27,705、Tool schema 50,640，11 次 Agent 回合约 67 万 input token，12 次观察与 4 次 mutation。它们证明当前复杂度已进入模型设计路径；`b10da18a` 只修模型可见首偏差，尚无新实机结果。
 - 新普通项目 Run 665 使用自然短提示后，Agent 能说明“穿着场景主视觉、四色平铺辅助”的选择理由，却在约 15 分钟内没有产生内容写入。10 次模型调用累计约 1,176,756 ms，14 次 Tool 约 11,527 ms，9 次有 usage 的调用累计约 380,978 input token；前三次主图 Skill 调用被 prepare 阶段无关的 support refs /scope 拒绝，第四次才建成空工作文档。运行在取得明确停滞证据后停止。该样本证明 `b10da18a` 降低首轮 Tool 面仍不够，Skill schema 与常驻知识自身也在形成竞争式控制；它不证明模型没有设计判断，也不进入成功率分母。
 - D-130 重测前的项目查看 Run 在约 4.4 秒内以 `success / final_response` 结束，但实际为 1 次模型调用、0 Tool、`toolSchemaChars=2`，并向用户显示 `<{"name":"list_directory",...}`。根因是“你可以帮我”礼貌委托被能力问句判据提前降为 `chat_only`，随后对话协议泄漏检测漏掉 angle-JSON 变体。该运行没有修改 Photoshop，但污染了对话，不能计为响应速度改善。
+- D-131 通过后启动的主图诊断在约 245 秒按首偏差纪律停止：16 次模型调用约 235 秒、20 次 Tool 约 10 秒。Agent 已比较联系表并说明平铺 /模特角色，但没有绑定主图 Profile 或调用 `main-image-design`；它用 `openProjectFile` 尝试 JPG，随后在生产画布试放两张候选、重复截图、装载删除能力并清理试放层后才置入第三张。首个确定性根因是原样短提示末尾句号使 Skill recommendation 消失；该 Run 有局部进展但不属于 Skill 主图成功，也不进入 S1 分母。
 
 ## 当前未核实
 
@@ -98,7 +100,7 @@
 
 ## 当前主要风险
 
-1. Run 665 已证伪“只缩首轮 Tool 数量就足够”；其后的项目查看 Run 又证伪“响应快就代表效率高”。D-130 / D-131 根修仍需匹配正常程序分别验证真实 Tool 进展和设计结果，不能用 schema 下降或 4 秒文字终稿替代任务成功。
+1. Run 665 已证伪“只缩首轮 Tool 数量就足够”；0 Tool 项目查看 Run 又证伪“响应快就代表效率高”；最新主图 Run 则证伪“开发句去掉标点能路由就代表真实用户输入也能路由”。D-130 / D-132 仍需正常程序验证 Skill 绑定和设计结果，不能用 schema、单测或通用原子写入替代业务 Skill 成功。
 2. Evaluation authority 已修复且故障不再转嫁主 Agent；自动高分漏检错字、标题重量、点击目标和商业完成度的校准仍未解决。
 3. 图片内容被压缩成单主体 bbox、矩形目标区和粗锚点，不能完整表达负空间、保护部位、多主体和视觉重量。
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
@@ -110,7 +112,7 @@
 
 ## 当前下一步
 
-1. 构建与 `b10da18a` 匹配的正常程序，在新的一次性项目用同一自然短提示做诊断性 A/B；记录 Tool /Prompt 体量、控制回合、首个设计动作、参考选择、图层复杂度和真实视觉结果，不把文件成功算成质量改善。
+1. 构建包含 D-132 的正常程序，在现有普通测试项目的干净新对话原样重跑“帮我设计一张商品主图。”；记录 advisory 候选、Profile 绑定、首次 Skill prepare、单图直接观察、同像素复用、首个内容写入、参考选择、图层复杂度和真实视觉结果，不把通用原子写入或文件成功算成 Skill /质量改善。
 2. 若精简方向得到运行证据，再把 prepare workspace 最小持久化到既有 TaskRun owner，并用进程重启、已消费 workspace、错误 TaskRun /project /document /group /revision 与 Host 漂移做故障注入。
 3. 完成 reconciliation 后再购买可进入 S1 分母的普通项目 Case，并以用户成稿 /Eagle 参考校准 Evaluation 的商业质量误放行。
 4. 在扩大 S1 队列前实现上传附件请求级来源绑定；通用 CLI 仍按独立 Capability Provider 阶段推进。

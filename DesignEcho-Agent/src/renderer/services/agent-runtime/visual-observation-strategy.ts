@@ -22,7 +22,12 @@ import {
 } from '../../../shared/visual-observation-bundle';
 import { sha256Hex } from '../../../shared/agent-runtime-v5/content-hash';
 import { readPhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
-import { collectImagesFromToolResult } from './tool-result-sanitizer';
+import { createRuntimeObservationMessage } from './message-context';
+import type { AgentMessage } from './types';
+import {
+    collectImagesFromToolResult,
+    type ToolResultImage
+} from './tool-result-sanitizer';
 import { readExecutedToolResultProvenance } from './tool-result-provenance';
 import {
     didCompleteProviderResponseConsumeVisualInput,
@@ -67,7 +72,8 @@ export interface AgentVisualObservation {
         | 'visual_expert_failed'
         | 'observation_budget_exhausted'
         | 'vision_candidate_budget_exhausted'
-        | 'visual_analysis_budget_exhausted';
+        | 'visual_analysis_budget_exhausted'
+        | 'duplicate_visual_presentation';
 }
 
 export interface AgentVisualObservationOverflow {
@@ -77,6 +83,76 @@ export interface AgentVisualObservationOverflow {
     extractedCount: number;
     omittedCount: number;
     reason: 'harness_candidate_limit' | 'producer_limit' | 'payload_scan_limit';
+}
+
+export function buildToolImageObservationLabel(input: {
+    baseToolName: string;
+    image: ToolResultImage;
+    imageIndex: number;
+    imageCount: number;
+}): string {
+    if (input.imageCount <= 1) return input.baseToolName;
+    const sourceLabel = input.image.sourceName || input.image.sourceId;
+    return `${input.baseToolName} ${sourceLabel ? `· ${sourceLabel}` : `· 画面 ${input.imageIndex + 1}`}`;
+}
+
+export function projectToolImageObservationSource(
+    image: ToolResultImage
+): Partial<AgentVisualObservation> {
+    return {
+        ...(image.sourceId !== undefined ? { sourceId: image.sourceId } : {}),
+        ...(image.sourceName ? { sourceName: image.sourceName } : {}),
+        ...(image.resultPath ? { resultPath: image.resultPath } : {}),
+        ...(image.sourceKind ? { sourceKind: image.sourceKind } : {}),
+        ...(image.observationIdentity ? { observationIdentity: image.observationIdentity } : {}),
+        ...(image.observationKey ? { observationKey: image.observationKey } : {})
+    };
+}
+
+export interface ConsumedPrimaryVisualPresentationReuse {
+    pixelDigest: string;
+    message: string;
+}
+
+/**
+ * 参数不同但 presentation bytes 完全相同的画面不应再次进入 Provider。
+ * 新裁切、新文档版本或任何像素变化都会得到不同摘要并正常放行。
+ */
+export function resolveConsumedPrimaryVisualPresentationReuse(input: {
+    strategy: VisualObservationStrategy;
+    imageData: string;
+    toolName: string;
+    presentedPixelDigests: ReadonlySet<string>;
+}): ConsumedPrimaryVisualPresentationReuse | undefined {
+    if (input.strategy !== 'primary-self') return undefined;
+    const pixelDigest = sha256Hex(String(input.imageData || '')).toLowerCase();
+    if (!input.presentedPixelDigests.has(pixelDigest)) return undefined;
+    return {
+        pixelDigest,
+        message: `（${input.toolName} 返回的像素与本轮已经读取过的画面完全相同；已复用先前观察，不再重复发送图片。只有画布版本、裁切范围或素材像素真正变化后才需要重新看。）`
+    };
+}
+
+export function reuseConsumedPrimaryVisualPresentation(input: {
+    strategy: VisualObservationStrategy;
+    imageData: string;
+    toolName: string;
+    presentedPixelDigests: ReadonlySet<string>;
+    toolResult: unknown;
+    observationSource: Partial<AgentVisualObservation>;
+}): AgentMessage | undefined {
+    const reuse = resolveConsumedPrimaryVisualPresentationReuse(input);
+    if (!reuse) return undefined;
+    writeAgentVisualObservation(input.toolResult, {
+        status: 'not_observed', reviewed: false, observer: 'none',
+        strategy: input.strategy, toolName: input.toolName,
+        ...input.observationSource, reason: 'duplicate_visual_presentation'
+    });
+    return createRuntimeObservationMessage(
+        reuse.message,
+        'tool-image-duplicate-presentation-reused',
+        { scope: `tool-visual:${input.toolName}`, origin: 'visual_observation' }
+    );
 }
 
 /**

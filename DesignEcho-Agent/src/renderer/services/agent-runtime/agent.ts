@@ -76,17 +76,20 @@ import { normalizeAgentToolFailureResult } from './tool-failure-result-normalize
 import type { ProviderNativeToolRequest } from '../../../shared/provider-native-tools';
 import {
     buildPrimaryVisualObservationReviewInstruction,
+    buildToolImageObservationLabel,
     buildVisualExpertReviewBatchPrompt,
     clearProducerVisualRuntimeAnnotations,
     deriveAgentVisualObservationReceipt,
     hasAgentVisualDeliveryObservationCoverage,
     parseVisualExpertReviewBatch,
+    projectToolImageObservationSource,
     reconcilePrimaryVisualObservationReviews,
     readAgentVisualObservation,
     readAgentVisualObservationReceipt,
     readAgentVisualObservations,
     resolveAgentVisualDeliveryReviewStatus,
     resolveVisualObservationStrategy,
+    reuseConsumedPrimaryVisualPresentation,
     writeAgentVisualObservationOverflow,
     writeAgentVisualObservation,
     writeAgentVisualObservationPresentationDigest,
@@ -8085,18 +8088,14 @@ export class Agent {
             if (images.length === 0) continue;
             for (let imageIndex = 0; imageIndex < images.length; imageIndex++) {
                 let image = images[imageIndex];
-                const sourceLabel = image.sourceName || image.sourceId;
-                const toolName = images.length > 1
-                    ? `${baseToolName} ${sourceLabel ? `· ${sourceLabel}` : `· 画面 ${imageIndex + 1}`}`
-                    : baseToolName;
-                const observationSource = {
-                    ...(image.sourceId !== undefined ? { sourceId: image.sourceId } : {}),
-                    ...(image.sourceName ? { sourceName: image.sourceName } : {}),
-                    ...(image.resultPath ? { resultPath: image.resultPath } : {}),
-                    ...(image.sourceKind ? { sourceKind: image.sourceKind } : {}),
-                    ...(image.observationIdentity ? { observationIdentity: image.observationIdentity } : {}),
-                    ...(image.observationKey ? { observationKey: image.observationKey } : {})
-                };
+                const toolName = buildToolImageObservationLabel({
+                    baseToolName, image, imageIndex, imageCount: images.length
+                });
+                const observationSource = projectToolImageObservationSource(image);
+                const reusedMessage = reuseConsumedPrimaryVisualPresentation({
+                    strategy, imageData: image.data, toolName, toolResult: item.output, observationSource,
+                    presentedPixelDigests: this.performanceLedger.presentedPrimaryVisualPixelDigests });
+                if (reusedMessage) { this.messages.push(reusedMessage); continue; }
 
                 // A primary-model image is not a complete budget event by itself: the next
                 // provider request must still have one visual-analysis slot. Reserve both
@@ -8198,6 +8197,7 @@ export class Agent {
                             presentedImageData: image.data
                         });
                         if (presentedPixelDigest) {
+                            this.performanceLedger.presentedPrimaryVisualPixelDigests.add(presentedPixelDigest);
                             // Tool log 会在本轮末尾释放大像素；只为候选集/显式参考保留本 run
                             // 的 Runtime-owned presentation 重放副本。该缓存不持久化、不排名，
                             // 且必须与刚签发的主模型实际 presentation digest 完全一致。

@@ -22,6 +22,7 @@ const CACHEABLE_READ_TOOLS: ReadonlySet<string> = new Set([
     'searchEagleReferences',
     'browseAssetCandidates',
     'recommendAssets',
+    'describeImage',
     'parseDetailPageTemplate',
     'getDocumentInfo',
     'getLayerHierarchy',

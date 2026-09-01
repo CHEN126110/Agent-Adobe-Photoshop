@@ -166,6 +166,9 @@ export const DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS: readonly string[] = Obj
     // 总览用于会改变开放设计方向的库存/商品身份/素材角色未知；候选浏览只提供中性像素页。
     'project.observeAssets',
     'project.read.browseAssetCandidates',
+    // 候选联系表解决“有哪些”，单图观察解决“这一张细节是否合适”。两者都只给像素，
+    // 不排名、不选赢家；避免 Agent 把生产画布当临时看图器。
+    'project.observeAsset',
     // 参考研究是设计师可自行选择的思考资源，不是 Harness 前置流程。首轮直接提供只读
     // 搜索与单图视觉分析，避免模型为了“有没有参考能力”先消耗能力发现回合；是否调用、
     // 查什么、何时停止仍由 Agent 按当前设计问题决定。
@@ -227,6 +230,9 @@ export function buildAgentCapabilityBaseline(
             // 设计首轮已有项目清单、中性候选分页与项目总览；关键词资源搜索只有在
             // 模型形成具体查找目标后才有信息增益，保留为同一目录中的按需能力。
             && id !== 'project.searchResources'
+            // 新建创意设计首轮优先提供不改 Photoshop 的单图观察。打开项目 PSD/PSB
+            // 仍在同一按需目录中；不再让模型误把 openProjectFile 当 JPG 预览器。
+            && id !== 'photoshop.state.openProjectFile'
         ))
         : HARNESS_BASELINE_CAPABILITY_IDS;
     return unique([
