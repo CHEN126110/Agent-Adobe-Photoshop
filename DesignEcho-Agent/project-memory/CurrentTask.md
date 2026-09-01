@@ -40,6 +40,7 @@
 - 新普通项目的自然短提示 Run 663 证明 `placeImage` 条件 schema 已可正常执行，也形成 PSD/JPG 和真实质量复核；但 Agent 没有采用已设计的 `prepare → 通用 Tool → finalize` 唯一交付接缝，而是用通用保存 /导出先交付 800 稿，随后又建 1440 文档并把导出 JPG 重新置入，产生两套正式文件。最终 1440 PSD 只有 3 层，说明“文件事务成功”仍可旁路“专业可编辑主图”的生产 owner；Renderer 内存 workspace 在应用重启后也无法恢复，不能承担跨进程续跑事实。
 - 同一会话只输入“继续”的 Run 664 已真实使用 `structured_run_resume` 恢复 `ecommerce.main_image.v1`，16 次 Tool 全部成功，重新比较候选后由模型选择完整穿着图，PSD/JPG 同版本交付、外部 Photoshop 文档 revision 零变化，canonical 终态为 `completed / 89`。但人工像素对照确认成品主要是对优质摄影图做方形裁切和放大，鞋子视觉重量过大，没有建立点击主张、商业信息层级或显著设计增量；自动 Evaluation 的通过是当前误放行证据，不能登记为专业质量达标。
 - Run 663 /664 的 completion 旁路首偏差已经由 `36a1db51` 根修：`delivery_plan_binding_required` 过去在 Manifest → agentic completion contract 投影时丢失，导致普通原子 PSD/JPG 收据可以覆盖 Workflow owner。现在该约束与 Manifest 声明的 producer Skill 身份一起进入通用完成契约；只有 producer 返回绑定执行前 typed DeliveryPlan、完整 resultRef proof、文件身份、Photoshop revision 与 exact artifact set 的 ready receipt 才能结算正式交付，receipt 后任何内容 mutation 或通用 save/export 都使其失效。实现没有主图关键词分支，也没有阻止 Agent 使用通用 Tool 工作，只收回错误 completion 信用。
+- 对 Run 663 /664 的 GMR 已确认模型可见控制面是独立首偏差：Run 663 首轮 26 个 Tool /约 42.5k schema，后期 45 个 /65.7k，31 次 Agent 回合约 197 万 input token；Run 664 仍以 12 次观察和 4 次 mutation 交付裁切摄影图。`b10da18a` 已把 `composeDesign`、隔离 `evaluateDesign` 和重复 Skill 手册从首轮移到按需能力，补入可直接新建文字的原子手柄，并把 agentic 通用原则从 6,408 字符全量手册压为 1,112 字符摘要；首轮实测为 24 个 Tool /29,154 schema 字符，高级能力一次申请可全部恢复。专项、类型检查与 fresh 65 阶段核心闸门通过；尚未证明真实设计质量或效率改善。
 - 新附件故障已归属为 `INTAKE-091`：聊天上传会给主模型文件名和像素，但当前通用执行链没有可由模型引用、由 Tool 解析的请求级附件句柄；项目搜索和任意 CLI 都不能证明同名文件就是上传字节。P0 方案是 `attachmentRef` Input Asset Provider，通用 CLI 独立归属 `INTAKE-088`。
 - revision 5 正式运行前的 Debug Bridge、Photoshop MCP、UXP Runtime、模型、fixture、写授权和外部文档 ownership 均通过只读 preflight；下一轮仍必须在新提交和新 fixture 上重新核对，旧收据不能复用。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
@@ -56,11 +57,11 @@
 
 1. `69c54867` 与 `b4998b65` 已分别提交并推送；用户未提交的 3 个 UI 文件未进入提交。Run 663 /664 与四份真实交付保留为失败归因证据，不进入 S1 专业质量分子。
 2. `36a1db51` 已关闭正式 completion 旁路：Manifest-bound 主图不能再由普通 PSD/JPG 保存冒充 Skill finalize；原子 Tool 保持可达，Harness 不替 Agent 选择文件、画面或下一动作。
-3. 停止购买相同自然提示样本，继续把主图 prepare workspace 从 Renderer 进程内 Map 收敛为 TaskRun-owned、可持久化、可 reconciliation 的有界身份事实；不得新建第二 Task Store，也不得从旧助手措辞、Project State 或文件名恢复执行权限。
-4. 建立“进程重启、错误 TaskRun /project /document /group /revision、已消费 workspace、Host 文件漂移”故障注入；证明恢复只重建身份资格，必须重新读回当前 Host 才能 finalize。
-5. 在新普通项目中再运行一次自然短提示；验证同一 Agent 的对象理解、候选比较、可选参考、复杂分层、唯一规格、finalize、同版本可编辑稿 /导出、Final Judge 与外部文档零变化。
-6. 用用户成稿 /Eagle 参考校准 Evaluation 的误放行：裁切完整只能算摄影素材可用，不能替代点击主张、商业信息层级、图文关系、可编辑结构和设计增量；校准仍保持 advisory，不取得设计作者权。
-7. 在 S1 正式队列扩大前完成一个上传附件的通用 `attachmentRef → placeImage → removeBackground → 同目标读回` E2E；随后再按 INTAKE-088 分阶段建设受控外部文件与 CLI Provider。
+3. 先构建与 `b10da18a` 一致的正常程序，在新的普通一次性项目运行同一自然短提示，比较首轮 /峰值 Tool schema、System Prompt、模型回合、能力装载、首个有效设计动作、是否主动取得有信息增益的参考，以及相对 Run 663 /664 的真实设计增量。该运行只验证模型可见面假设，不因文件成功进入 S1 分子。
+4. 如果精简后仍以同样模式反复观察、裁切单图或加载大型能力，立即对该模型可见路径继续 GMR；不得用更多提示、评审轮次或默认设计方案抵消。如果方向成立，再把主图 prepare workspace 从 Renderer Map 最小收敛为 TaskRun-owned 持久身份，不新增第二 Task Store。
+5. 建立“进程重启、错误 TaskRun /project /document /group /revision、已消费 workspace、Host 文件漂移”故障注入；证明恢复只重建身份资格，必须重新读回当前 Host 才能 finalize。
+6. 在完成 workspace reconciliation 后运行 S1 候选 Case；验证对象理解、候选比较、可选参考、复杂分层、唯一规格、finalize、同版本可编辑稿 /导出、Final Judge 与外部文档零变化。
+7. 用用户成稿 /Eagle 参考校准 Evaluation 的误放行；在扩大 S1 队列前闭合上传附件的请求级 `attachmentRef`，通用 CLI 继续作为独立 Provider 阶段。
 
 ### 验证与未知
 

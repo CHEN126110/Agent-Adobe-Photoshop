@@ -41,6 +41,7 @@
 - 同分支未完成 Run 的续跑身份已由 `b4998b65` 收敛为结构化 `RunResumeContractBinding`：只恢复 task type /manifest /来源身份，不携带 Tool、写入、完成或设计权限；畸形、跨来源和 Manifest 漂移均失败关闭。
 - 当前主图 prepare workspace 仍由 Renderer 进程内 Map 持有，应用重启后不能安全恢复；但 Manifest-bound 正式 completion 已不再接受通用保存 /导出旁路。Agent 仍可生成中间文件，只有声明的 Workflow producer ready receipt 能结算 Skill 交付。唯一 completion owner 已在代码层闭合，workspace 生命周期仍未闭合。
 - Agentic Artifact Completion 现在保留 Manifest 的 `delivery_plan_binding_required` 和 producer Skill 身份。通用收据选择器只接受绑定 typed DeliveryPlan、完整 save/export resultRef proof、逐文件身份、源 Photoshop revision 与 exact artifact set 的 ready receipt；后续内容 mutation 或另一次通用保存 /导出会使旧 receipt 失效。该机制是品类无关的交付归属，不执行 Tool、不决定设计，也不阻断 Agent 使用原子工具工作。
+- 创意任务模型可见面已由 `b10da18a` 首次收敛：首轮保留项目 /画面观察、Eagle、图片、图形、可编辑文字和局部变换；大型 `composeDesign`、隔离 `evaluateDesign` 与已自动注入方法的 `readSkillPlaybook` 转为同一 Capability Session 的按需能力。主图 /详情页 Skill 不再要求开工重复读取同一手册。agentic 通用原则使用 1,112 字符紧凑底座，staged 全量原则仍保留 6,408 字符。该变更不改变 Tool preflight、TaskRun、Photoshop 事务、读回或交付完成权。
 
 ## 已核实（构建与自动检查）
 
@@ -56,6 +57,7 @@
 - 主图开放创意生产现在以同一 Agent 的两段式 Skill 交付：prepare 只创建一个明确规格的工作文档和 11 个空组，签发不授权 Tool 的 TaskRun /project /创建收据 document /group /revision workspace；同一 TaskRun 的 Reflexion generation 可继续使用，换 sessionId 不可复用。中间设计完全使用通用 Photoshop Tool；finalize 只导出实时层级中真实非空且身份未漂移的标准组，并与 `asCopy` 可编辑稿走同一 staged transaction。行为回归证明非法 Task 身份在首次 Host 调用前停止，未修改、空组、错误 TaskRun、错误文档、被替换组和重复提交均不产生正式文件写入；跨 Skill 调用的成功路径只提交一个 Agent 实际填充组与对应 PSB。专项类型、作者权、Runtime、Skill /Capability、Tool、业务边界和通用 executor 审计及 fresh 65 阶段 `maintenance:validate` 均通过，代码已由 `293dd3df` 提交推送；fresh Photoshop Host 仍待验证。
 - `69c54867` 与 `b4998b65` 各自在 fresh 工作树通过一轮完整 65 阶段 `maintenance:validate`，并已推送到 `legacy/codex/agent-uxp`。匹配构建分别生成 Agent /UXP production 产物；这证明 schema repair 和 Runtime identity 续跑边界未破坏核心回归，不证明专业设计质量。
 - `36a1db51` 的 Manifest-bound Workflow receipt 增量通过 Runtime declaration、Capability、Agent 业务边界、Design Reliability、Renderer 类型检查及 fresh 65 阶段完整核心闸门。验证期间曾分别出现一次既有 SKU 姿态子进程 `3221225477` 和一次 Node/V8 原生崩溃；对应单项立即全通过，最终精确代码版本从头 65/65 通过，没有把原生崩溃删除或冒充产品失败。
+- `b10da18a` 的模型可见面纵切实测把首轮 Tool 从 26 降到 24、序列化 schema 从 42,494 降到 29,154 字符；三项移出能力在一次按需 activation 中恢复为 `composeDesign / evaluateDesign / readSkillPlaybook`。设计作者权、Runtime declaration、Capability Resolver、Skill Package、Agent 业务边界、通用 executor、Tool /Skill 审计、Main /Renderer 类型检查及 fresh 65 阶段完整核心闸门通过。首次完整闸门曾由历史“必须恰好 26 个 Tool”断言失败；该断言没有改成 24，而是替换为原子能力、按需可达性和 30k schema 预算的行为契约，随后从头全绿。
 - 可逆负向探针已证明 CurrentTask / Plan / state ID 漂移和多个当前 H2 会直接失败，不再只产生 warning。
 - S1 启动时的只读 Design Reliability preflight 可达 Debug Bridge、Photoshop MCP 与真实 UXP Runtime，但当前 Agent Runtime 提交、脏工作树、一次性 fixture、Debug 写授权和打开文档 ownership 尚未同时满足；因此 `readyForLiveCapture=false`，本轮没有启动 Photoshop 写入。
 
@@ -73,6 +75,7 @@
 - 提交 `fc6781da` 后的正常程序新项目 Attempt 已真实完成 PSD/JPG 与 Final Judge：15 次模型调用、18 次 Tool、墙钟约 703 秒，模型耗时约 633 秒；Artifact 完成，Evaluation 为 `88 / needs_review`，含两个 major。成品是通用左图右文结构，仍明显低于用户成稿 /Eagle 参考。该运行调用了旧 `recommendAssets` 并选择 A01 /A02，证明重复选图至少受到检索诱导；不能只归因模型审美。
 - 新普通项目 Run 663 使用自然短提示完成 53 次 Tool 和真实 PSD/JPG 交付，`placeImage` 条件参数已正常执行，质量终态为 `82 / needs_review`。它随后旁路 prepare /finalize，先提交 800 稿、再创建 1440 文档并把导出 JPG 重新置入，留下两套正式文件；最终 1440 可编辑稿的层级退化为 3 层。该样本证明 schema 修复有效，也证明真实生产 owner 尚未闭合。
 - 同一会话 Run 664 只输入“继续”，Runtime 以 `structured_run_resume` 恢复 `ecommerce.main_image.v1`；16 次 Tool 全部成功，Agent 比较候选后自主换成完整穿着图，同版本 PSD/JPG 交付且所有外部 Photoshop 文档 revision 零变化，canonical 终态为 `completed / 89`。人工像素复核却确认它主要是优质摄影图的方形裁切和放大，鞋子过重、无点击主张和商业信息层级；该样本是续跑技术成功，也是 Evaluation 商业质量误放行，不能计为专业设计通过。
+- Run 663 的固定开销已量化为首轮 26 Tool /42,521 schema 字符、后期 45 /65,705，System Prompt 峰值 21,473；31 次 Agent 回合约 197 万 input token，53 次 Tool 中 30 次观察、8 次控制且 Eagle 调用为 0。Run 664 首轮 System Prompt 27,705、Tool schema 50,640，11 次 Agent 回合约 67 万 input token，12 次观察与 4 次 mutation。它们证明当前复杂度已进入模型设计路径；`b10da18a` 只修模型可见首偏差，尚无新实机结果。
 
 ## 当前未核实
 
@@ -89,7 +92,7 @@
 
 ## 当前主要风险
 
-1. 当前防污染根修已通过完整核心闸门，但尚无 fresh 正常程序 Attempt；自动检查只能证明旧旁路关闭，不能证明选图或设计质量已经改善。
+1. 当前 completion 与模型可见面根修均通过完整核心闸门，但 `b10da18a` 尚无匹配正常程序 Attempt；自动检查只能证明能力可达和旧边界未退化，不能证明选图、设计质量或真实耗时已经改善。
 2. Evaluation authority 已修复且故障不再转嫁主 Agent；自动高分漏检错字、标题重量、点击目标和商业完成度的校准仍未解决。
 3. 图片内容被压缩成单主体 bbox、矩形目标区和粗锚点，不能完整表达负空间、保护部位、多主体和视觉重量。
 4. `fitLayerSubjectToRegion` 的 `alignToReference` 尚未纳入统一事务，存在部分写入风险。
@@ -101,7 +104,7 @@
 
 ## 当前下一步
 
-1. `36a1db51` 已让 finalize typed receipt 成为 Manifest-bound Skill 正式 completion 的唯一 owner；下一步只处理 workspace 的 TaskRun 持久化与重启 reconciliation，不重复修改 completion 口径。
-2. 用进程重启、错误 TaskRun /project /document /group /revision、已消费 workspace 与 Host 漂移建立故障注入；在新普通项目证明唯一规格、复杂分层、同 workspace finalize、同版本 PSD/JPG 与外部文档零变化。
-3. 以用户成稿 /Eagle 参考校准自动 Evaluation 对点击主张、商业层级、图文关系、视觉重量、可编辑结构和设计增量的检出；保持 advisory，不用评测规则替 Agent 决定构图。
-4. 在扩大 S1 队列前实现并验证上传附件的请求级来源绑定；之后再按只读观察、受控文件、受控命令、桌面输入顺序建设通用 CLI 能力。
+1. 构建与 `b10da18a` 匹配的正常程序，在新的一次性项目用同一自然短提示做诊断性 A/B；记录 Tool /Prompt 体量、控制回合、首个设计动作、参考选择、图层复杂度和真实视觉结果，不把文件成功算成质量改善。
+2. 若精简方向得到运行证据，再把 prepare workspace 最小持久化到既有 TaskRun owner，并用进程重启、已消费 workspace、错误 TaskRun /project /document /group /revision 与 Host 漂移做故障注入。
+3. 完成 reconciliation 后再购买可进入 S1 分母的普通项目 Case，并以用户成稿 /Eagle 参考校准 Evaluation 的商业质量误放行。
+4. 在扩大 S1 队列前实现上传附件请求级来源绑定；通用 CLI 仍按独立 Capability Provider 阶段推进。

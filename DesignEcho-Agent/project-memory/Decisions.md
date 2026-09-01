@@ -2,6 +2,14 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-129 创意 Agent 的模型可见工作台必须精简，高级能力按需可达
+
+- 状态：active；首个模型可见面收敛由 `b10da18a` 实现并通过 fresh 65 阶段核心闸门，真实 Photoshop A/B 待完成。
+- Run 663 /664 证明当前失配不只是模型慢：Run 663 的 31 次普通 Agent 回合累计约 197 万 input token，首轮 26 个 Tool schema 约 42.5k 字符，后期升到 45 个 /65.7k；53 次 Tool 中 30 次观察、8 次控制，却只形成一次置图、一次缩放和少量移动。Run 664 仍以 12 次观察、4 次 mutation 完成摄影图裁切，未检索 Eagle。复杂度已经进入模型认知路径，而设计增量没有同步增长。
+- Harness 的 TaskRun、target /revision、执行授权、唯一 Photoshop 事务、读回、交付收据和外部文档保护保持后台强制，不因精简而删除。模型首轮只保留项目 /画面观察、图片、图形、可编辑文字和局部变换等原子手柄；`composeDesign`、隔离 `evaluateDesign` 与 `readSkillPlaybook` 仍在同一 Capability Session 中，但只有 Agent 明确需要时才装载。
+- Agentic Manifest 已自动提供本任务方法知识，Skill 声明不得再要求开工重复读取同一手册。通用设计原则在 agentic 首轮只注入 overview、自检与落地摘要；构图、字体、工艺等深层知识继续由 Agent 按当前问题检索。当前审查棘轮为首轮不超过 24 个 Tool、序列化 schema 不超过 30k 字符；实测为 24 /29,154，紧凑原则 1,112 字符，全量 staged 原则仍保留 6,408 字符。
+- 这项收敛不证明视觉质量已经改善。下一步必须在同模型、同素材与自然短提示下比较 Tool /Prompt 体量、首个有效设计动作、参考选择、设计增量和用户 /Eagle 盲化结果。若质量下降，按具体缺失能力逐项恢复，不得把完整大型工作台一次性塞回首轮。
+
 ## D-128 Main Image Skill 的正式交付必须由可持久化 workspace 与唯一 finalize 闭合
 
 - 状态：active；正式 completion owner 已由 `36a1db51` 实现并通过 fresh 65 阶段核心闸门，workspace 持久化与重启 reconciliation 待完成。

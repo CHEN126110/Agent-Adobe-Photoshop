@@ -29,8 +29,10 @@
 10. `[已完成]` 开放创意的 `prepare → Agent 分层设计 → finalize` 已由 `293dd3df` 提交推送：prepare 只建一个 Agent 明确规格的标准工作文档 /空组并返回 TaskRun-bound workspace；Agent 使用现有通用 Tool 完成文字、形状、蒙版、多图和排版；finalize 只对账同一任务、项目、document /group /revision 和真实非空组，再走 exact staged file transaction。持久回归覆盖未修改、空组、TaskRun /document /group 漂移、跨 Reflexion generation /Skill 成功交付和重复 finalize，未复制第二套 DesignIR；fresh `maintenance:validate` 通过 65 个核心检查。
 11. `[已完成但未达出口]` 与提交一致的正常 Agent / UXP 已在新普通项目运行自然短提示和一次“继续”。`69c54867` 证明条件 Tool Schema 可执行，`b4998b65` 证明续跑能以 `structured_run_resume` 恢复 Runtime identity，外部文档 revision 零变化；但 Agent 旁路 prepare /finalize 产生 800 /1440 两套交付，最终 1440 PSD 只有 3 层，且裁切摄影图被 Evaluation 以 89 分误放行为完成，因此不计入专业质量分子。
 12. `[部分完成]` `36a1db51` 已把 Manifest `delivery_plan_binding_required` 与 producer Skill 身份贯穿 agentic Completion 和 E2：普通 PSD/JPG 原子保存、错误 producer、缺 typed plan /文件身份 /revision proof，以及 receipt 后再次保存或内容写入都不能取得正式 completion；完整 Workflow ready receipt 仍可闭合。fresh 65 阶段核心闸门通过。剩余部分是把 prepare workspace 从进程内 Map 收敛为同 TaskRun 可持久化、可 reconciliation 的身份事实。
-13. `[待开始]` 完成 workspace 持久化与重启 reconciliation 后，在新的普通项目重新运行自然短提示；先证明唯一规格、复杂可编辑分层、同任务 finalize、PSD/JPG 同版本与外部文档零变化，再用用户成稿 /Eagle 参考对 Evaluation 的商业质量误放行做 advisory 校准。
-14. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
+13. `[已完成待实机]` Run 663 /664 的模型可见路径 GMR 已由 `b10da18a` 落地：首轮从 26 Tool /42,494 schema 字符降为 24 /29,154；`composeDesign`、隔离 `evaluateDesign` 和重复 Skill 手册移为按需，图片 /图形 /可编辑文字原子手柄保留；agentic 通用原则从 6,408 字符降为 1,112 字符。三项高级能力仍可一次装载，fresh 65 阶段核心闸门通过。
+14. `[待开始]` 构建匹配正常程序，在新的一次性普通项目以同一自然短提示做诊断性 A/B；必须同时比较模型可见体量、控制回合、首个有效设计动作、参考使用、复杂可编辑分层和用户 /Eagle 视觉结果。若仍以相同模式退化，先 GMR，不继续堆 Prompt 或 Gate。
+15. `[待开始]` A/B 支持精简方向后，把 prepare workspace 最小持久化到既有 TaskRun owner，并注入进程重启、已消费 workspace、TaskRun /project /document /group /revision 和 Host 漂移故障；随后再运行可进入 S1 分母的普通项目 Case。
+16. `[待开始]` 闭合 INTAKE-091 的请求级上传附件来源：由 Agent 显式选择 `attachmentRef`，Harness 在同一 TaskRun 内解析真实字节并校验身份，完成一次 `placeImage → removeBackground → 结构 /视觉读回` E2E；通用 CLI 另按 INTAKE-088 的受控 Provider 阶段推进，不用它旁路附件断链。
 
 ### 退出条件
 
