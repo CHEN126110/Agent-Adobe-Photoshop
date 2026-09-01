@@ -786,6 +786,9 @@ const autonomousExecutor = source('src/renderer/services/skill-executors/autonom
 const designAgentEngineSource = source('src/renderer/services/design-agent/engine.ts');
 const skillRoutingSource = source('src/shared/skill-routing.ts');
 const agentRuntime = source('src/renderer/services/agent-runtime/agent.ts');
+const finalQualityModelProtocolRuntime = source(
+    'src/renderer/services/agent-runtime/final-quality-model-protocol.ts'
+);
 const modelCallAccountingSource = source(
     'src/renderer/services/agent-runtime/model-call-accounting.ts'
 );
@@ -1118,11 +1121,16 @@ check(
 );
 check(
     '初始图片、视觉批次、强制收尾、no-tool replan 与两类总结共用完整终态 reader',
-    (agentRuntime.match(/readCompleteProviderTextContent\(/g) || []).length >= 7
+    (agentRuntime.match(/readCompleteProviderTextContent\(/g) || []).length >= 6
         && !agentRuntime.includes("const observation = String(response?.content || '').trim()")
         && !agentRuntime.includes("const judgment = String(expertResponse?.content || '').trim()")
         && agentRuntime.includes('if (!terminalContent.complete)')
-        && agentRuntime.includes("throw new Error('视觉评审模型没有返回可消费的完整终态')")
+        // 终审终态判定已下沉到协议 owner（2026-09-01 结构化评分提交）：agent 只消费
+        // settleFinalQualityJudgeTerminalResponse；文本完整性门与失败语义在协议模块保持不变。
+        && agentRuntime.includes('settleFinalQualityJudgeTerminalResponse(response)')
+        && finalQualityModelProtocolRuntime.includes('readCompleteProviderTextContent(response)')
+        && finalQualityModelProtocolRuntime.includes('if (!terminalContent.complete)')
+        && finalQualityModelProtocolRuntime.includes("throw new Error('视觉评审模型没有返回可消费的完整终态')")
 );
 check(
     'Provider 恢复结果按完整、截断、拦截和未知终态稳定归类',

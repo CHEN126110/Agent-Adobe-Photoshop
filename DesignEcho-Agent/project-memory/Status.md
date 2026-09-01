@@ -46,6 +46,8 @@
 - 能力 /意愿问句现在会让出仍包含具体只读目标的礼貌表达：去掉“你可以 /你能不能”等开头后，若正文仍是项目 /文档 /SKU 检查或参考检索，就保留非写入语义；写入形态和纯能力询问继续保持 `chat_only`，不能因此取得执行授权。对话出口会拒绝 DSML、`<tool_call>` 与 angle-JSON Tool 协议正文并触发一次自然语言 repair；清洗器只做最后防泄漏，不把协议故障伪装成成功。
 - Reflexion 重入容量门按续作类型分流：提供容量证明的重入路径先识别续作类型再取对应最低容量——completed 审美返工与执行 / 复核目标阶段用完整下限，targetStage=E2 的交付闭合用不要求视觉候选的交付下限；「视觉额度耗尽但剩余工具与时间足够交付」的 E2 续作不再被误拦，不提供证明的调用方保持旧行为。
 - 唯一 advisory 候选已实现两段式入口：候选提示由动态上下文逐轮渲染，declareDesignIntent 以 enum taskTypeId/workMode 充当结构化选择手柄；模型声明成功时 declaredTaskType、Runtime owner 绑定与 Skill 可见性在同一 Tool result 边界提交，候选提示随即在下一轮移除。Harness 不自动选 Skill；inspect / no-tool 控制面不渲染候选手柄。该机制已有静态与行为断言，尚未经正常程序实机复现。
+- 终审评分改为结构化提交（Provider 中立）：judge 调用携带唯一 `submitScoreBatch` 工具，模型以一次工具调用提交批次；工具参数序列化回同一 `parseVlmJudgeResponse`（批次校验单点不变），无工具调用回落正文文本。终态判定由协议 owner `settleFinalQualityJudgeTerminalResponse` 承担：工具终态放行、文本终态归一、不完整仍抛错；诊断修复路径保持无工具。该机制针对 D-134 的 score_batch_invalid（opus 返回评审散文而非机读批次），尚未经实机 judge 收敛验证。
+- 订阅通道 thinking 已接通：目录申报 `supported:true / extended_thinking`，渲染端启动自动重拉订阅目录；`thinkingEnabled` 沿 model-service 订阅分支透传，通道显式下发 `thinking:{type:'adaptive'|'disabled'}`（未声明不下发、不替用户填），响应侧 thinking 块透出 `ProviderResponse.thinking`。用户 thinking.enabled=true 偏好由此真实生效；judge 请求保持显式 disabled。实机 requestedThinking=enabled 的账本样本尚未取得。
 
 ## 已核实（构建与自动检查）
 

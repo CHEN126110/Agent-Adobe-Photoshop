@@ -21,6 +21,7 @@ import {
     type DesignSurfaceSnapshot
 } from '../../../shared/design-quality-measurement';
 import {
+    buildVlmJudgeScoreBatchToolSchema,
     buildVlmJudgeSystemPrompt,
     type DesignAssertion,
     type DesignAssertionResult,
@@ -445,7 +446,7 @@ export async function runFinalQualityReviewRuntime(
         ].join('\n')
         : '';
     const judgeSystemPrompt = [
-        buildVlmJudgeSystemPrompt(input.pendingAssertions),
+        buildVlmJudgeSystemPrompt(input.pendingAssertions, { scoreDelivery: 'score_batch_tool' }),
         targetBindingInstruction
     ].filter(Boolean).join('\n\n');
     const selectedReviewSet = selectDesignReviewSetForFinalJudge(
@@ -634,6 +635,9 @@ export async function runFinalQualityReviewRuntime(
         requiredEvidenceRefsByAssertion: requiredStructureEvidenceRefs.length > 0
             ? { 'craft.structure-intent-coherence': requiredStructureEvidenceRefs }
             : undefined,
+        // 结构化评分提交（真机 2026-09-01 D-134 根修）：长文评审型模型会吞掉正文内联
+        // JSON，改由 submitScoreBatch 工具一次提交批次；批次校验单点不变。
+        judgeTools: [buildVlmJudgeScoreBatchToolSchema(input.pendingAssertions)],
         expectedHistoryStateRef: input.reviewCandidate.historyStateRef,
         configuredSoftTimeBudgetMs: input.configuredSoftTimeBudgetMs,
         terminalQualityReserveMs: input.terminalQualityReserveMs,

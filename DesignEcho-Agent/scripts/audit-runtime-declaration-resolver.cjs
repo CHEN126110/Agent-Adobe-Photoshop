@@ -10485,11 +10485,16 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
       && repairMessages?.[1]?.contentBlocks?.some((block) => block.type === 'image' && block.data === 'aGVsbG8='),
     'diagnosis repair must reuse the same ReviewSet while forbidding rescoring'
   );
+  // 结构化评分提交（2026-09-01）：终审 Judge 恰好携带一个 submitScoreBatch 工具；
+  // 诊断修复保持无工具；messages 仍不得在 provider options 里重复出现。
   assert(modelRequestOptions.every((request) => (
     Array.isArray(request.tools)
-      && request.tools.length === 0
       && !Object.prototype.hasOwnProperty.call(request.options || {}, 'messages')
-  )), 'Judge / repair messages must be passed once, never duplicated inside provider options');
+  ))
+    && modelRequestOptions[0]?.tools?.length === 1
+    && modelRequestOptions[0]?.tools?.[0]?.name === 'submitScoreBatch'
+    && modelRequestOptions[1]?.tools?.length === 0,
+  'Judge carries exactly the structured score-batch tool, repair stays tool-free, and messages are never duplicated inside provider options');
   assert.strictEqual(
     modelRequestOptions[0]?.options?.visualPresentationCandidateKeys?.length,
     1,

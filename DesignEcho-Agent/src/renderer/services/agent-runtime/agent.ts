@@ -421,7 +421,7 @@ import {
     runFinalQualityReviewRuntime,
     type PendingTrustedFinalComparisonWrite
 } from './final-quality-review-runtime';
-import { FINAL_QUALITY_TERMINAL_RESERVE_MS } from './final-quality-model-protocol';
+import { FINAL_QUALITY_TERMINAL_RESERVE_MS, settleFinalQualityJudgeTerminalResponse } from './final-quality-model-protocol';
 import {
     AGENT_REPLY_OUTPUT_DISCIPLINE_PROMPT,
     AGENT_RUNTIME_MESSAGE_BOUNDARY_PROMPT,
@@ -12267,11 +12267,11 @@ export class Agent {
             terminalQualityReserveMs: FINAL_QUALITY_TERMINAL_RESERVE_MS,
             maxRequestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS,
             readActiveElapsedMs: () => this.readPerformanceActiveElapsedMs(),
-            callModel: async (budgetClass, { messages, ...requestOptions }, presentation) => {
+            callModel: async (budgetClass, { messages, tools, ...requestOptions }, presentation) => {
                 const response = await this.modelCallAccounting.callAgentProvider(
                     judgeModelId,
                     messages,
-                    [],
+                    Array.isArray(tools) ? tools : [],
                     requestOptions,
                     {
                         callKind: budgetClass === 'final_quality_judge'
@@ -12290,11 +12290,7 @@ export class Agent {
                         billDirectVisionCandidatesByPresentation: true
                     }
                 );
-                const terminalContent = readCompleteProviderTextContent(response);
-                if (!terminalContent.complete) {
-                    throw new Error('视觉评审模型没有返回可消费的完整终态');
-                }
-                return { ...response, content: terminalContent.content };
+                return settleFinalQualityJudgeTerminalResponse(response);
             },
             readPostModelHistoryStateRef: () => (
                 this.readCurrentPhotoshopHistoryStateRefForQualityVerification('post_judge')

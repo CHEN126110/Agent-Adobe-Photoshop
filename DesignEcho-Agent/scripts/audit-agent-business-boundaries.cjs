@@ -4044,6 +4044,7 @@ async function run() {
     DESIGN_ASSERTIONS,
     buildVlmJudgeDiagnosisRepairPrompt,
     buildVlmJudgeContextMessage,
+    buildVlmJudgeScoreBatchToolSchema,
     buildVlmJudgeSystemPrompt,
     evaluateVlmJudgeDiagnosisCoverage,
     getVlmJudgeAssertions,
@@ -4051,6 +4052,7 @@ async function run() {
     mergeVlmJudgeDiagnosisRepairs,
     parseVlmJudgeDiagnosisRepairResponse,
     parseVlmJudgeResponse,
+    readVlmJudgeScoreBatchFromToolCalls,
     scoreDesignAssertions
   } = require(designQualityAssertionPath);
   const {
@@ -4572,6 +4574,64 @@ async function run() {
       || !judgePrompt.includes('真实使用尺寸与观看情境')
       || !judgePrompt.includes('不要因为小字、边缘或间距更容易描述')) {
       aestheticProtocolViolations.push('judge-prompt-lost-single-score-or-top-three-diagnosis-contract');
+    }
+    // 结构化评分提交通道（真机 2026-09-01 D-134 根修）：长文评审型模型会吞掉正文内联
+    // JSON，submitScoreBatch 工具是机读批次的结构化提交通道；批次校验仍由
+    // parseVlmJudgeResponse 单点负责，工具 schema 不建立第二套校验语义。
+    const toolModeJudgePrompt = buildVlmJudgeSystemPrompt(
+      [typeCharacterAssertion, alignmentAssertion],
+      { scoreDelivery: 'score_batch_tool' }
+    );
+    if (!toolModeJudgePrompt.includes('submitScoreBatch')
+      || !toolModeJudgePrompt.includes('非通过诊断项示例')
+      || !toolModeJudgePrompt.includes('不要在正文输出评分')
+      || judgePrompt.includes('submitScoreBatch')
+      || !judgePrompt.includes('只返回 JSON 数组')) {
+      aestheticProtocolViolations.push('judge-score-delivery-modes-drifted');
+    }
+    const scoreBatchToolSchema = buildVlmJudgeScoreBatchToolSchema([
+      typeCharacterAssertion,
+      alignmentAssertion
+    ]);
+    const scoreBatchItems = scoreBatchToolSchema?.inputSchema?.properties?.scores?.items;
+    if (scoreBatchToolSchema?.name !== 'submitScoreBatch'
+      || !Array.isArray(scoreBatchToolSchema?.inputSchema?.required)
+      || !scoreBatchToolSchema.inputSchema.required.includes('scores')
+      || !Array.isArray(scoreBatchItems?.properties?.id?.enum)
+      || !scoreBatchItems.properties.id.enum.includes(typeCharacterAssertion.id)
+      || !scoreBatchItems.properties.id.enum.includes(alignmentAssertion.id)
+      // diagnosis/score/confidence/applicable 只给 description 不给 type：订阅通道的
+      // zod 桥会把空 properties 的 object 剥空、把强类型失配变成模型侧重试；
+      // 批次强校验唯一 owner 是 parseVlmJudgeResponse。
+      || 'type' in (scoreBatchItems?.properties?.diagnosis || {})
+      || 'type' in (scoreBatchItems?.properties?.score || {})
+      || 'type' in (scoreBatchItems?.properties?.confidence || {})
+      || 'type' in (scoreBatchItems?.properties?.applicable || {})) {
+      aestheticProtocolViolations.push('judge-score-batch-tool-schema-contract-broken');
+    }
+    const structuredBatchText = readVlmJudgeScoreBatchFromToolCalls([{
+      name: 'submitScoreBatch',
+      arguments: {
+        scores: [
+          { id: typeCharacterAssertion.id, applicable: true, score: 0.9, confidence: 0.9, reason: '层级清楚' },
+          { id: alignmentAssertion.id, applicable: true, score: 0.88, confidence: 0.9, reason: '对齐一致' }
+        ]
+      }
+    }]);
+    const structuredBatchResults = structuredBatchText
+      ? parseVlmJudgeResponse(structuredBatchText, [typeCharacterAssertion, alignmentAssertion])
+      : [];
+    const structuredInputVariant = readVlmJudgeScoreBatchFromToolCalls([{
+      name: 'submitScoreBatch',
+      input: { scores: [{ id: typeCharacterAssertion.id, applicable: true, score: 0.9, confidence: 0.9, reason: 'ok' }] }
+    }]);
+    if (structuredBatchResults.length !== 2
+      || !structuredBatchResults.every((item) => item.status === 'pass')
+      || structuredInputVariant === null
+      || readVlmJudgeScoreBatchFromToolCalls([{ name: 'otherTool', arguments: { scores: [] } }]) !== null
+      || readVlmJudgeScoreBatchFromToolCalls([{ name: 'submitScoreBatch', arguments: { scores: '不是数组' } }]) !== null
+      || readVlmJudgeScoreBatchFromToolCalls(undefined) !== null) {
+      aestheticProtocolViolations.push('judge-structured-score-batch-not-consumed-by-single-parser');
     }
     const taskNeutralJudgeAssertionIds = getVlmJudgeAssertions().map((item) => item.id);
     if (!taskNeutralJudgeAssertionIds.includes('impact.squint')

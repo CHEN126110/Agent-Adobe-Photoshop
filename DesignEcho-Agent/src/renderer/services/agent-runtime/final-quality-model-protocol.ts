@@ -12,6 +12,7 @@ import {
     mergeVlmJudgeDiagnosisRepairs,
     parseVlmJudgeDiagnosisRepairResponse,
     parseVlmJudgeResponse,
+    readVlmJudgeScoreBatchFromToolCalls,
     type DesignAssertion,
     type DesignAssertionResult,
     type FinalQualityDiagnosisRepairDigestStatus,
@@ -29,6 +30,7 @@ import {
     type ModelVisualPresentationReceiptRef
 } from '../../../shared/model-visual-presentation-receipt';
 import type { AgentMessage, ModelTransportAttemptAccounting } from './types';
+import { readCompleteProviderTextContent } from './provider-output-recovery';
 
 /**
  * 普通执行软时限之后的终局质量结算窗口。它小于正式采集为终态保留的 5 分钟，
@@ -65,10 +67,22 @@ export interface FinalQualityModelRequest {
     thinkingEnabled: false;
     /** 只给首次 Judge；与该请求实际图片顺序一一对应，用于 Provider outgoing receipt。 */
     visualPresentationCandidateKeys?: string[];
+    /**
+     * 结构化评分提交工具（如 submitScoreBatch）。带工具时模型以一次工具调用提交
+     * 评分批次，避免长文评审吞掉正文内联 JSON；批次校验仍由 parseVlmJudgeResponse
+     * 单点负责，工具不授予任何执行权。
+     */
+    tools?: Array<{
+        name: string;
+        description: string;
+        inputSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[] };
+    }>;
 }
 
 export interface FinalQualityModelResponse {
     content?: string;
+    /** Provider 返回的工具调用（结构化评分提交通道）；形状由 Provider 决定，读取端自行校验。 */
+    toolCalls?: unknown;
     transportAttempts?: ModelTransportAttemptAccounting[];
     visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }
@@ -222,6 +236,8 @@ export interface RunFinalQualityModelProtocolInput {
     allowedDiagnosisTargets?: readonly string[];
     pending: DesignAssertion[];
     requiredEvidenceRefsByAssertion?: Record<string, readonly string[]>;
+    /** 结构化评分提交工具；由评审调用方按协议构建（buildVlmJudgeScoreBatchToolSchema）。 */
+    judgeTools?: FinalQualityModelRequest['tools'];
     expectedHistoryStateRef: PhotoshopHistoryStateRef;
     configuredSoftTimeBudgetMs?: number;
     /** 普通执行软时限之外，仅供一次终局 Judge/必要诊断共享的物理时间窗口。 */
@@ -231,6 +247,24 @@ export interface RunFinalQualityModelProtocolInput {
     callJudge: (request: FinalQualityModelRequest) => Promise<FinalQualityModelResponse>;
     callDiagnosisRepair: (request: FinalQualityModelRequest) => Promise<FinalQualityModelResponse>;
     readPostModelHistoryStateRef: () => Promise<PhotoshopHistoryStateRef | undefined>;
+}
+
+/**
+ * 判定评审 Provider 响应的合法完整终态并归一：带工具调用的响应是结构化评分提交
+ * 终态（stopReason=tool_use 不满足纯文本完整性判据，批次有效性由本协议 fail closed
+ * 校验）；纯文本响应必须通过完整性判据，不完整即抛错，调用方按 provider_call_failed 处理。
+ */
+export function settleFinalQualityJudgeTerminalResponse<
+    T extends Parameters<typeof readCompleteProviderTextContent>[0] & { toolCalls?: unknown }
+>(response: T): T {
+    if (Array.isArray(response.toolCalls) && response.toolCalls.length > 0) {
+        return response;
+    }
+    const terminalContent = readCompleteProviderTextContent(response);
+    if (!terminalContent.complete) {
+        throw new Error('视觉评审模型没有返回可消费的完整终态');
+    }
+    return { ...response, content: terminalContent.content };
 }
 
 export function finalQualityJudgeVisualPresentationMatches(input: {
@@ -392,7 +426,8 @@ export async function runFinalQualityModelProtocol(
             temperature: 0.2,
             timeoutMs: judgeTimeoutMs,
             thinkingEnabled: false,
-            visualPresentationCandidateKeys: [...input.visualPresentationCandidateKeys]
+            visualPresentationCandidateKeys: [...input.visualPresentationCandidateKeys],
+            ...(input.judgeTools?.length ? { tools: input.judgeTools } : {})
         });
     } catch (error) {
         return {
@@ -442,8 +477,11 @@ export async function runFinalQualityModelProtocol(
         };
     }
 
+    // 结构化提交优先：submitScoreBatch 工具参数序列化为与正文内联 JSON 同构的文本，
+    // 交同一 parseVlmJudgeResponse 校验；无工具调用时回落正文文本（旧协议不变）。
+    const structuredScoreBatch = readVlmJudgeScoreBatchFromToolCalls(judgeResponse.toolCalls);
     const firstResults = filterUnboundDiagnoses(
-        parseVlmJudgeResponse(String(judgeResponse.content || ''), input.pending, {
+        parseVlmJudgeResponse(structuredScoreBatch ?? String(judgeResponse.content || ''), input.pending, {
             requiredEvidenceRefsByAssertion: input.requiredEvidenceRefsByAssertion
         }),
         input.allowedDiagnosisTargets

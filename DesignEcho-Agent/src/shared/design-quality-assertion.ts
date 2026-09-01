@@ -616,7 +616,90 @@ function resolveVlmJudgeBriefContext(context?: { task?: string; brief?: string }
  * 构造视觉判官不可被任务资料改写的 system 协议：只判 pending 断言，一次调用省 token。
  * 动态任务 / Brief / Strategy 必须由 buildVlmJudgeContextMessage 放在独立 user data envelope。
  */
-export function buildVlmJudgeSystemPrompt(pending: DesignAssertion[]): string {
+/** 终审评分批次提交工具名（结构化提交通道；批次内容校验仍由 parseVlmJudgeResponse 单点负责）。 */
+export const VLM_JUDGE_SCORE_BATCH_TOOL_NAME = 'submitScoreBatch';
+
+/**
+ * 终审评分的结构化提交工具 schema（Provider 中立）：模型以一次工具调用提交完整
+ * 评分 JSON 数组，代替容易被长文评审吞掉的正文内联 JSON（真机 2026-09-01 D-134：
+ * claude-subscription-opus 返回高质量中文评审散文但无任何机读批次 → score_batch_invalid）。
+ * 除 id / reason 外的字段刻意只给 description 不给 type：订阅通道的 zod 桥会把
+ * 空 properties 的 object 剥成 {}、把强类型失配变成模型侧重试；批次有效性由
+ * parseVlmJudgeResponse 唯一负责，这里只保证模型看到字段与说明。
+ */
+export function buildVlmJudgeScoreBatchToolSchema(pending: DesignAssertion[]): {
+    name: string;
+    description: string;
+    inputSchema: {
+        type: 'object';
+        properties: Record<string, unknown>;
+        required: string[];
+    };
+} {
+    const ids = pending.map((assertion) => assertion.id);
+    return {
+        name: VLM_JUDGE_SCORE_BATCH_TOOL_NAME,
+        description: '提交本次终审的完整评分批次。scores 是覆盖全部判定标准的 JSON 数组，每项字段与系统提示中的评分协议完全一致；一次提交全部标准，不要分多次调用。',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                scores: {
+                    type: 'array',
+                    description: '完整评分数组，逐条覆盖系统提示列出的每个标准 id。',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            id: ids.length > 0
+                                ? { type: 'string', enum: ids, description: '判定标准 id，必须来自系统提示列出的标准。' }
+                                : { type: 'string', description: '判定标准 id。' },
+                            applicable: { description: 'true|false；仅任务确实不存在该内容角色时可为 false。' },
+                            score: { description: '0~1；applicable=true 时必填，false 时禁止。' },
+                            confidence: { description: '0~1。' },
+                            reason: { type: 'string', description: '不超过 40 个汉字的一句话结论。' },
+                            evidenceRefs: { description: '需要消费结构 concern 的项：原样列出已消费的 evidenceId 数组。' },
+                            diagnosis: { description: '仅按系统提示要求附带诊断的非通过项填写；结构与系统提示中的示例一致。' }
+                        },
+                        // 传输层只要求 id（批次配对键）；其余字段缺失由 parseVlmJudgeResponse
+                        // 诚实降级（needs_review），不在 zod 桥硬拒后浪费模型重试轮次。
+                        required: ['id']
+                    }
+                }
+            },
+            required: ['scores']
+        }
+    };
+}
+
+/**
+ * 从 Provider toolCalls 中读取结构化评分批次，序列化为与正文内联 JSON 完全同构的
+ * 文本，交给同一个 parseVlmJudgeResponse 校验——不建立第二套批次校验语义。
+ * 无该工具调用或 scores 不是数组时返回 null（回落正文文本路径，诚实 fail closed）。
+ */
+export function readVlmJudgeScoreBatchFromToolCalls(toolCalls: unknown): string | null {
+    if (!Array.isArray(toolCalls)) return null;
+    for (const call of toolCalls) {
+        const record = call && typeof call === 'object' ? call as Record<string, unknown> : undefined;
+        if (!record || String(record.name || '').trim() !== VLM_JUDGE_SCORE_BATCH_TOOL_NAME) continue;
+        const args = (record.arguments && typeof record.arguments === 'object')
+            ? record.arguments as Record<string, unknown>
+            : (record.input && typeof record.input === 'object'
+                ? record.input as Record<string, unknown>
+                : undefined);
+        const scores = args?.scores;
+        if (!Array.isArray(scores)) return null;
+        try {
+            return JSON.stringify(scores);
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+export function buildVlmJudgeSystemPrompt(
+    pending: DesignAssertion[],
+    options?: { scoreDelivery?: 'inline_json' | 'score_batch_tool' }
+): string {
     const lines: string[] = [];
     lines.push('你是严格的视觉设计评审。只针对下面每一条标准，结合本次任务目标独立判断画面是否达标。');
     lines.push('评价权威顺序是：用户任务与绑定 Evaluation Goal → 最终像素、真实使用视图与已绑定对照像素 → 作者的 Brief / Strategy / modelDesignIntent。作者说自己实现了某个方向，只能用于检查言行是否一致，不能证明这个方向有效；必须先判断它是否解决用户任务。');
@@ -642,7 +725,12 @@ export function buildVlmJudgeSystemPrompt(pending: DesignAssertion[]): string {
     lines.push('- visualFinding：只写可见对象、版面/颜色/构图关系和语义目标；region 可给 0..1 normalizedBounds，但它只用于后续观察。');
     lines.push('- causalExplanation：goalRelation 只能是 supports/conflicts/unclear；mechanism 是相对当前目标的效果假设，不是作者意图事实。');
     lines.push('- revision：先判断问题来自局部执行，还是元素/素材/方向本身不成立；在保留微调、删除无效元素、替换关系或换方向中选一个最合适的语义动作。最小调整指用最少副作用解决根因，不是必须在错误方案上继续缩放、移动或叠加。另给真正必须保留项、预期效果和改后复核方法；禁止 Tool 名、layerId、像素命令或完成声明。');
-    lines.push('只返回 JSON 数组。非通过诊断项示例：{"id":"...","applicable":true,"score":0.4,"confidence":0.8,"reason":"...","diagnosis":{"visualFinding":{"scope":"region","target":"主标题区","description":"...","relationship":"...","normalizedBounds":{"x":0.1,"y":0.1,"width":0.8,"height":0.2},"affectedRoles":["headline","subject"]},"causalExplanation":{"goalRelation":"conflicts","mechanism":"...","tradeoff":"..."},"revision":{"action":"...","expectedEffect":"...","preserve":["..."],"verify":["..."]}}}。其它适用项只需 id/applicable/score/confidence/reason；不适用项只需 id/applicable=false/confidence/reason，禁止 score/diagnosis。不要其它文字。');
+    const scoreItemProtocol = '非通过诊断项示例：{"id":"...","applicable":true,"score":0.4,"confidence":0.8,"reason":"...","diagnosis":{"visualFinding":{"scope":"region","target":"主标题区","description":"...","relationship":"...","normalizedBounds":{"x":0.1,"y":0.1,"width":0.8,"height":0.2},"affectedRoles":["headline","subject"]},"causalExplanation":{"goalRelation":"conflicts","mechanism":"...","tradeoff":"..."},"revision":{"action":"...","expectedEffect":"...","preserve":["..."],"verify":["..."]}}}。其它适用项只需 id/applicable/score/confidence/reason；不适用项只需 id/applicable=false/confidence/reason，禁止 score/diagnosis。';
+    if (options?.scoreDelivery === 'score_batch_tool') {
+        lines.push(`调用 ${VLM_JUDGE_SCORE_BATCH_TOOL_NAME} 工具提交评分：scores 参数就是覆盖全部标准的完整评分 JSON 数组，一次提交。${scoreItemProtocol}不要在正文输出评分、评审长文或其它文字。`);
+    } else {
+        lines.push(`只返回 JSON 数组。${scoreItemProtocol}不要其它文字。`);
+    }
     return lines.join('\n');
 }
 

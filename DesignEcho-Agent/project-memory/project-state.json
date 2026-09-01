@@ -1,5 +1,5 @@
 {
-  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：评审整改闭环——Reflexion 容量门按续作类型分流（E2 交付闭合不要求视觉额度，误拦截回归闭合）；两段式入口落地（候选动态渲染、declareDesignIntent 结构化手柄、绑定同边界提交并移除候选）。D-135 最小复现严格首偏差即停（第 6 工具通用建档），随后主进程 inspector 实拍出站 customSystemPrompt（10,079 字符）证实候选段逐字送达：投递链 Harness 侧实拍闭合，opus 自然句采纳 0/2 属模型采纳行为（thinking 恒 disabled 为已知混杂）。下一步：thinking 接通与候选呈现位置的受控 A/B，Final Judge 结构化输出根修。",
+  "currentFocus": "2026-09-01 S1-DELIVERY-REVIEW-ROOT-CAUSE-001：19c 已代码落地——终审结构化评分提交（submitScoreBatch 工具，批次校验单点不变，终态判定下沉协议 owner）与订阅通道 thinking 接通（目录申报+透传+显式下发+响应透出，judge 保持 disabled）。两段式入口与容量门分流已在位。下一步：正常程序实机验证 judge 结构化收敛与 thinking 生效（同一次自然句最小复现可同时覆盖），仍严格首偏差即停；随后 opus 采纳率基线与呈现位置受控 A/B。",
   "currentMilestone": "S1-DELIVERY-REVIEW-ROOT-CAUSE-001",
   "milestoneStatus": "in_progress",
   "verified": {

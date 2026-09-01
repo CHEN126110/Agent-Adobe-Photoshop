@@ -477,7 +477,10 @@ export class ClaudeSubscriptionService {
             supportsVision: true,
             supportsToolUse: true,
             supportsStreaming: false,
-            thinking: { supported: false, format: 'none' } as any
+            // Claude 系列原生支持扩展思考，SDK 以 thinking: {type} 显式控制（2026-09-01 接通）。
+            // 此前目录写 supported:false 让渲染端永远请求 disabled，用户 thinking.enabled=true
+            // 形同虚设——能力欠申报也是一种静默降级。
+            thinking: { supported: true, format: 'extended_thinking' } as any
         };
         // 尚未采集到运行时上限时的保守输出上限。故意保守：宁可少要，也不要因为高估被 provider 拒绝。
         const FALLBACK_MAX_OUTPUT_TOKENS = 32_000;
@@ -513,7 +516,7 @@ export class ClaudeSubscriptionService {
         apiModelId: string,
         messages: AdapterMessage[],
         tools: ToolSchema[],
-        options?: { maxTokens?: number; temperature?: number },
+        options?: { maxTokens?: number; temperature?: number; thinkingEnabled?: boolean },
         signal?: AbortSignal
     ): Promise<ProviderResponse> {
         if (signal?.aborted) {
@@ -537,7 +540,7 @@ export class ClaudeSubscriptionService {
         apiModelId: string,
         messages: AdapterMessage[],
         tools: ToolSchema[],
-        options?: { maxTokens?: number; temperature?: number },
+        options?: { maxTokens?: number; temperature?: number; thinkingEnabled?: boolean },
         signal?: AbortSignal
     ): Promise<ProviderResponse> {
         const sdk = await this.loadSdk();
@@ -581,6 +584,14 @@ export class ClaudeSubscriptionService {
             };
         }
 
+        // 思考按调用方显式请求控制（2026-09-01 接通）：true → adaptive，false → 显式关闭；
+        // 未声明时不下发，保留 SDK 默认——「用户没选」不能被替填，与 provider 思考档位原则一致。
+        let thinkingQueryOption: { thinking?: { type: 'adaptive' | 'disabled' } } = {};
+        if (options?.thinkingEnabled === true) {
+            thinkingQueryOption = { thinking: { type: 'adaptive' } };
+        } else if (options?.thinkingEnabled === false) {
+            thinkingQueryOption = { thinking: { type: 'disabled' } };
+        }
         const abortController = new AbortController();
         const onAbort = () => abortController.abort();
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
@@ -590,6 +601,8 @@ export class ClaudeSubscriptionService {
             abortController.abort();
         };
         let replyText = '';
+        /** 扩展思考正文（thinking 块）；如实透出到 ProviderResponse.thinking，不混入正文。 */
+        let replyThinking = '';
         /** 本轮 SDK 实际使用的型号 id，用于把 result.modelUsage 里的上限对准这个模型。 */
         let turnInitModel = '';
         let resultSubtype = '';
@@ -610,6 +623,7 @@ export class ClaudeSubscriptionService {
                     settingSources: [],
                     env: buildCleanEnv(),
                     customSystemPrompt: systemPrompt,
+                    ...thinkingQueryOption,
                     abortController,
                     ...(bridgeServer
                         ? {
@@ -626,6 +640,7 @@ export class ClaudeSubscriptionService {
                 if (message.type === 'assistant') {
                     for (const block of message.message?.content || []) {
                         if (block?.type === 'text') replyText += String(block.text || '');
+                        if (block?.type === 'thinking') replyThinking += String(block.thinking || '');
                         if (block?.type === 'tool_use') {
                             capturedToolUses.push({
                                 id: String(block.id || `call-${capturedToolUses.length + 1}`),
@@ -721,6 +736,7 @@ export class ClaudeSubscriptionService {
         return {
             content: replyText,
             toolCalls,
+            ...(replyThinking ? { thinking: replyThinking } : {}),
             stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn'
         } as unknown as ProviderResponse;
     }

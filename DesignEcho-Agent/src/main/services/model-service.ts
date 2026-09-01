@@ -2227,7 +2227,13 @@ export class ModelService {
                 apiModelName,
                 messages,
                 tools,
-                { maxTokens: options?.maxTokens, temperature: options?.temperature }
+                {
+                    maxTokens: options?.maxTokens,
+                    temperature: options?.temperature,
+                    // 思考请求透传（2026-09-01）：此前在该分支被静默丢弃，目录已申报
+                    // 支持后必须让用户开关真实生效；undefined 保持不下发。
+                    thinkingEnabled: options?.thinkingEnabled
+                }
             );
             requireDebugProjectReferenceProviderReceipt(debugProjectReferenceCandidate, {
                 provider,
