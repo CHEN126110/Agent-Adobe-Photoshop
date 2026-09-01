@@ -180,6 +180,9 @@ export const DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS: readonly string[] = Obj
     // 和已自动注入的方法正文永久塞进每次模型调用。
     'photoshop.write.placeImage',
     'photoshop.write.transformLayer',
+    // Agent 把已选素材置入工作文档后，通常需要立即归入已有语义组；这是跨品类的
+    // 图层卫生基础动作，不应为了一个 provider 再付一次能力搜索模型回合。
+    'photoshop.write.moveLayerToGroup',
     // 主体大小/裁切是跨品类的通用视觉修订能力。直接可见只减少能力发现回合；
     // 比例与锚点仍必须由 Agent 显式声明，工具只求解几何并返回同版本局部画面。
     'photoshop.write.fitLayerSubjectToRegion',
@@ -219,7 +222,12 @@ export function buildAgentCapabilityBaseline(
     // 设计运行开始时已经把同一份 Project State 摘要注入模型；首轮不再重复暴露读取 Tool，
     // 为真正影响选图的视觉推荐腾出一个 schema。后续仍可从按需目录重新取得完整状态读取。
     const baselineCapabilityIds = designExecutionRequired
-        ? HARNESS_BASELINE_CAPABILITY_IDS.filter((id) => id !== 'memory.read.designProjectState')
+        ? HARNESS_BASELINE_CAPABILITY_IDS.filter((id) => (
+            id !== 'memory.read.designProjectState'
+            // 设计首轮已有项目清单、中性候选分页与项目总览；关键词资源搜索只有在
+            // 模型形成具体查找目标后才有信息增益，保留为同一目录中的按需能力。
+            && id !== 'project.searchResources'
+        ))
         : HARNESS_BASELINE_CAPABILITY_IDS;
     return unique([
         ...baselineCapabilityIds,

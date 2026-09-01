@@ -27,6 +27,33 @@ export interface SkillWorkflowToolSchema {
     };
 }
 
+/**
+ * Skill 的完整参数合同与模型可写接口是两件事。
+ *
+ * 未声明 modelParameterNames 的旧 Skill 维持全量可见；声明了投影的 Skill
+ * 必须只引用真实参数，并且不能隐藏 required 参数。这样模型接口可以保持小而清楚，
+ * Runtime 内部参数仍留在同一个 Skill 包，不需要复制第二份执行器。
+ */
+export function getModelVisibleSkillParameters(skill: SkillDeclaration): SkillDeclaration['parameters'] {
+    if (!skill.modelParameterNames) return skill.parameters;
+
+    const declaredNames = new Set(skill.parameters.map((parameter) => parameter.name));
+    const visibleNames = new Set(skill.modelParameterNames);
+    const unknownNames = skill.modelParameterNames.filter((name) => !declaredNames.has(name));
+    if (unknownNames.length > 0) {
+        throw new Error(`技能 ${skill.id} 的 modelParameterNames 引用了未知参数：${unknownNames.join('、')}`);
+    }
+
+    const hiddenRequiredNames = skill.parameters
+        .filter((parameter) => parameter.required && !visibleNames.has(parameter.name))
+        .map((parameter) => parameter.name);
+    if (hiddenRequiredNames.length > 0) {
+        throw new Error(`技能 ${skill.id} 隐藏了必填模型参数：${hiddenRequiredNames.join('、')}`);
+    }
+
+    return skill.parameters.filter((parameter) => visibleNames.has(parameter.name));
+}
+
 /** SkillParameterSchema → JSON Schema；递归处理 array items 与 object properties。 */
 export function skillParameterToJsonSchema(
     param: SkillParameterSchema,
@@ -105,7 +132,7 @@ export function skillParameterToJsonSchema(
 export function buildSkillWorkflowToolSchema(skill: SkillDeclaration): SkillWorkflowToolSchema {
     const properties: Record<string, any> = {};
     const required: string[] = [];
-    for (const param of skill.parameters) {
+    for (const param of getModelVisibleSkillParameters(skill)) {
         properties[param.name] = skillParameterToJsonSchema(param, `${skill.id}.${param.name}`);
         if (param.required) required.push(param.name);
     }

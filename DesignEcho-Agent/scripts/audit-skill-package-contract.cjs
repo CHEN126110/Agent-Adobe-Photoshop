@@ -47,6 +47,13 @@ const {
 } = require(path.join(runtimeRoot, 'scoped-edit-runtime-policy.ts'));
 const { validateSkillPackageContracts } = require(path.join(runtimeRoot, 'skill-package-contract.ts'));
 const { SKILL_REGISTRY } = require(path.join(root, 'src', 'shared', 'skills', 'skill-declarations.ts'));
+const { skillParameterToJsonSchema } = require(path.join(
+  root,
+  'src',
+  'shared',
+  'skills',
+  'skill-tool-schema.ts'
+));
 const { buildAgentPerformancePolicy } = require(path.join(root, 'src', 'shared', 'agent-performance-policy.ts'));
 const {
   classifyAgentToolExecution
@@ -130,15 +137,33 @@ for (const [skillId, playbookId] of expectedPlaybookBySkillId) {
     workflowTool?.description.includes(`readSkillPlaybook("${playbookId}")`),
     `${skillId} workflow schema does not expose its playbook crosswalk`
   );
+  const deliveryConventionParameter = declaration.parameters.find((parameter) => (
+    parameter.name === 'deliveryConvention'
+  ));
+  const deliveryConventionSchema = deliveryConventionParameter
+    ? skillParameterToJsonSchema(deliveryConventionParameter, `${skillId}.deliveryConvention`)
+    : undefined;
   assert(
-    workflowTool?.inputSchema?.properties?.deliveryConvention?.additionalProperties === false,
-    `${skillId} workflow schema lost strict deliveryConvention`
+    deliveryConventionSchema?.additionalProperties === false,
+    `${skillId} internal deliveryConvention contract is no longer strict`
   );
   assert.deepStrictEqual(
-    workflowTool?.inputSchema?.properties?.deliveryConvention?.properties?.versionPolicy?.enum,
+    deliveryConventionSchema?.properties?.versionPolicy?.enum,
     ['new_version', 'fail_if_exists'],
-    `${skillId} public deliveryConvention must not let the model authorize overwrite`
+    `${skillId} deliveryConvention must not authorize overwrite`
   );
+  if (skillId === 'main-image-design') {
+    assert.strictEqual(
+      workflowTool?.inputSchema?.properties?.deliveryConvention,
+      undefined,
+      'main-image prepare/finalize model contract must not expose delivery transaction internals'
+    );
+  } else {
+    assert(
+      workflowTool?.inputSchema?.properties?.deliveryConvention?.additionalProperties === false,
+      `${skillId} workflow schema lost its model-visible deliveryConvention`
+    );
+  }
   if (skillId === 'sku-batch') {
     assert.deepStrictEqual(
       workflowTool?.inputSchema?.properties?.deliveryConvention?.properties?.raster?.properties?.format?.enum,

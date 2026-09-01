@@ -1121,7 +1121,19 @@ async function runControlledMainImageProductPath(input: {
 
     const userText = cleanString(input.params.userIntent || input.context?.userInput);
     const imageType = cleanString(input.params.imageType) || 'click';
-    const executionScope = normalizeMainImageExecutionScope(input.params.executionScope);
+    // prepare 的定义就是为当前 TaskRun 新建隔离工作文档。模型不能把这一步改写成
+    // active/project document；否则一个技术字段会与“不要覆盖现有稿”安全目标竞争。
+    const executionScope = agenticProductionAction === 'prepare'
+        ? 'disposable-document'
+        : normalizeMainImageExecutionScope(input.params.executionScope);
+    // prepare 不保存、不导出，因此目录、命名、版本与 supportRefs 尚未产生副作用。
+    // 提前校验只会让模型围绕交付协议重试，既不能提高安全性，也不会改善设计。
+    const effectiveDeliveryConvention = agenticProductionAction === 'prepare'
+        ? undefined
+        : input.params.deliveryConvention;
+    const effectiveDeliveryVersion = agenticProductionAction === 'prepare'
+        ? undefined
+        : input.params.deliveryVersion;
     const projectPath = getMainImageProjectPath(input.context);
     const submittedAssignments = resolveMainImageSlotAssignments(input.params.slotAssignments);
     const isProductionSubmission = (
@@ -1217,8 +1229,8 @@ async function runControlledMainImageProductPath(input: {
             }
         };
     }
-    if (input.params.deliveryConvention !== undefined && input.params.deliveryConvention !== null) {
-        const deliveryConventionResolution = resolveSkillDeliveryConvention(input.params.deliveryConvention);
+    if (effectiveDeliveryConvention !== undefined && effectiveDeliveryConvention !== null) {
+        const deliveryConventionResolution = resolveSkillDeliveryConvention(effectiveDeliveryConvention);
         if (deliveryConventionResolution.status === 'blocked') {
             return {
                 success: false,
@@ -1394,8 +1406,8 @@ async function runControlledMainImageProductPath(input: {
         designPlacementIntelligencePlan: mainImageDesignPlacementIntelligence,
         outputDir,
         projectPath,
-        deliveryConvention: input.params.deliveryConvention,
-        deliveryVersion: input.params.deliveryVersion,
+        deliveryConvention: effectiveDeliveryConvention,
+        deliveryVersion: effectiveDeliveryVersion,
         toolNames: MAIN_IMAGE_PRODUCT_PATH_TOOL_NAMES,
         visionSignal,
         agentDesignDecision: input.params.agentDesignDecision,

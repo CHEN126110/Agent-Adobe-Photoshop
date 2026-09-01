@@ -634,7 +634,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'moveLayerToGroup',
-        description: 'Move one Photoshop layer or group into a target group. Use this for parent/child hierarchy, not canvas x/y movement. targetGroupId=0 moves the layer back to the document root. This is a single-layer move, not a safe multi-layer grouping transaction; when explicit same-parent layerIds should become one group, prefer groupLayersSafely.',
+        description: 'Put one known layer or group inside an existing target group; this changes hierarchy, not canvas position. targetGroupId=0 moves it to document root. For creating a new group from several siblings, use groupLayersSafely instead.',
         inputSchema: objectSchema({
             layerId: { type: 'number' },
             targetGroupId: { type: 'number', description: 'Target group ID, or 0 to move the layer to the document root.' },

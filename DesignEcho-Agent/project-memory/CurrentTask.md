@@ -41,6 +41,9 @@
 - 同一会话只输入“继续”的 Run 664 已真实使用 `structured_run_resume` 恢复 `ecommerce.main_image.v1`，16 次 Tool 全部成功，重新比较候选后由模型选择完整穿着图，PSD/JPG 同版本交付、外部 Photoshop 文档 revision 零变化，canonical 终态为 `completed / 89`。但人工像素对照确认成品主要是对优质摄影图做方形裁切和放大，鞋子视觉重量过大，没有建立点击主张、商业信息层级或显著设计增量；自动 Evaluation 的通过是当前误放行证据，不能登记为专业质量达标。
 - Run 663 /664 的 completion 旁路首偏差已经由 `36a1db51` 根修：`delivery_plan_binding_required` 过去在 Manifest → agentic completion contract 投影时丢失，导致普通原子 PSD/JPG 收据可以覆盖 Workflow owner。现在该约束与 Manifest 声明的 producer Skill 身份一起进入通用完成契约；只有 producer 返回绑定执行前 typed DeliveryPlan、完整 resultRef proof、文件身份、Photoshop revision 与 exact artifact set 的 ready receipt 才能结算正式交付，receipt 后任何内容 mutation 或通用 save/export 都使其失效。实现没有主图关键词分支，也没有阻止 Agent 使用通用 Tool 工作，只收回错误 completion 信用。
 - 对 Run 663 /664 的 GMR 已确认模型可见控制面是独立首偏差：Run 663 首轮 26 个 Tool /约 42.5k schema，后期 45 个 /65.7k，31 次 Agent 回合约 197 万 input token；Run 664 仍以 12 次观察和 4 次 mutation 交付裁切摄影图。`b10da18a` 已把 `composeDesign`、隔离 `evaluateDesign` 和重复 Skill 手册从首轮移到按需能力，补入可直接新建文字的原子手柄，并把 agentic 通用原则从 6,408 字符全量手册压为 1,112 字符摘要；首轮实测为 24 个 Tool /29,154 schema 字符，高级能力一次申请可全部恢复。专项、类型检查与 fresh 65 阶段核心闸门通过；尚未证明真实设计质量或效率改善。
+- 新普通项目 `DesignEcho主图A-B-b10da18a` 的 Run 665 使用同一自然短提示后形成了“穿着场景作为主视觉、四色平铺作为辅助”的可解释方向，但约 15 分钟仍没有内容写入；10 次模型调用累计约 1,176,756 ms，14 次 Tool 仅约 11,527 ms，9 次有 usage 的调用累计约 380,978 input token。前三次主图 Skill 调用先后被 prepare 阶段不应承担的 `supportRefs` 与 `executionScope` 拒绝，第四次才创建空工作文档；之后又读取文档 /层级并搜索移动图层能力。该 Attempt 在取得明确停滞证据后停止，未继续消耗，也不进入 S1 分母。
+- Run 665 的首个偏差已根修为通用模型接口投影：Skill 内部完整参数继续服务 Executor /卡片 /兼容生产，但模型只看到 Agent-owned 参数；Runtime-owned `mainImageExecutionMode / executionScope` 在入口剥离，prepare 固定 disposable scope 且不校验未发生的交付字段。主图模型 schema 从约 11,007 降为 2,857 字符；agentic 只常驻任务特有方法与紧凑原则，绑定后方法上下文为 2,236 字符；pre-bound Tool schema 从约 37,308 降为 32,785。基础图层归组能力直接可达，项目资源搜索改为按需。该增量已通过 fresh 65 阶段 `maintenance:validate`，尚待同提示正常程序复测，不能据此宣称已经提速或做出好设计。
+- 横向审计发现 SKU /详情页模型 schema 仍分别约 13,834 /7,989 字符，说明“内部生产字段与模型设计接口混合”具有跨 Skill 风险；但当前没有真实 Case 证明它们发生了同一故障。本轮只提供通用 `modelParameterNames` 投影和审计约束，不用主图病历替其他 Skill 做结论，也不建立品类分支。
 - 新附件故障已归属为 `INTAKE-091`：聊天上传会给主模型文件名和像素，但当前通用执行链没有可由模型引用、由 Tool 解析的请求级附件句柄；项目搜索和任意 CLI 都不能证明同名文件就是上传字节。P0 方案是 `attachmentRef` Input Asset Provider，通用 CLI 独立归属 `INTAKE-088`。
 - revision 5 正式运行前的 Debug Bridge、Photoshop MCP、UXP Runtime、模型、fixture、写授权和外部文档 ownership 均通过只读 preflight；下一轮仍必须在新提交和新 fixture 上重新核对，旧收据不能复用。
 - 当前可靠性数据只能证明存在历史单次通过和大量失败记录，不能形成 S1 的当前版本成功率；正式分母必须来自冻结 Case、canonical Attempt 和终态证据。
@@ -57,9 +60,9 @@
 
 1. `69c54867` 与 `b4998b65` 已分别提交并推送；用户未提交的 3 个 UI 文件未进入提交。Run 663 /664 与四份真实交付保留为失败归因证据，不进入 S1 专业质量分子。
 2. `36a1db51` 已关闭正式 completion 旁路：Manifest-bound 主图不能再由普通 PSD/JPG 保存冒充 Skill finalize；原子 Tool 保持可达，Harness 不替 Agent 选择文件、画面或下一动作。
-3. 先构建与 `b10da18a` 一致的正常程序，在新的普通一次性项目运行同一自然短提示，比较首轮 /峰值 Tool schema、System Prompt、模型回合、能力装载、首个有效设计动作、是否主动取得有信息增益的参考，以及相对 Run 663 /664 的真实设计增量。该运行只验证模型可见面假设，不因文件成功进入 S1 分子。
-4. 如果精简后仍以同样模式反复观察、裁切单图或加载大型能力，立即对该模型可见路径继续 GMR；不得用更多提示、评审轮次或默认设计方案抵消。如果方向成立，再把主图 prepare workspace 从 Renderer Map 最小收敛为 TaskRun-owned 持久身份，不新增第二 Task Store。
-5. 建立“进程重启、错误 TaskRun /project /document /group /revision、已消费 workspace、Host 文件漂移”故障注入；证明恢复只重建身份资格，必须重新读回当前 Host 才能 finalize。
+3. Run 665 已完成第一轮诊断性 A/B 并在明确停滞后停止：模型已给出较合理设计方向，但 Skill 内部生产字段、Runtime 技术字段和重复常驻知识竞争控制权，导致四次 Skill 调用才完成 prepare，约 15 分钟没有内容写入；该结果触发 D-130 根修，不进入 S1 分母。
+4. 构建并启动包含 D-130 的正常程序，在同一个新普通项目的新对话中重跑相同自然短提示；首先验证首次 `main-image-design` 能否直接 prepare、是否不再搜索基础归组能力、首个内容写入延迟和模型回合是否下降。出现新的可归因无进展冲突即停止、保存病历并修首个偏差，不让错误运行继续消耗。
+5. 只有复测证明模型可见接口收敛方向成立，才把主图 prepare workspace 从 Renderer Map 最小收敛为 TaskRun-owned 持久身份，不新增第二 Task Store；随后注入进程重启、错误 TaskRun /project /document /group /revision、已消费 workspace和 Host 漂移故障。
 6. 在完成 workspace reconciliation 后运行 S1 候选 Case；验证对象理解、候选比较、可选参考、复杂分层、唯一规格、finalize、同版本可编辑稿 /导出、Final Judge 与外部文档零变化。
 7. 用用户成稿 /Eagle 参考校准 Evaluation 的误放行；在扩大 S1 队列前闭合上传附件的请求级 `attachmentRef`，通用 CLI 继续作为独立 Provider 阶段。
 

@@ -2979,6 +2979,12 @@ try {
     const prepareResult = await mainImageExecutor.execute({
         params: {
             ...commonParams,
+            // prepare 尚未保存或导出：模型遗留的交付对象与活动文档范围都必须被
+            // Runtime 忽略，不能制造 supportRefs / scope 修复循环。
+            executionScope: 'active-document',
+            deliveryConvention: {
+                supportRefs: ['C:\\unsafe-model-authored-path']
+            },
             mainImageProductionAction: 'prepare',
             size: '800'
         },
@@ -3221,6 +3227,7 @@ check(
             === 'main_image_agentic_prepare_runtime_task_identity_required'
         && agenticMainImageEvidence?.invalidPrepareIdentityHostCallDelta === 0
         && agenticMainImageEvidence?.workspace?.status === 'prepared'
+        && agenticMainImageEvidence?.prepareResult?.data?.mainImageExecutionScope === 'disposable-document'
         && agenticMainImageEvidence?.workspace?.boundaries?.grantsPermission === false
         && agenticMainImageEvidence?.toolCalls?.filter((call) => call.toolName === 'createDocument').length === 1
         && agenticMainImageEvidence?.toolCalls?.filter((call) => call.toolName === 'createGroup').length === 11

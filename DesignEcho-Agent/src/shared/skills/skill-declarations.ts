@@ -1844,7 +1844,7 @@ export const MainImageSkill: SkillDeclaration = {
     // legacy/deterministic 路由不得跳过 Agent 循环直执；Manifest 绑定后的同一 Agent
     // 可以把自己的逐槽决定提交给这个受控 production entry。
     modelDirectExecution: 'forbidden',
-    description: '主图用途、店铺规格分文档体系和交付边界会随本工作法提供，不要在开工时重复读取同一手册；只有用户要求查看或维护手册、或需要核对其中的确定性脚本时才按需读取。工作法不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。Runtime owner for e-commerce main-image delivery. For open creative work, call prepare with one explicit size to create the standard empty Photoshop workspace, use general Photoshop tools to author the layered design, then call finalize with the returned workspace reference. Finalize exports only groups proven non-empty by live Photoshop readback. The legacy slotAssignments submission remains available for deterministic one-placement production. This Skill never chooses assets, copy, layout, or aesthetic direction.',
+    description: '主图用途与交付边界会随本工作法提供，不要在开工时重复读取同一手册。工作法不规定主素材角色、图层数量、版式、文案或组件组合；这些设计判断由 Agent 基于当前任务与真实像素完成。开放创意只需要两段式调用：prepare 时提交一个明确规格与设计方向，取得隔离工作文档；随后用通用 Photoshop 工具完成分层设计；finalize 时原样提交 workspaceRef。目录、命名、版本、执行范围和事务授权由 Runtime 在执行点处理，不是模型参数。确定性逐槽生产与白底导出仍由同一 Skill 包内部支持，但不污染开放创意的模型接口。',
     whenToUse: [
         'User explicitly delegates a main-image, cover, or first-image design deliverable',
         'User asks for a white background image (白底图)',
@@ -1870,7 +1870,7 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。开放创意主图使用两段式交付：先以 mainImageProductionAction=prepare 和一个由 Agent 明确选择的 size 创建空工作文档；拿到 mainImageWorkspaceRef 后，使用通用 Photoshop 工具完成多图、文字、形状、蒙版与排版；至少一个标准子组真实非空后，以 mainImageProductionAction=finalize 和同一 workspaceRef 保存/导出。不要把 prepare 当设计完成，不要在 finalize 重新置图。未显式指定规格时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 选择；Harness 不代选规格。三个标准文档都保留 5 个点击槽和 4 个转化槽。legacy 确定性生产仍可用 slotAssignments 逐槽提交单次 placement；没有 slotAssignments 时不得从候选第一项、selectedAsset、旧计划或文件名补位。用户明确只要空骨架文件时才设置 createEmptySkeleton=true。调用是否可写由 Harness 签发的 guarded executor 与交付 authority 决定，模型参数不能自行批准执行。白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时可显式设置 strategy-only；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
+        parameterExtractionHints: ['开放创意主图只提交设计师真正拥有的内容：prepare 使用 mainImageProductionAction、一个明确 size（或 customSize）和 agentDesignDecision；取得 mainImageWorkspaceRef 后用通用 Photoshop 工具完成画面；至少一个标准子组真实非空后，以 finalize 和同一 workspaceRef 交付。不要在 prepare/finalize 参数中填写目录、文件名、supportRefs、执行模式、执行范围、授权字段或旧逐槽生产结构；这些由 Skill/Runtime 内部处理。不要把 prepare 当设计完成，也不要在 finalize 重新置图。未显式指定规格时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 选择；Harness 不代选规格。白底图只需声明 imageType=white-bg 与 sourceAssetKind=project-sku-material；项目路径与安全输出位置由 Runtime 解析。用户明确只要空骨架文件时才设置 createEmptySkeleton=true。'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
@@ -1930,6 +1930,25 @@ export const MainImageSkill: SkillDeclaration = {
         strParam('backgroundPrompt', 'Optional AI background prompt'),
         strParam('userIntent', 'Original user request')
     ],
+    modelParameterNames: [
+        'size',
+        'customSize',
+        'agentDesignDecision',
+        'mainImageProductionAction',
+        'mainImageWorkspaceRef',
+        'createEmptySkeleton',
+        'desiredClickImageCount',
+        'desiredConversionImageCount',
+        'productScale',
+        'imageType',
+        'sourceAssetKind',
+        'sizes',
+        'backgroundPrompt'
+    ],
+    runtimeOwnedParameterNames: [
+        'mainImageExecutionMode',
+        'executionScope'
+    ],
     output: {
         type: 'files',
         description: 'Main-image production plan and, when the Runtime supplies guarded execution authority, exact editable documents and assigned-group exports.'
@@ -1937,31 +1956,26 @@ export const MainImageSkill: SkillDeclaration = {
     requiredTools: ['getSubjectBounds', 'smartLayout', 'transformLayer', 'moveLayer', 'exportGroup', 'saveDocument'],
     examples: [
         {
-            userSays: '帮我做主图',
-            parameters: { sizes: ['800', '750', '1200'], mainImageExecutionMode: 'strategy-only' }
+            userSays: '帮我做一张 800 主图',
+            parameters: {
+                size: '800',
+                mainImageProductionAction: 'prepare',
+                agentDesignDecision: { direction: '由 Agent 根据真实素材形成的主图方向' }
+            }
         },
         {
             userSays: '做一张 800 点击图',
-            parameters: { size: '800', imageType: 'click', mainImageExecutionMode: 'strategy-only' }
+            parameters: {
+                size: '800',
+                imageType: 'click',
+                mainImageProductionAction: 'prepare'
+            }
         },
         {
             userSays: '帮我做白底图',
             parameters: {
                 imageType: 'white-bg',
-                sourceAssetKind: 'project-sku-material',
-                outputDirPolicy: 'project-main-image-dir',
-                mainImageExecutionMode: 'strategy-only'
-            }
-        },
-        {
-            userSays: '帮我使用SKU素材做白底图导出到主图目录下',
-            parameters: {
-                imageType: 'white-bg',
-                sourceAssetKind: 'project-sku-material',
-                outputDirPolicy: 'project-main-image-dir',
-                mainImageCapability: 'main-image.white-bg-from-sku-material',
-                mainImageExecutionMode: 'product-disposable-live',
-                executionScope: 'disposable-document'
+                sourceAssetKind: 'project-sku-material'
             }
         }
     ],

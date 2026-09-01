@@ -199,6 +199,63 @@ function auditSkill(skill) {
     addIssue(record, 'blockers', 'parameters must be an array');
   } else {
     skill.parameters.forEach((param, index) => auditParameter(param, index, record));
+    if (skill.modelParameterNames !== undefined) {
+      if (!Array.isArray(skill.modelParameterNames)) {
+        addIssue(record, 'blockers', 'modelParameterNames must be an array when declared');
+      } else {
+        const modelParameterNames = new Set(skill.modelParameterNames);
+        const declaredParameterNames = new Set(skill.parameters.map((param) => param.name));
+        if (modelParameterNames.size !== skill.modelParameterNames.length) {
+          addIssue(record, 'blockers', 'modelParameterNames must not contain duplicates');
+        }
+        const unknownModelParameters = skill.modelParameterNames.filter((name) => (
+          !declaredParameterNames.has(name)
+        ));
+        if (unknownModelParameters.length > 0) {
+          addIssue(record, 'blockers', 'modelParameterNames must be a subset of parameters', {
+            unknownModelParameters
+          });
+        }
+        const hiddenRequiredParameters = skill.parameters
+          .filter((param) => param.required && !modelParameterNames.has(param.name))
+          .map((param) => param.name);
+        if (hiddenRequiredParameters.length > 0) {
+          addIssue(record, 'blockers', 'required parameters cannot be hidden from the model', {
+            hiddenRequiredParameters
+          });
+        }
+      }
+    }
+    if (skill.runtimeOwnedParameterNames !== undefined) {
+      if (!Array.isArray(skill.runtimeOwnedParameterNames)) {
+        addIssue(record, 'blockers', 'runtimeOwnedParameterNames must be an array when declared');
+      } else {
+        const runtimeOwnedParameterNames = new Set(skill.runtimeOwnedParameterNames);
+        const declaredParameterNames = new Set(skill.parameters.map((param) => param.name));
+        if (runtimeOwnedParameterNames.size !== skill.runtimeOwnedParameterNames.length) {
+          addIssue(record, 'blockers', 'runtimeOwnedParameterNames must not contain duplicates');
+        }
+        const unknownRuntimeOwnedParameters = skill.runtimeOwnedParameterNames.filter((name) => (
+          !declaredParameterNames.has(name)
+        ));
+        if (unknownRuntimeOwnedParameters.length > 0) {
+          addIssue(record, 'blockers', 'runtimeOwnedParameterNames must be a subset of parameters', {
+            unknownRuntimeOwnedParameters
+          });
+        }
+        if (Array.isArray(skill.modelParameterNames)) {
+          const modelParameterNames = new Set(skill.modelParameterNames);
+          const conflictingParameterOwners = skill.runtimeOwnedParameterNames.filter((name) => (
+            modelParameterNames.has(name)
+          ));
+          if (conflictingParameterOwners.length > 0) {
+            addIssue(record, 'blockers', 'runtime-owned parameters cannot also be model-visible', {
+              conflictingParameterOwners
+            });
+          }
+        }
+      }
+    }
   }
 
   if (!skill.output || typeof skill.output !== 'object') {

@@ -152,6 +152,9 @@ export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string
     'photoshop.write.placeImage': ['placeImage'],
     'photoshop.write.replaceImagePlaceholder': ['replaceImagePlaceholder'],
     'photoshop.write.transformLayer': ['transformLayer'],
+    // 叶子能力供 Agent 在已存在的语义组中保持图层卫生；完整 manageLayers 仍保留
+    // 给需要建组、重排、对齐等多动作的按需场景，避免只为入组暴露整包 schema。
+    'photoshop.write.moveLayerToGroup': ['moveLayerToGroup'],
     'photoshop.sandbox.manageLayers': [
         'createGroup',
         'groupLayersSafely',

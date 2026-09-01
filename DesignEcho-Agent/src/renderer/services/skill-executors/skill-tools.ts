@@ -150,9 +150,16 @@ const RUNTIME_OWNED_SKILL_PARAM_NAMES = new Set([
     'runtimeTaskIdentity'
 ]);
 
-function stripRuntimeOwnedSkillParams(params: Record<string, any>): Record<string, any> {
+function stripRuntimeOwnedSkillParams(
+    params: Record<string, any>,
+    declaredRuntimeOwnedNames: readonly string[] = []
+): Record<string, any> {
+    const declaredRuntimeOwnedNameSet = new Set(declaredRuntimeOwnedNames);
     return Object.fromEntries(
-        Object.entries(params || {}).filter(([name]) => !RUNTIME_OWNED_SKILL_PARAM_NAMES.has(name))
+        Object.entries(params || {}).filter(([name]) => (
+            !RUNTIME_OWNED_SKILL_PARAM_NAMES.has(name)
+            && !declaredRuntimeOwnedNameSet.has(name)
+        ))
     );
 }
 
@@ -234,7 +241,10 @@ export async function executeSkillTool(
         );
     }
 
-    const modelOrFrozenParams = stripRuntimeOwnedSkillParams(params || {});
+    const modelOrFrozenParams = stripRuntimeOwnedSkillParams(
+        params || {},
+        skill.runtimeOwnedParameterNames
+    );
     const normalizedParams = applySharedSkillParamDefaults({
         skillId: toolName,
         userInput: resolveSkillToolUserInput(modelOrFrozenParams, options),

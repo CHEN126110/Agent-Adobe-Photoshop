@@ -181,6 +181,21 @@ export interface SkillDeclaration {
     
     /** 输入参数定义 */
     parameters: SkillParameter[];
+
+    /**
+     * 主 Agent 可在 workflow Tool schema 中直接填写的参数名。
+     *
+     * 省略时保持兼容：parameters 全部对模型可见。声明后，未列出的参数仍可供
+     * Skill 内部、可信 continuation 或确定性调用使用，但不会进入模型每轮重发的
+     * schema，也不能由模型伪造权限、文件事务或 Runtime 执行范围。
+     */
+    modelParameterNames?: readonly string[];
+
+    /**
+     * 由 Skill/Runtime owner 推导、模型不能覆盖的内部参数名。
+     * 通用 Skill Bridge 只按声明剥离，不维护任何品类 id 或字段例外表。
+     */
+    runtimeOwnedParameterNames?: readonly string[];
     
     /** 输出描述 */
     output: {

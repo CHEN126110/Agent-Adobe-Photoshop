@@ -43,6 +43,7 @@ const {
 const {
   buildAutonomousAgenticRuntimeBindingProjection,
   buildDesignPrinciplesRuntimeContext,
+  buildRuntimeStageContextItemsForBundle,
   buildAutonomousDesignBriefInputSources,
   commitAgenticRuntimeDeclarationBinding
 } = require(path.resolve(
@@ -5939,16 +5940,25 @@ function assertAgenticManifestOwnerOnlyCapabilityBinding() {
     'pre-bound agentic owner did not expose the same unique workflow entry'
   );
   const mainImageTool = preBoundSession.activeTools.find((tool) => tool.name === 'main-image-design');
-  assert(mainImageTool?.inputSchema?.properties?.slotAssignments,
-    'main-image owner Tool schema omitted slotAssignments');
-  assert.strictEqual(mainImageTool.inputSchema.properties.slotAssignments.default, undefined);
+  assert(mainImageTool?.inputSchema?.properties?.mainImageProductionAction
+    && mainImageTool.inputSchema.properties.size
+    && mainImageTool.inputSchema.properties.mainImageWorkspaceRef,
+  'main-image owner Tool schema omitted the compact prepare/finalize contract');
+  assert.strictEqual(mainImageTool.inputSchema.properties.slotAssignments, undefined,
+    'legacy slot production leaked into the open-creative model contract');
+  assert.strictEqual(mainImageTool.inputSchema.properties.deliveryConvention, undefined,
+    'delivery transaction details leaked into the open-creative model contract');
   assert.strictEqual(mainImageTool.inputSchema.properties.createEmptySkeleton?.default, undefined);
-  assert.strictEqual(mainImageTool.inputSchema.properties.mainImageExecutionMode?.default, undefined,
-    'main-image workflow entry must not default an omitted production submission back to strategy-only');
+  assert.strictEqual(mainImageTool.inputSchema.properties.mainImageExecutionMode, undefined,
+    'Runtime execution mode must not be model-authored');
+  assert.strictEqual(mainImageTool.inputSchema.properties.executionScope, undefined,
+    'Photoshop execution scope must not be model-authored');
   assert.strictEqual(mainImageTool.inputSchema.properties.approvedLiveExecution, undefined,
     'model-visible main-image schema must not let Tool arguments mint execution approval');
   assert.strictEqual(mainImageTool.inputSchema.properties.approvedLiveAdapterRun, undefined,
     'model-visible main-image schema must not let Tool arguments mint adapter approval');
+  assert(JSON.stringify(mainImageTool).length < 5_000,
+    'main-image open-creative Tool schema regressed into a multi-protocol payload');
 
   const forbiddenSession = createSession({
     agenticOwnerManifest: mainImageManifest,
@@ -6038,6 +6048,23 @@ function assertAgenticManifestOwnerOnlyCapabilityBinding() {
     && fullStagedDesignPrinciples.length > compactAgenticDesignPrinciples.length * 3
     && compactAgenticDesignPrinciples.includes('设计落地'),
   'agentic runtime still injects the full universal design handbook instead of a compact foundation');
+  const mainImageResolution = resolveRuntimeDeclarationForAgentTask({
+    taskType: 'ecommerce.main_image.v1',
+    workMode: 'create_new',
+    executableToolNames: candidateTools.map((tool) => tool.name)
+  });
+  assert.strictEqual(mainImageResolution.status, 'resolved');
+  const compactMainImageItems = buildRuntimeStageContextItemsForBundle({
+    runtimeContractBundle: mainImageResolution.bundle,
+    designDisciplineActive: true,
+    stageAgnostic: true
+  });
+  const compactMainImageItemIds = compactMainImageItems.map((item) => item.id);
+  assert(compactMainImageItemIds.some((id) => id.includes('ecommerce.main-image'))
+    && !compactMainImageItemIds.some((id) => id.startsWith('knowledge.artifact.'))
+    && !compactMainImageItemIds.some((id) => id.startsWith('knowledge.recipe.'))
+    && compactMainImageItems.reduce((total, item) => total + item.content.length, 0) < 3_000,
+  'agentic main-image binding still injects generic handbooks, artifact contracts or craft indexes every turn');
 
   const runResumeContractBinding = {
     version: 'run-resume-contract-binding/v0',

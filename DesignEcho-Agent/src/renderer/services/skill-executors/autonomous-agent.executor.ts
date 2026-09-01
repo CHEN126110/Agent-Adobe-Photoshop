@@ -3445,7 +3445,7 @@ export function buildDesignPrinciplesRuntimeContext(
  * 启动绑定与循环内声明绑定共用同一函数；动态绑定不会回补通用 TaskContext，只消费
  * Manifest 治理知识、Artifact 知识、工艺 Recipe 与设计原理。
  */
-function buildRuntimeStageContextItemsForBundle(input: {
+export function buildRuntimeStageContextItemsForBundle(input: {
     runtimeContractBundle: AgentTaskRuntimeContractBundle;
     designDisciplineActive: boolean;
     requestedArtifactId?: unknown;
@@ -3466,17 +3466,34 @@ function buildRuntimeStageContextItemsForBundle(input: {
     if (designMethodKnowledge.issues.length > 0) {
         throw new Error(`runtime_design_method_knowledge_invalid:${designMethodKnowledge.issues.join(',')}`);
     }
+    // Agentic Profile 绑定只应补充“这个任务特有的方法”。通用内容策略、视觉方向和
+    // 布局原则在绑定前的计划中立底座已经出现；若再把它们连同 Artifact 全文与全部
+    // Photoshop Recipe 索引一起重发，会让每个 ReAct 回合承担第二套工作手册。
+    // priority>=90 是知识定义已有的 overlay 信号，不在这里识别主图/详情页/SKU。
+    const taskSpecificMethodItems = input.stageAgnostic
+        ? designMethodKnowledge.items.filter((item) => Number(item.priority || 0) >= 90)
+        : designMethodKnowledge.items;
+    const selectedMethodItems = input.stageAgnostic && taskSpecificMethodItems.length === 0
+        ? designMethodKnowledge.items
+        : taskSpecificMethodItems;
     const knowledgeTaskType = input.runtimeContractBundle.artifactManifest?.task_type
         || input.runtimeContractBundle.manifest.task_type;
-    const artifactKnowledgeItem = buildDesignArtifactKnowledgeRuntimeItem({
-        taskTypeId: knowledgeTaskType,
-        manifestSkillId: input.runtimeContractBundle.artifactManifest?.skill_id
-            || input.runtimeContractBundle.manifest.skill_id,
-        requestedArtifactId: input.requestedArtifactId
-    });
-    const photoshopCraftRecipeItems = buildPhotoshopCraftRecipeRuntimeItems({
-        taskTypeId: knowledgeTaskType
-    });
+    // 开放创意路径的 Artifact 合同、评价标准和交付事务仍由 Runtime 隐式持有；
+    // 它们不需要变成模型每轮阅读的说明书。具体 Photoshop 工艺继续通过现有知识搜索
+    // 按需取得。只有 staged 路径按阶段注入完整生产知识。
+    const artifactKnowledgeItem = input.stageAgnostic
+        ? null
+        : buildDesignArtifactKnowledgeRuntimeItem({
+            taskTypeId: knowledgeTaskType,
+            manifestSkillId: input.runtimeContractBundle.artifactManifest?.skill_id
+                || input.runtimeContractBundle.manifest.skill_id,
+            requestedArtifactId: input.requestedArtifactId
+        });
+    const photoshopCraftRecipeItems = input.stageAgnostic
+        ? []
+        : buildPhotoshopCraftRecipeRuntimeItems({
+            taskTypeId: knowledgeTaskType
+        });
     const designPrinciplesItem: RuntimeContextItem = {
         id: 'knowledge.design-principles',
         kind: 'knowledge',
@@ -3492,7 +3509,7 @@ function buildRuntimeStageContextItemsForBundle(input: {
         freshness: 'current'
     };
     const stagedItems: RuntimeContextItem[] = [
-        ...designMethodKnowledge.items,
+        ...selectedMethodItems,
         ...(artifactKnowledgeItem ? [artifactKnowledgeItem] : []),
         ...photoshopCraftRecipeItems,
         designPrinciplesItem,
